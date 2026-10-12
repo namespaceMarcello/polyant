@@ -582,6 +582,20 @@
       "when": 1791381125212,
       "tag": "0089_rename_extracted_tools_file_upload",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1791794360000,
+      "tag": "0090_new_agents_require_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1791880000000,
+      "tag": "0091_web_channel",
+      "breakpoints": true
     }
   ]
 }

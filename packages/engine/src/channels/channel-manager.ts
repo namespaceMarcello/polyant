@@ -12,7 +12,7 @@ import { emitOutbound } from "../activity-stream/emitters/emit-outbound.js";
 import { resolveInstanceMeta } from "../activity-stream/emit-helpers.js";
 import { asInstanceSlug } from "../instances/identifiers.js";
 import { getOptoutStatus } from "../optout/index.js";
-import { createLogger, sanitizeForLog } from "../utils/create-logger.js";
+import { createLogger, sanitizeForLog, shouldLog } from "../utils/create-logger.js";
 
 const log = createLogger();
 import { findInstanceBySlug } from "../instances/store.js";
@@ -54,7 +54,10 @@ export class ChannelManager {
     const handler = this.messageHandler;
 
     const loggedPipeline: MessageHandler = async (msg: IncomingMessage, signal?: AbortSignal): Promise<OutgoingMessage> => {
-      console.log(`[${msg.channelType}] [${msg.instanceId}] Incoming message from ${msg.userName ?? "unknown"}`);
+      console.log(`[${msg.channelType}] [${msg.instanceId}] Incoming message`);
+      if (shouldLog("debug")) {
+        console.log(`[${msg.channelType}] [${msg.instanceId}] Incoming message from ${sanitizeForLog(msg.userName ?? "unknown")}`);
+      }
       try {
         const response = await handler(msg, signal);
         console.log(`[${msg.channelType}] [${msg.instanceId}] Response sent`);
@@ -403,6 +406,9 @@ export class ChannelManager {
       case "agent":
         // agent: virtual in-process, dispatched directly via adapter.dispatch()
         return new AgentChannelAdapter();
+      case "web":
+        // web: the public HTTP endpoints; nothing to start, the row is the switch.
+        return null;
       default:
         console.warn(`Unknown channel type: ${sanitizeForLog(channelType)}`);
         return null;

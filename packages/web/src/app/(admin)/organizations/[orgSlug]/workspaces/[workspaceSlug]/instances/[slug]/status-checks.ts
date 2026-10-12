@@ -59,6 +59,8 @@ export interface AgentCheck {
 export interface StatusCheckInput {
   instance: Instance;
   tools: ToolState[];
+  /** `false` when the tool list could not be read (a role without that permission): the tool checks are skipped. */
+  toolsReadable?: boolean;
   skills: SkillState[];
   /** `null` when the caller could not read them (a viewer): the secret checks are skipped. */
   secrets: SecretStatus[] | null;
@@ -105,6 +107,7 @@ export function runStatusChecks(input: StatusCheckInput): AgentCheck[] {
   const {
     instance,
     tools,
+    toolsReadable = true,
     skills,
     secrets,
     channels,
@@ -243,6 +246,27 @@ export function runStatusChecks(input: StatusCheckInput): AgentCheck[] {
       bodyKey: "status.check.embedderCredentials.body",
       section: "settings",
       sectionKey: "instances.detail.tabSettings",
+    });
+  }
+
+  /*
+    Turning Knowledge on assigns the search tool, but the author can remove it
+    later, and agents that had Knowledge on before that behaviour never got it.
+    Without `searchKnowledge` the documents are indexed and never read. Skipped
+    when the tool list could not be read: an unreadable list is not a missing tool.
+  */
+  if (
+    instance.knowledgeEnabled &&
+    toolsReadable &&
+    !tools.some((tool) => tool.name === "searchKnowledge" && tool.enabled)
+  ) {
+    checks.push({
+      id: "knowledge-no-search-tool",
+      severity: "warning",
+      titleKey: "status.check.knowledgeNoSearchTool.title",
+      bodyKey: "status.check.knowledgeNoSearchTool.body",
+      section: "tools",
+      sectionKey: "instances.detail.tabTools",
     });
   }
 
@@ -452,33 +476,58 @@ export function runStatusChecks(input: StatusCheckInput): AgentCheck[] {
     });
   }
 
+  /*
+    "Open" means an endpoint that answers: the Web channel is on, or A2A is. With
+    Web off (where every new agent starts) the endpoints answer 404 whatever
+    authentication says, so an agent with authentication off and Web off is not
+    exposed. Skipped when the channel list could not be read: unknown is not on.
+  */
+  const webEnabled = channels?.some((c) => c.channelType === "web" && c.enabled) ?? false;
+
   if (!instance.authEnabled) {
-    // A2A raises the same missing auth from a warning to a break: the endpoint
-    // drives full turns, and `a2a.controller.ts` already logs this where nobody
-    // reads it.
-    checks.push(
-      instance.a2aEnabled
-        ? {
-            id: "a2a-open",
-            severity: "broken",
-            titleKey: "status.check.a2aOpen.title",
-            bodyKey: "status.check.a2aOpen.body",
-            section: "channels",
-            sectionKey: "instances.detail.tabChannels",
-          }
-        : {
-            id: "api-open",
-            // Broken, not a warning: an open endpoint that spends the budget and
-            // answers as the agent is not a thing to look at later.
-            severity: "broken",
-            titleKey: "status.check.apiOpen.title",
-            bodyKey: "status.check.apiOpen.body",
-            section: "channels",
-            sectionKey: "instances.detail.tabChannels",
-          },
-    );
+    // A2A drives full turns, and `a2a.controller.ts` already logs this where
+    // nobody reads it.
+    if (instance.a2aEnabled) {
+      checks.push({
+        id: "a2a-open",
+        severity: "broken",
+        titleKey: "status.check.a2aOpen.title",
+        bodyKey: "status.check.a2aOpen.body",
+        section: "channels",
+        sectionKey: "instances.detail.tabChannels",
+      });
+    }
+    if (webEnabled) {
+      checks.push({
+        id: "api-open",
+        // Broken, not a warning: an open endpoint that spends the budget and
+        // answers as the agent is not a thing to look at later.
+        severity: "broken",
+        titleKey: "status.check.apiOpen.title",
+        bodyKey: "status.check.apiOpen.body",
+        section: "channels",
+        sectionKey: "instances.detail.tabChannels",
+      });
+    }
   }
 
+  // Auth on, an endpoint on and no key: every caller gets 401. Safe, but the
+  // agent cannot be reached either. With Web (and A2A) off nobody is trying to.
+  if (
+    instance.authEnabled &&
+    (webEnabled || instance.a2aEnabled) &&
+    secrets !== null &&
+    !configuredSecrets.has(SECRET_KEYS.AUTH)
+  ) {
+    checks.push({
+      id: "api-key-missing",
+      severity: "warning",
+      titleKey: "status.check.apiKeyMissing.title",
+      bodyKey: "status.check.apiKeyMissing.body",
+      section: "channels",
+      sectionKey: "instances.detail.tabChannels",
+    });
+  }
 
   /*
     The opt-out switch is not a preference: `evaluateOptout` returns `pass`
