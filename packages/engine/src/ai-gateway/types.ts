@@ -6,7 +6,7 @@ import { type InstanceSlug } from "../instances/identifiers.js";
 
 export type ModelTier = "fast" | "standard" | "heavy";
 
-/** Cross-turn prompt-cache TTL (Anthropic). Bedrock is 5m only; OpenAI/Nebius ignore it. */
+/** Cross-turn prompt-cache TTL (Anthropic). Bedrock always uses its default 5m; OpenAI/Nebius ignore it. */
 export type CacheTtl = "5m" | "1h";
 
 export interface ChatRequest {
@@ -28,7 +28,17 @@ export interface ChatRequest {
   tools?: Record<string, Tool>;
   maxSteps?: number;
   system?: string;
-  /** Per-instance API keys. When provided, used instead of process.env defaults. */
+  /**
+   * Per-instance API keys, keyed by PROVIDER NAME (the Bedrock triple is the one
+   * exception: it authenticates with a pair plus a region rather than a single
+   * key). Deliberately CLOSED, and it under-declares on purpose — a provider
+   * registered at boot puts its key on this object under its own name, and its
+   * adapter reads it through `providerApiKey()` (`providers/registry.ts`). An
+   * index signature here would be the honest type and does not survive contact
+   * with the plugin SDK: `ToolApiKeys` is an interface, and a TypeScript
+   * interface is not assignable to a type carrying an index signature, so every
+   * tool that forwards `ctx.apiKeys` into its own LLM call would stop compiling.
+   */
   apiKeys?: {
     openai?: string;
     anthropic?: string;
@@ -122,10 +132,17 @@ export interface TokenUsage {
   cachedInputTokens?: number;
   /**
    * Input tokens written to the provider prompt cache (cache WRITE). Subset of
-   * `promptTokens`. Anthropic-only in practice (OpenAI caching is automatic and
-   * reports no write). Priced at a premium by `estimateCost`.
+   * `promptTokens`. Reported by Anthropic (1P and Bedrock) and by OpenAI from
+   * GPT-5.6 on. Priced at a premium by `estimateCost`.
    */
   cacheCreationInputTokens?: number;
+  /**
+   * The part of `cacheCreationInputTokens` the provider reported as 5-minute-TTL
+   * writes — Anthropic 1P splits its writes by TTL, and a 5m write costs less than
+   * a 1h one. Absent when no step reported a split (every other provider, and
+   * older rows): the writes are then all billed at the model's `cacheWrite`.
+   */
+  cacheCreation5mInputTokens?: number;
 }
 
 /**
@@ -169,11 +186,21 @@ export interface AILogEntry {
   stepCount?: number;
   conversationId?: string;
   instanceId?: InstanceSlug;
-  callType?: "conversation" | "service";
+  /**
+   * "conversation" for an agent's turn, "service" for the gateway calls around
+   * it (titles, memory, summaries), "embedding" for an embedder call. Cost sums
+   * count all three; call counts and response times keep to model calls.
+   */
+  callType?: "conversation" | "service" | "embedding";
   createdAt?: Date;
-  /** Whether the provider call returned ("ok") or died before returning ("error"). */
-  outcome?: "ok" | "error";
-  /** The CLASS of a provider failure (never its message — see classifyProviderError). Null when outcome is "ok". */
+  /**
+   * Whether the provider call returned ("ok"), died before returning ("error"),
+   * or was preempted by its caller after some model calls had been billed
+   * ("aborted"). Cost and token sums count every outcome; counts of answered
+   * calls keep to "ok".
+   */
+  outcome?: "ok" | "error" | "aborted";
+  /** The CLASS of a provider failure (never its message — see classifyProviderError). Null unless outcome is "error". */
   errorKind?: string | null;
 }
 

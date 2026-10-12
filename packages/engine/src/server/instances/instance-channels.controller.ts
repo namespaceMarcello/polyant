@@ -16,16 +16,17 @@ import { ZodError } from "zod";
 import {
   setChannelConfig, listChannelConfigs, getChannelConfig, deleteChannelConfig,
   CHANNEL_TYPES, CHANNEL_CONFIG_KEYS, resolveWhatsAppAuthMode,
-  WHATSAPP_CHANNEL_TYPE, WHATSAPP_AUTH_MODE_API_KEY, AGENT_CHANNEL_TYPE,
+  WHATSAPP_CHANNEL_TYPE, WHATSAPP_AUTH_MODE_API_KEY, AGENT_CHANNEL_TYPE, WEB_CHANNEL_TYPE,
   type ChannelType, type SetChannelConfigResult, type SetChannelConfigOptions,
 } from "../../instances/channels.store.js";
 import { channelManager } from "../../channels/channel-manager.js";
 import { syncAgentTool } from "../../instances/agent-tool-sync.js";
+import { resolveInstanceConfig } from "../../instances/config-resolver.js";
 import { findInstanceOrFail, maskSensitiveConfig } from "./instance-helpers.js";
 import { asInstanceSlug, type InstanceUuid } from "../../instances/identifiers.js";
 import { RequirePermission, Permission } from "../../authz/index.js";
 import { generateToken } from "../../crypto/index.js";
-import { buildTwilioWhatsAppWebhookUrl } from "../webhook-url.js";
+import { buildTwilioWhatsAppWebhookUrl, buildSlackWebhookUrl } from "../webhook-url.js";
 import { CurrentUser } from "../../auth/decorators/current-user.decorator.js";
 import type { AuthenticatedUser } from "../../auth/auth.types.js";
 import {
@@ -51,6 +52,13 @@ function isChannelConfigValidationError(err: unknown): err is ZodError {
 @Controller("api/instances")
 export class InstanceChannelsController {
   private readonly auditLogger = createManagementAuditLogger();
+
+  @RequirePermission(Permission.CHANNEL_READ)
+  @Get(":slug/channels/slack/webhook-url")
+  async slackWebhookUrl(@Param("slug") slug: string) {
+    await findInstanceOrFail(slug);
+    return { webhookUrl: await buildSlackWebhookUrl(slug) };
+  }
 
   @RequirePermission(Permission.CHANNEL_READ)
   @Get(":slug/channels")
@@ -83,7 +91,7 @@ export class InstanceChannelsController {
     if (typeof secret !== "string" || !secret) {
       throw new NotFoundException(WHATSAPP_NOT_IN_API_KEY_MODE);
     }
-    return { webhookUrl: buildTwilioWhatsAppWebhookUrl(slug, secret) };
+    return { webhookUrl: await buildTwilioWhatsAppWebhookUrl(slug, secret) };
   }
 
   /**
@@ -122,7 +130,7 @@ export class InstanceChannelsController {
       await channelManager.startChannel(slug, WHATSAPP_CHANNEL_TYPE, result.config);
     }
 
-    return { webhookUrl: buildTwilioWhatsAppWebhookUrl(slug, webhookSecret) };
+    return { webhookUrl: await buildTwilioWhatsAppWebhookUrl(slug, webhookSecret) };
   }
 
   /**
@@ -208,16 +216,16 @@ export class InstanceChannelsController {
   }
 
   /** The full webhook URL when the saved channel ended up in apiKey mode, else undefined. */
-  private buildWebhookUrlIfApiKeyMode(
+  private async buildWebhookUrlIfApiKeyMode(
     slug: string,
     channelType: ChannelType,
     config: Record<string, unknown>,
-  ): string | undefined {
+  ): Promise<string | undefined> {
     if (channelType !== WHATSAPP_CHANNEL_TYPE || resolveWhatsAppAuthMode(config) !== WHATSAPP_AUTH_MODE_API_KEY) {
       return undefined;
     }
     const secret = config.webhookSecret;
-    return typeof secret === "string" && secret ? buildTwilioWhatsAppWebhookUrl(slug, secret) : undefined;
+    return typeof secret === "string" && secret ? await buildTwilioWhatsAppWebhookUrl(slug, secret) : undefined;
   }
 
   /** Start/stop the channel adapter and mirror the virtual `agent` channel into the tools catalog. */
@@ -231,7 +239,7 @@ export class InstanceChannelsController {
     if (enabled) {
       await channelManager.startChannel(slug, channelType, config);
     } else {
-      await channelManager.stopChannel(slug, channelType);
+      await channelManager.stopChannel(slug, channelType, { deregister: true });
     }
     if (channelType === AGENT_CHANNEL_TYPE) {
       await syncAgentTool({ slug, description: instanceDescription, enable: enabled });
@@ -239,13 +247,13 @@ export class InstanceChannelsController {
   }
 
   /** Build the masked channel + optional webhookUrl response shape shared by `setChannel`. */
-  private buildChannelResponse(
+  private async buildChannelResponse(
     slug: string,
     channelType: ChannelType,
     enabled: boolean,
     persistedConfig: Record<string, unknown>,
   ) {
-    const webhookUrl = this.buildWebhookUrlIfApiKeyMode(slug, channelType, persistedConfig);
+    const webhookUrl = await this.buildWebhookUrlIfApiKeyMode(slug, channelType, persistedConfig);
     return {
       channel: { channelType, enabled, config: maskSensitiveConfig(persistedConfig) },
       ...(webhookUrl ? { webhookUrl } : {}),
@@ -269,6 +277,15 @@ export class InstanceChannelsController {
     }
     const type = channelType as ChannelType;
     const instance = await findInstanceOrFail(slug);
+
+    // Web switched on while authentication is on and no key exists would publish
+    // an endpoint that refuses everyone: the panel generates the key first.
+    if (type === WEB_CHANNEL_TYPE && body.enabled) {
+      const cfg = await resolveInstanceConfig(asInstanceSlug(slug));
+      if (cfg.authEnabled && !cfg.authApiKey) {
+        throw new BadRequestException("Web needs the agent's API key while authentication is on: save a key first");
+      }
+    }
 
     const existing = await getChannelConfig(asInstanceSlug(slug), type);
     const mergedConfig = this.mergeAllowedConfig(existing?.config ?? {}, body.config, type);
@@ -297,10 +314,16 @@ export class InstanceChannelsController {
     @Param("type") channelType: string,
     @CurrentUser() user?: AuthenticatedUser,
   ) {
+    // Validated exactly like `setChannel` above. Deleting an invalid type
+    // matches no row and is harmless today, but the asymmetry is how the next
+    // reader concludes the segment is validated everywhere it is cast.
+    if (!CHANNEL_TYPES.includes(channelType as ChannelType)) {
+      throw new BadRequestException(`Invalid channel type "${channelType}". Valid: ${CHANNEL_TYPES.join(", ")}`);
+    }
     const instance = await findInstanceOrFail(slug);
     const existing = await getChannelConfig(asInstanceSlug(slug), channelType as ChannelType);
 
-    await channelManager.stopChannel(slug, channelType);
+    await channelManager.stopChannel(slug, channelType, { deregister: true });
     await deleteChannelConfig(instance.id, channelType as ChannelType);
 
     // Audit AFTER the config is actually gone but BEFORE the remaining side

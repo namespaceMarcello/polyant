@@ -1,19 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { ChannelAdapter, MessageHandler, IncomingMessage, OutgoingMessage } from "./types.js";
+import type { ChannelAdapter, MessageHandler, IncomingMessage, OutboundDelivery, OutgoingMessage } from "./types.js";
 import type { ChannelType } from "../instances/channels.store.js";
-import { listEnabledChannelConfigs, disableChannel } from "../instances/channels.store.js";
+import { listEnabledChannelConfigs, disableChannel, ensureTelegramWebhookSecret } from "../instances/channels.store.js";
 import { TelegramAdapter, type TelegramConfig } from "./adapters/telegram/index.js";
 import { SlackAdapter, type SlackConfig } from "./adapters/slack/index.js";
 import { WhatsAppAdapter, type WhatsAppConfig } from "./adapters/whatsapp/index.js";
 import { AgentChannelAdapter } from "./adapters/agent.adapter.js";
 import { MessageCoordinator } from "./message-coordinator.js";
-import { config } from "../config.js";
 import { emitOutbound } from "../activity-stream/emitters/emit-outbound.js";
 import { resolveInstanceMeta } from "../activity-stream/emit-helpers.js";
 import { asInstanceSlug } from "../instances/identifiers.js";
 import { getOptoutStatus } from "../optout/index.js";
-import { sanitizeForLog } from "../utils/create-logger.js";
+import { createLogger, sanitizeForLog, shouldLog } from "../utils/create-logger.js";
+
+const log = createLogger();
+import { findInstanceBySlug } from "../instances/store.js";
+import { resolvePlatformSettings } from "../platform/platform-settings.store.js";
+import {
+  DEFAULT_MESSAGE_TIMINGS,
+  resolveMessageTimings,
+  UNSET_AGENT_SETTINGS,
+} from "../instances/agent-settings.js";
 
 /**
  * Channel types that should NOT produce `category: "outbound"` events:
@@ -46,7 +54,10 @@ export class ChannelManager {
     const handler = this.messageHandler;
 
     const loggedPipeline: MessageHandler = async (msg: IncomingMessage, signal?: AbortSignal): Promise<OutgoingMessage> => {
-      console.log(`[${msg.channelType}] [${msg.instanceId}] Incoming message from ${msg.userName ?? "unknown"}`);
+      console.log(`[${msg.channelType}] [${msg.instanceId}] Incoming message`);
+      if (shouldLog("debug")) {
+        console.log(`[${msg.channelType}] [${msg.instanceId}] Incoming message from ${sanitizeForLog(msg.userName ?? "unknown")}`);
+      }
       try {
         const response = await handler(msg, signal);
         console.log(`[${msg.channelType}] [${msg.instanceId}] Response sent`);
@@ -68,17 +79,30 @@ export class ChannelManager {
     // otherwise each channel restart would create an orphan state map.
     if (!this.coordinator) {
       this.coordinator = new MessageCoordinator({
-        softDebounceMs: config.coordinator.softDebounceMs,
-        typingDelayMs: config.coordinator.typingDelayMs,
-        maxRestarts: config.coordinator.maxRestarts,
+        // Per burst, from the agent the message names: the coordinator is a
+        // singleton across every channel and agent, so the timings cannot be
+        // captured here the way they used to be.
+        resolveTimings: async (msg) => {
+          try {
+            const agent = await findInstanceBySlug(msg.instanceId);
+            return resolveMessageTimings(agent ?? UNSET_AGENT_SETTINGS);
+          } catch (err) {
+            console.error(`[channel-manager] timing lookup failed for ${sanitizeForLog(msg.instanceId)}; using defaults:`, err);
+            return DEFAULT_MESSAGE_TIMINGS;
+          }
+        },
         handler: (msg, signal) => loggedPipeline(msg, signal),
-        sendOutbound: (slug, channelType, channelId, text) =>
-          this.sendOutbound(slug, channelType, channelId, text, { skipOptoutCheck: true }),
+        sendOutbound: async (slug, channelType, channelId, text) => {
+          await this.sendOutbound(slug, channelType, channelId, text, { skipOptoutCheck: true });
+        },
         sendTyping: (slug, channelType, channelId, messageSid) =>
           this.dispatchSendTyping(slug, channelType, channelId, messageSid),
       });
       console.log(
-        `[channel-manager] MessageCoordinator enabled: softDebounce=${config.coordinator.softDebounceMs}ms, typingDelay=${config.coordinator.typingDelayMs}ms, maxRestarts=${config.coordinator.maxRestarts}, channels=${[...DEBOUNCED_CHANNELS].join(",")}`,
+        `[channel-manager] MessageCoordinator enabled: timings resolved per agent ` +
+          `(defaults softDebounce=${DEFAULT_MESSAGE_TIMINGS.softDebounceMs}ms, ` +
+          `typingDelay=${DEFAULT_MESSAGE_TIMINGS.typingDelayMs}ms, maxRestarts=${DEFAULT_MESSAGE_TIMINGS.maxRestarts}), ` +
+          `channels=${[...DEBOUNCED_CHANNELS].join(",")}`,
       );
     }
     const coordinator = this.coordinator;
@@ -112,12 +136,11 @@ export class ChannelManager {
     // Stop existing adapter for this instance+channel if running
     await this.stopChannel(instanceSlug, channelType);
 
-    const adapter = this.createAdapter(instanceSlug, channelType as ChannelType, config);
-    if (!adapter) return;
-
     const wrappedHandler = this.wrapHandler();
 
     try {
+      const adapter = await this.createAdapter(instanceSlug, channelType as ChannelType, config);
+      if (!adapter) return;
       await adapter.initialize(wrappedHandler);
 
       let instanceMap = this.adapters.get(instanceSlug);
@@ -137,19 +160,19 @@ export class ChannelManager {
     }
   }
 
-  /** Stop a single channel adapter for an instance. */
-  async stopChannel(instanceSlug: string, channelType: string): Promise<void> {
+  /**
+   * Stop a single channel adapter for an instance. `deregister` also undoes the
+   * provider-side registration: pass it when the channel is switched off or
+   * deleted, not when the same channel is about to start again.
+   */
+  async stopChannel(instanceSlug: string, channelType: string, opts: { deregister?: boolean } = {}): Promise<void> {
     const instanceMap = this.adapters.get(instanceSlug);
     if (!instanceMap) return;
 
     const adapter = instanceMap.get(channelType);
     if (!adapter) return;
 
-    try {
-      await adapter.shutdown();
-    } catch (err) {
-      console.error('Error shutting down %s for instance "%s":', sanitizeForLog(channelType), sanitizeForLog(instanceSlug), err);
-    }
+    await this.stopAdapter(instanceSlug, channelType, adapter, opts);
     instanceMap.delete(channelType);
 
     if (instanceMap.size === 0) {
@@ -166,23 +189,49 @@ export class ChannelManager {
     );
   }
 
-  /** Stop all channels for an instance. */
-  async stopAllForInstance(instanceSlug: string): Promise<void> {
+  /** Stop all channels for an instance; `deregister` as in `stopChannel`. */
+  async stopAllForInstance(instanceSlug: string, opts: { deregister?: boolean } = {}): Promise<void> {
     const instanceMap = this.adapters.get(instanceSlug);
     if (!instanceMap) return;
 
-    const promises = Array.from(instanceMap.entries()).map(async ([type, adapter]) => {
-      try {
-        await adapter.shutdown();
-      } catch (err) {
-        console.error('Error shutting down %s for instance "%s":', sanitizeForLog(type), sanitizeForLog(instanceSlug), err);
-      }
-    });
+    const promises = Array.from(instanceMap.entries()).map(([type, adapter]) =>
+      this.stopAdapter(instanceSlug, type, adapter, opts),
+    );
     await Promise.all(promises);
     this.adapters.delete(instanceSlug);
   }
 
-  /** Gracefully shut down all adapters across all instances. */
+  /**
+   * Deregister (when asked) and shut down one adapter. The shutdown runs even
+   * when deregistering fails: a Telegram adapter whose deleteWebhook failed
+   * kept its pending registration retry, which could later register the
+   * webhook of a channel that had just been switched off.
+   */
+  private async stopAdapter(
+    instanceSlug: string,
+    channelType: string,
+    adapter: ChannelAdapter,
+    opts: { deregister?: boolean },
+  ): Promise<void> {
+    const logFailure = (step: string, err: unknown) =>
+      log.error("channel-manager", `error ${step} ${channelType} for instance "${instanceSlug}"`, err);
+    try {
+      if (opts.deregister) await adapter.deregister?.();
+    } catch (err) {
+      logFailure("deregistering", err);
+    } finally {
+      try {
+        await adapter.shutdown();
+      } catch (err) {
+        logFailure("shutting down", err);
+      }
+    }
+  }
+
+  /**
+   * Gracefully shut down all adapters across all instances, on process exit.
+   * Registrations stay with the provider: another replica may already own them.
+   */
   async shutdownAll(): Promise<void> {
     const promises: Promise<void>[] = [];
     for (const [slug] of this.adapters) {
@@ -214,8 +263,8 @@ export class ChannelManager {
     channelType: string,
     channelId: string,
     message: string,
-    opts?: { mediaUrl?: string | string[]; skipOptoutCheck?: boolean },
-  ): Promise<void> {
+    opts?: { mediaUrl?: string | string[]; skipOptoutCheck?: boolean; throwOnSuppressed?: boolean },
+  ): Promise<OutboundDelivery | void> {
     const instanceMap = this.adapters.get(instanceSlug);
     if (!instanceMap) throw new Error(`No active channels for instance "${instanceSlug}"`);
 
@@ -224,17 +273,19 @@ export class ChannelManager {
 
     if (!opts?.skipOptoutCheck && (await this.isOptoutSuppressed(instanceSlug, channelType, channelId))) {
       console.log(`[channel-manager] outbound suppressed (opt-out): ${sanitizeForLog(instanceSlug)} ${sanitizeForLog(channelType)}:${sanitizeForLog(channelId)}`);
+      if (opts?.throwOnSuppressed) throw new Error("Outbound suppressed by recipient opt-out");
       return;
     }
 
     let ok = false;
     let errorMessage: string | undefined;
     try {
-      await adapter.sendMessage(channelId, {
+      const delivery = await adapter.sendMessage(channelId, {
         text: message,
         ...(opts?.mediaUrl ? { mediaUrl: opts.mediaUrl } : {}),
       });
       ok = true;
+      return delivery;
     } catch (err) {
       errorMessage = err instanceof Error ? err.message : String(err);
       throw err;
@@ -332,11 +383,22 @@ export class ChannelManager {
   }
 
   /** Create the appropriate adapter based on channel type. */
-  private createAdapter(instanceSlug: string, channelType: ChannelType, config: Record<string, unknown>): ChannelAdapter | null {
+  private async createAdapter(instanceSlug: string, channelType: ChannelType, config: Record<string, unknown>): Promise<ChannelAdapter | null> {
     const slug = asInstanceSlug(instanceSlug);
     switch (channelType) {
-      case "telegram":
-        return new TelegramAdapter(slug, config as unknown as TelegramConfig);
+      case "telegram": {
+        // A channel saved before secrets were per channel has none: mint and store
+        // it now, and the adapter's setWebhook re-registers Telegram with it.
+        const webhookSecret =
+          typeof config.webhookSecret === "string" && config.webhookSecret
+            ? config.webhookSecret
+            : await ensureTelegramWebhookSecret(slug);
+        return new TelegramAdapter(
+          slug,
+          { ...config, webhookSecret } as unknown as TelegramConfig,
+          `${(await resolvePlatformSettings()).baseUrl}/webhooks/telegram/${encodeURIComponent(slug)}`,
+        );
+      }
       case "slack":
         return new SlackAdapter(slug, config as unknown as SlackConfig);
       case "whatsapp":
@@ -344,6 +406,9 @@ export class ChannelManager {
       case "agent":
         // agent: virtual in-process, dispatched directly via adapter.dispatch()
         return new AgentChannelAdapter();
+      case "web":
+        // web: the public HTTP endpoints; nothing to start, the row is the switch.
+        return null;
       default:
         console.warn(`Unknown channel type: ${sanitizeForLog(channelType)}`);
         return null;

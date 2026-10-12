@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { supervise, type SupervisorOutput } from "../agents/supervisor/index.js";
-import { runHooks, firstHalt, firstReplaceResponse, hookProvenance } from "../hooks/hook-runner.js";
+import { runHooks, firstHalt, firstReplaceResponse, hookProvenance, warnUnhonoredControls } from "../hooks/hook-runner.js";
 import type { HookEventPayload, HookRunContext } from "../hooks/hook-types.js";
 import { ConversationStateBuffer } from "../conversations/state.buffer.js";
 import { channelManager } from "../channels/channel-manager.js";
@@ -17,10 +17,10 @@ import { setRoomConversationId } from "./room.store.js";
 import { generateConversationTitle } from "../utils/title-generator.js";
 import { makeDelimiter, scrubClosing } from "../utils/untrusted-text.js";
 import { roomLog } from "./room-logger.js";
-import { config } from "../config.js";
-import { eventDefinitions } from "../webhooks/webhooks.schema.js";
+import { projectEventPayload } from "./payload-projection.js";
+import { eventDefinitions, eventSources } from "../webhooks/webhooks.schema.js";
 import { db } from "../database/client.js";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { randomBytes } from "crypto";
 
 function estimateTokens(text: string): number {
@@ -31,6 +31,11 @@ function estimateTokens(text: string): number {
 // (see #84) and stayed private, so every later place that put somebody else's
 // text into a prompt did it plainly — the webhook engine and <channel_identity>
 // among them. Same functions, same behaviour, one importable home.
+
+// The Room is supervise-direct: there is no replay loop, so `regenerate` and
+// `injectContext` cannot be acted on here. Declaring what IS honored keeps the
+// warning honest if a control is added or implemented later.
+const ROOM_HOOK_CONTROLS = ["halt", "replaceResponse"] as const;
 
 export async function executeRoomCycle(
   room: RoomConfig,
@@ -62,20 +67,42 @@ export async function executeRoomCycle(
   // Gather interpretation prompts for the pending events' definitions
   const definitionIds = [...new Set(pendingEvents.map((e) => e.eventDefinitionId))];
   let definitionPrompts: Array<{ name: string; interpretationPrompt: string }> = [];
+  // Source type per definition: it decides how the payload is rendered below.
+  const sourceTypeByDefinition = new Map<string, string>();
   if (definitionIds.length > 0) {
     const defs = await db
-      .select({ name: eventDefinitions.name, interpretationPrompt: eventDefinitions.interpretationPrompt })
+      .select({
+        id: eventDefinitions.id,
+        name: eventDefinitions.name,
+        interpretationPrompt: eventDefinitions.interpretationPrompt,
+        sourceType: eventSources.sourceType,
+      })
       .from(eventDefinitions)
+      .innerJoin(eventSources, eq(eventDefinitions.eventSourceId, eventSources.id))
       .where(inArray(eventDefinitions.id, definitionIds));
-    definitionPrompts = defs;
+    definitionPrompts = defs.map((d) => ({ name: d.name, interpretationPrompt: d.interpretationPrompt }));
+    for (const d of defs) {
+      if (d.sourceType) sourceTypeByDefinition.set(d.id, d.sourceType);
+    }
   }
+
+  // Render-time projection: the model sees the payload without the API URL
+  // templates and node ids no interpretation prompt can act on. The raw payload
+  // in `event_backlog` is untouched.
+  const renderedPayloads = new Map<string, string>(
+    pendingEvents.map((e) => [
+      e.id,
+      JSON.stringify(projectEventPayload(sourceTypeByDefinition.get(e.eventDefinitionId), e.rawPayload)),
+    ]),
+  );
 
   // Get conversation history
   const history = await conversationStore.getRecentMessages(conversationId, 50);
 
-  // Build context usage estimate
+  // Build context usage estimate. `room.prompt` is counted here because it is
+  // sent as a system section (see `roomPrompt` on the supervise() call below).
   const contextParts = [room.prompt, ...definitionPrompts.map((d) => d.interpretationPrompt)];
-  const eventsText = pendingEvents.map((e) => JSON.stringify(e.rawPayload)).join("\n");
+  const eventsText = pendingEvents.map((e) => renderedPayloads.get(e.id) ?? "").join("\n");
   const historyText = history.map((m) => String(m.content)).join("\n");
   const totalEstimate = estimateTokens([...contextParts, eventsText, historyText].join("\n"));
   const maxTokens = 128_000;
@@ -96,7 +123,7 @@ export async function executeRoomCycle(
     parts.push(`## Pending Events (${pendingEvents.length})`);
     for (const evt of pendingEvents) {
       parts.push(`- Event ID: ${evt.id}`);
-      const payloadJson = scrubClosing(JSON.stringify(evt.rawPayload), payloadTag.close);
+      const payloadJson = scrubClosing(renderedPayloads.get(evt.id) ?? "{}", payloadTag.close);
       parts.push(`  Payload: ${payloadTag.open}${payloadJson}${payloadTag.close}`);
       parts.push(`  Received: ${evt.matchedAt?.toISOString() ?? evt.createdAt?.toISOString()}`);
     }
@@ -169,6 +196,7 @@ export async function executeRoomCycle(
   // Pre-LLM hook (halt-capable). Only message_received fires here (see the
   // halt-and-respond spec §6). Keep the summaries for provenance on halt.
   const preHookSummaries = await runHooks("message_received", hookPayload, hookCtx);
+  warnUnhonoredControls(preHookSummaries, "room", ROOM_HOOK_CONTROLS);
   const halt = firstHalt(preHookSummaries);
 
   let result: SupervisorOutput | undefined;
@@ -187,7 +215,12 @@ export async function executeRoomCycle(
         thinkingEnabled: instanceConfig.thinkingEnabled,
         debugEnabled: instanceConfig.debugEnabled,
         datetimeInjectionEnabled: instanceConfig.datetimeInjectionEnabled,
+        datetime: instanceConfig.datetime,
         cacheConfig: instanceConfig.cacheConfig,
+        // The Room mandate the operator edits in the panel. It used to reach
+        // only the token estimate below, so a saved prompt looked delivered and
+        // was not (#380).
+        roomPrompt: room.prompt || undefined,
         includeHarness: new Set(["room"]),
         stateBuffer,
         // Room mints a FRESH conversationId every cycle — no stable per-turn
@@ -208,7 +241,7 @@ export async function executeRoomCycle(
 
       // Write error to activity log so it's visible in the admin panel
       const errNow = new Date();
-      const errTimestamp = errNow.toLocaleTimeString(config.datetime.locale, { hour: "2-digit", minute: "2-digit", timeZone: config.datetime.timezone });
+      const errTimestamp = errNow.toLocaleTimeString(instanceConfig.datetime.locale, { hour: "2-digit", minute: "2-digit", timeZone: instanceConfig.datetime.timezone });
       const errTriggers: string[] = [];
       if (pendingEvents.length > 0) errTriggers.push(`${pendingEvents.length} event(s)`);
       if (humanMessage) errTriggers.push("human message");
@@ -232,6 +265,7 @@ export async function executeRoomCycle(
       { ...hookPayload, response: { text: result!.text, regenerationCount: 0 } },
       hookCtx,
     );
+    warnUnhonoredControls(postHooks, "room", ROOM_HOOK_CONTROLS);
     replace = firstReplaceResponse(postHooks);
   }
 
@@ -290,7 +324,7 @@ export async function executeRoomCycle(
   postProcess().catch((err) => roomLog.error("PostProcess", "post-processing error", err));
 
   const now = new Date();
-  const timestamp = now.toLocaleTimeString(config.datetime.locale, { hour: "2-digit", minute: "2-digit", timeZone: config.datetime.timezone });
+  const timestamp = now.toLocaleTimeString(instanceConfig.datetime.locale, { hour: "2-digit", minute: "2-digit", timeZone: instanceConfig.datetime.timezone });
   const triggers: string[] = [];
   if (pendingEvents.length > 0) triggers.push(`${pendingEvents.length} event(s)`);
   if (humanMessage) triggers.push("human message");

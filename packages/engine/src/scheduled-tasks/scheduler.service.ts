@@ -6,11 +6,14 @@ import * as store from "./store.js";
 import * as runLog from "./run-log.store.js";
 import { computeNextRun } from "./schedule-utils.js";
 import { channelManager } from "../channels/channel-manager.js";
+import { contactChannelId, contactConversationId } from "../channels/outbound-conversation.js";
+import { conversationStore } from "../conversations/index.js";
 import { scheduledTaskLog } from "./scheduled-task-logger.js";
 import { emitCron } from "../activity-stream/emitters/emit-cron.js";
 import { asInstanceSlug } from "../instances/identifiers.js";
 import { resolveInstanceMeta } from "../activity-stream/emit-helpers.js";
 import { findInstanceBySlug } from "../instances/store.js";
+import { resolvePlatformSettings } from "../platform/platform-settings.store.js";
 
 function scheduleLabel(schedule: ScheduleConfig): string {
   switch (schedule.type) {
@@ -26,6 +29,22 @@ function scheduleLabel(schedule: ScheduleConfig): string {
 }
 
 const TICK_INTERVAL_MS = 30_000; // Check for due tasks every 30s
+
+/**
+ * Runs executed in parallel per tick, and — since the counter is a field of this
+ * singleton — across the whole process, every instance included.
+ *
+ * Sizing, for the record: with N instances each holding a daily and a weekly task on
+ * hash-offset crons, the arrival rate is what matters, not N. Two tasks that fire in the
+ * same 30s tick queue behind each other, so 3 covers a fleet whose crons are spread over
+ * a window of hours — 30 instances over a 3-hour window average one arrival per 6 minutes,
+ * twelve ticks apart. What breaks the reasoning is not fleet growth, it is DURATION: three
+ * runs that never finish hold all three slots and every other instance stops. That is why
+ * the reaper below exists, and why the free-slot count is reported rather than inferred.
+ *
+ * Revisit when either holds: crons cluster into the same tick (a fleet-wide fixed time
+ * instead of hash offsets), or a normal run's p95 approaches a tick.
+ */
 const MAX_CONCURRENT = 3;
 
 class SchedulerService {
@@ -47,21 +66,35 @@ class SchedulerService {
 
     scheduledTaskLog.info("SchedulerService", "starting...");
 
-    // Handle missed tasks on startup
-    await this.handleMissedTasks();
-
-    // Start the tick loop
+    // Arm the tick loop FIRST. The tick carries the reaper, the only supervision a hung
+    // run has; armed after the missed-task pass, a recovered pipeline that never settles
+    // would keep both the reaper and every later tick from ever starting.
     this.timer = setInterval(() => {
       this.tick().catch((err) => scheduledTaskLog.error("SchedulerService", "tick error:", err));
     }, TICK_INTERVAL_MS);
-
     this.started = true;
+
+    // Recover rows abandoned by a process that is gone. MUST run before
+    // handleMissedTasks: `getDueTasks` skips rows marked `running`, so without this the
+    // missed-task pass would not see exactly the tasks that were interrupted.
+    await this.recoverOrphanedRuns();
+
+    // Missed tasks run in the background: their pipelines are ordinary runs, supervised
+    // by the reaper above, and boot must not wait on one that hangs.
+    this.handleMissedTasks().catch((err) =>
+      scheduledTaskLog.error("SchedulerService", "missed-task pass failed:", err),
+    );
+
     scheduledTaskLog.info("SchedulerService", `running (tick every ${TICK_INTERVAL_MS / 1000}s)`);
   }
 
   /** Main loop: find and execute due tasks */
   async tick(): Promise<void> {
     if (!this.messageHandler) return;
+
+    // Free rows whose run overran its deadline before looking for work: a reaped row can
+    // become due again in this very tick, and the free-slot metric must reflect reality.
+    await this.reapOverrunningRuns();
 
     const now = new Date();
     const dueTasks = await store.getDueTasks(now);
@@ -70,7 +103,17 @@ class SchedulerService {
 
     // Limit concurrency
     const available = MAX_CONCURRENT - this.running.size;
-    if (available <= 0) return;
+    if (available <= 0) {
+      // Not an error, and that is the problem: no exception is thrown while every slot is
+      // held, so the only signal that the loop has stopped is this line and the free-slot
+      // count on /health/scheduler. Failure here is the ABSENCE of success.
+      scheduledTaskLog.warn(
+        "SchedulerService",
+        `all ${MAX_CONCURRENT} concurrency slots busy, ${dueTasks.length} task(s) waiting — ` +
+          "no task will run this tick",
+      );
+      return;
+    }
 
     const batch = dueTasks.slice(0, available);
 
@@ -95,9 +138,25 @@ class SchedulerService {
       return;
     }
 
-    // Atomic lock — prevents double execution
-    const locked = await store.markRunning(task.id);
-    if (!locked) return;
+    // In-process guard, on top of the DB lock below. The reaper can free a row whose
+    // execution is still alive in THIS process (a hung HTTP call, say): without this
+    // check the freed row would be picked up again and the same task would run twice
+    // concurrently — one of the two deliveries being a duplicate. It is per PROCESS:
+    // with several replicas, a reaped row can still be claimed by another one while
+    // the hung run lives on here. `max_run_ms` is the deadline a task declares, so
+    // a run that overruns it accepts that duplicate.
+    if (this.running.has(task.id)) {
+      scheduledTaskLog.warn(
+        "SchedulerService",
+        `task "${task.name}" (${task.id}) is still executing in this process — skipping`,
+      );
+      return;
+    }
+
+    // Atomic lock — prevents double execution. A scheduled run also re-checks that
+    // the task is still due: another replica may have run it since the tick read it.
+    const claim = await store.markRunning(task.id, triggerType === "scheduled" ? { dueBy: new Date() } : {});
+    if (!claim) return;
 
     this.running.add(task.id);
     const timestamp = Date.now();
@@ -152,9 +211,17 @@ class SchedulerService {
         },
       });
 
-      // Success
-      await store.markCompleted(task.id, conversationId);
-      scheduledTaskLog.info("SchedulerService", `task "${task.name}" completed`);
+      // Success. `null` means this run lost its claim (reaped, then claimed again
+      // elsewhere): the run that holds the task now records its own outcome.
+      const completedAt = await store.markCompleted(task.id, conversationId, claim);
+      if (completedAt) {
+        scheduledTaskLog.info("SchedulerService", `task "${task.name}" completed`);
+      } else {
+        scheduledTaskLog.warn(
+          "SchedulerService",
+          `task "${task.name}" (${task.id}) completed after losing its claim — outcome not recorded on the task`,
+        );
+      }
 
       // Log successful run (strip tool args to avoid persisting PII/secrets)
       if (runId) {
@@ -170,26 +237,47 @@ class SchedulerService {
       // Send output to configured outbound channel
       if (task.outboundChannel && task.outboundTarget && result.text) {
         try {
-          await channelManager.sendOutbound(
+          const delivery = await channelManager.sendOutbound(
             task.instanceId,
             task.outboundChannel,
             task.outboundTarget,
             result.text,
+            { throwOnSuppressed: true },
           );
+
+          // Record the delivered message in the contact's own conversation, where their
+          // reply will arrive, so the reply is answered with the message it responds to.
+          const contactId = delivery?.channelId ?? contactChannelId(task.outboundChannel, task.outboundTarget);
+          const contactConversation = contactConversationId(task.instanceId, task.outboundChannel, contactId);
+          await conversationStore.ensureConversation(contactConversation, asInstanceSlug(task.instanceId), {
+            channel: task.outboundChannel,
+            userIdentifier: contactId,
+            source: "scheduled_task",
+          });
+          await conversationStore.appendMessages(contactConversation, [{
+            role: "assistant",
+            content: result.text,
+            metadata: {
+              source: "scheduled_task",
+              scheduledTaskId: task.id,
+              ...(runId ? { scheduledTaskRunId: runId } : {}),
+            },
+          }]);
         } catch (outboundErr) {
-          scheduledTaskLog.error("SchedulerService", `failed to send outbound for "${task.name}":`, outboundErr);
+          scheduledTaskLog.error("SchedulerService", `failed to deliver or record outbound for "${task.name}":`, outboundErr);
         }
       }
 
       // Handle one-shot + deleteAfterRun
       const schedule = task.schedule as ScheduleConfig;
-      if (schedule.type === "one-shot" && task.deleteAfterRun) {
-        await store.remove(task.id);
-        scheduledTaskLog.info("SchedulerService", `one-shot task "${task.name}" deleted after run`);
+      if (schedule.type === "one-shot" && task.deleteAfterRun && completedAt) {
+        if (await store.removeAfterRun(task.id, completedAt)) {
+          scheduledTaskLog.info("SchedulerService", `one-shot task "${task.name}" deleted after run`);
+        }
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      await store.markFailed(task.id, errorMsg);
+      await store.markFailed(task.id, errorMsg, claim);
       scheduledTaskLog.error("SchedulerService", `task "${task.name}" failed:`, errorMsg);
 
       // Log failed run
@@ -201,6 +289,141 @@ class SchedulerService {
     } finally {
       this.running.delete(task.id);
     }
+  }
+
+  /**
+   * Startup recovery: rows left `running` by a process that is gone.
+   *
+   * `markRunning` marks a row `running` and, before this, nothing ever cleared it —
+   * `getDueTasks` excludes those rows, so a task interrupted by a deploy, an OOM kill or
+   * a crash went silent permanently, with no error emitted anywhere. It is a generic bug,
+   * not one specific to any product: every deployment that restarts the engine while a
+   * task runs has been hitting it.
+   *
+   * Only rows older than `orphanGraceMs` are touched. During a rolling deploy the previous
+   * process may still be legitimately running its task; recovering it would run it twice,
+   * which for a task that delivers something outward is worse than running it late.
+   *
+   * The marker is cleared WITHOUT counting a failure: an interrupted run is not the task's
+   * fault, so it consumes no retry and does not push `nextRunAt` away. The run itself is
+   * closed as an error in the run log, so the audit still says what happened.
+   */
+  private async recoverOrphanedRuns(): Promise<void> {
+    const { schedulerOrphanGraceMs, schedulerDefaultMaxRunMs } = await resolvePlatformSettings();
+    const now = Date.now();
+    const cutoff = new Date(now - schedulerOrphanGraceMs);
+    const candidates = await store.findStuckRunning(cutoff);
+    // The outgoing replica may still own a run beyond the deploy grace. Never
+    // reclaim it before its own deadline (which may exceed the platform default).
+    const stuck = candidates.filter((task) =>
+      now - (task.updatedAt?.getTime() ?? now) >= Math.max(
+        schedulerOrphanGraceMs,
+        task.maxRunMs ?? schedulerDefaultMaxRunMs,
+      ),
+    );
+    if (stuck.length === 0) return;
+
+    // The dangling runs are read BEFORE the markers are cleared, and each marker is
+    // cleared only on the claim read above: once a marker is cleared a new run may claim
+    // the task, and neither its marker nor its run-log row is this recovery's to close.
+    const danglingByTask = new Map<string, string[]>();
+    for (const task of stuck) danglingByTask.set(task.id, await runLog.findDanglingRuns([task.id]));
+    const clearedIds = await store.clearRunningMarker(
+      stuck.map((t) => ({ id: t.id, claim: t.lastRunAt })),
+    );
+    if (clearedIds.length === 0) return;
+    const closed = await runLog.failDanglingRuns(
+      clearedIds.flatMap((id) => danglingByTask.get(id) ?? []),
+      "orphaned: the process running this task did not survive to report an outcome",
+    );
+
+    scheduledTaskLog.warn(
+      "SchedulerService",
+      `recovered ${clearedIds.length} orphaned task row(s) and closed ${closed} dangling run(s): ` +
+        stuck.map((t) => `"${t.name}" (${t.instanceId})`).join(", "),
+    );
+  }
+
+  /**
+   * Per-tick reaper: runs that are still `running` past their deadline.
+   *
+   * The startup recovery only helps when the process restarts. A run that hangs in a live
+   * process — an HTTP call with no timeout is the usual cause — holds its row forever and
+   * one of the three concurrency slots with it. Past `max_run_ms` (per task, falling back
+   * to the platform setting) the row is marked failed so the task is not
+   * silenced beyond the deadline it declared.
+   *
+   * Unlike the startup path this DOES count as a failure: the run had its declared time
+   * and did not finish, which is the task's own behaviour, and the retry backoff plus
+   * `MAX_CONSECUTIVE_ERRORS` are the right response to a task that hangs every time.
+   *
+   * What this cannot do is cancel the hung execution: the slot stays held until the
+   * process ends, which is precisely why the free-slot count is reported.
+   */
+  private async reapOverrunningRuns(): Promise<void> {
+    // EVERY running row is read, then checked against ITS OWN deadline. Bounding the scan
+    // by the default deadline would have been faster and wrong: a task declaring a shorter
+    // `max_run_ms` than the default would not appear in the scan until the default had
+    // elapsed, so its own deadline would be silently ignored. There are only ever a
+    // handful of running rows, and the partial index covers them.
+    const now = Date.now();
+    const running = await store.findStuckRunning(new Date(now));
+    if (running.length === 0) return;
+
+    const { schedulerDefaultMaxRunMs } = await resolvePlatformSettings();
+    for (const task of running) {
+      const deadline = task.maxRunMs ?? schedulerDefaultMaxRunMs;
+      const runningForMs = now - (task.updatedAt?.getTime() ?? now);
+      if (runningForMs < deadline) continue;
+
+      // Compare-and-set on the claim read above: another replica's reaper, or the
+      // run itself finishing and the task being claimed again, may have moved
+      // the row on since. Failing that newer claim would free it for a duplicate
+      // execution, so a lost race leaves the row alone.
+      // The run-log rows are read while the row is still held by this claim, so a run
+      // claimed after `markFailed` frees the task is not closed with it.
+      const dangling = await runLog.findDanglingRuns([task.id]);
+      const reaped = await store.markFailed(
+        task.id,
+        `orphaned: run exceeded its deadline of ${deadline} ms (running for ${runningForMs} ms)`,
+        task.lastRunAt,
+      );
+      if (!reaped) continue;
+      await runLog.failDanglingRuns(dangling, `orphaned: run exceeded ${deadline} ms`);
+      scheduledTaskLog.warn(
+        "SchedulerService",
+        `reaped task "${task.name}" (${task.instanceId}): running for ${runningForMs} ms, ` +
+          `deadline ${deadline} ms`,
+      );
+    }
+  }
+
+  /**
+   * What the scheduler can say about itself, for `/health/scheduler`.
+   *
+   * Both numbers exist because the failure mode here is silence: a stalled loop emits no
+   * error, and `enabled` stays true on every task while nothing runs. `freeSlots` at zero
+   * over consecutive scrapes, or a non-zero `stuckRunning`, are the only observable
+   * symptoms.
+   */
+  async health(): Promise<{
+    running: boolean;
+    maxConcurrent: number;
+    inFlight: number;
+    freeSlots: number;
+    stuckRunning: number;
+    orphanGraceMs: number;
+  }> {
+    const { schedulerDefaultMaxRunMs, schedulerOrphanGraceMs } = await resolvePlatformSettings();
+    const cutoff = new Date(Date.now() - schedulerDefaultMaxRunMs);
+    return {
+      running: this.started,
+      maxConcurrent: MAX_CONCURRENT,
+      inFlight: this.running.size,
+      freeSlots: MAX_CONCURRENT - this.running.size,
+      stuckRunning: await store.countStuckRunning(cutoff),
+      orphanGraceMs: schedulerOrphanGraceMs,
+    };
   }
 
   /** On startup, handle any tasks that were missed during downtime */

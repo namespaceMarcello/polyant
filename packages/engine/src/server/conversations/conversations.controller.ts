@@ -13,11 +13,13 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { conversationStore } from "../../conversations/store.js";
+import { prepareAttachmentCleanup } from "../../attachments/attachment-cleanup.js";
 import { loadConversationState } from "../../conversations/state.store.js";
 import { listHookExecutions } from "../../hooks/hook-executions.store.js";
 import { parsePagination } from "../utils/parse-pagination.js";
 import { asInstanceSlug } from "../../instances/identifiers.js";
-import { resolvePrincipalOrgId } from "../../instances/store.js";
+import { callerTenantScope } from "../utils/caller-tenant-scope.js";
+import type { TenantScope } from "../../authz/scope-filter.js";
 import { CurrentUser } from "../../auth/decorators/current-user.decorator.js";
 import type { AuthenticatedUser } from "../../auth/auth.types.js";
 
@@ -50,18 +52,12 @@ function parseIsoDateParam(name: string, value: string | undefined): Date | unde
 async function loadConversationScoped(
   conversationId: string,
   instanceId: InstanceSlug,
-  claimedOrgId?: string,
+  scope: TenantScope,
 ) {
-  // Resolve the claim before it reaches the store. The store's org filter now
-  // fails CLOSED on a missing orgId, so passing `user?.orgId` straight through
-  // would 404 every request from a principal whose JWT predates the claim.
-  // `resolvePrincipalOrgId` is the shared rule: an explicit claim wins, a
-  // single-org deployment is unambiguous, and only a genuinely ambiguous
-  // multi-org case fails closed.
-  const orgId = (await resolvePrincipalOrgId(claimedOrgId)) ?? undefined;
-  // The org filter scopes the lookup to the caller's org; the instanceId check
-  // narrows to the requested agent. A foreign-org id misses on both counts.
-  const conversation = await conversationStore.getConversation(conversationId, orgId);
+  // The tenant filter scopes the lookup to the caller's organization; the
+  // instanceId check narrows to the requested agent. A foreign-org id misses on
+  // both counts.
+  const conversation = await conversationStore.getConversation(conversationId, scope);
   if (!conversation || conversation.instanceId !== instanceId) {
     throw new NotFoundException(`Conversation not found: ${conversationId}`);
   }
@@ -87,14 +83,14 @@ export class ConversationsController {
     // Resolved, not the raw claim: the store's org filter fails closed on a
     // missing orgId, so a principal whose JWT predates the claim would otherwise
     // see an empty list on a perfectly ordinary single-org deployment.
-    const orgId = (await resolvePrincipalOrgId(user?.orgId)) ?? undefined;
+    const scope = await callerTenantScope(user);
 
     if (search) {
       const result = await conversationStore.searchConversations(search, {
         instanceId: instanceSlug,
         limit,
         offset,
-        orgId,
+        scope,
       });
       return { ...result, limit, offset };
     }
@@ -111,7 +107,7 @@ export class ConversationsController {
       updatedUntil,
       limit,
       offset,
-      orgId,
+      scope,
     });
     return { ...result, limit, offset };
   }
@@ -125,7 +121,7 @@ export class ConversationsController {
   ) {
     const uid = requireInstanceId(instanceId);
     const id = decodeURIComponent(conversationId);
-    const conversation = await loadConversationScoped(id, uid, user?.orgId);
+    const conversation = await loadConversationScoped(id, uid, await callerTenantScope(user));
     return { conversation };
   }
 
@@ -141,7 +137,7 @@ export class ConversationsController {
   ) {
     const uid = requireInstanceId(instanceId);
     const id = decodeURIComponent(conversationId);
-    await loadConversationScoped(id, uid, user?.orgId);
+    await loadConversationScoped(id, uid, await callerTenantScope(user));
 
     const { limit, offset } = parsePagination(limitStr, offsetStr);
     const order: "asc" | "desc" = orderStr === "desc" ? "desc" : "asc";
@@ -158,6 +154,7 @@ export class ConversationsController {
         completionTokens: stats?.completionTokens ?? null,
         cachedInputTokens: stats?.cachedInputTokens ?? null,
         cacheCreationInputTokens: stats?.cacheCreationInputTokens ?? null,
+        cacheCreation5mInputTokens: stats?.cacheCreation5mInputTokens ?? null,
         model: stats?.model ?? null,
         provider: stats?.provider ?? null,
         cost: stats?.cost ?? null,
@@ -183,7 +180,7 @@ export class ConversationsController {
     const uid = requireInstanceId(instanceId);
     if (!UUID_RE.test(messageId)) throw new BadRequestException("messageId must be a UUID");
     const id = decodeURIComponent(conversationId);
-    await loadConversationScoped(id, uid, user?.orgId);
+    await loadConversationScoped(id, uid, await callerTenantScope(user));
 
     const debug = await conversationStore.getMessageDebug(id, messageId);
     if (!debug) throw new NotFoundException(`Message not found: ${messageId}`);
@@ -201,7 +198,7 @@ export class ConversationsController {
   ) {
     const uid = requireInstanceId(instanceId);
     const id = decodeURIComponent(conversationId);
-    await loadConversationScoped(id, uid, user?.orgId);
+    await loadConversationScoped(id, uid, await callerTenantScope(user));
 
     const executions = await listHookExecutions(id);
     return { executions };
@@ -218,7 +215,7 @@ export class ConversationsController {
   ) {
     const uid = requireInstanceId(instanceId);
     const id = decodeURIComponent(conversationId);
-    await loadConversationScoped(id, uid, user?.orgId);
+    await loadConversationScoped(id, uid, await callerTenantScope(user));
 
     const state = await loadConversationState(id);
     return { state };
@@ -238,7 +235,8 @@ export class ConversationsController {
   ) {
     const uid = requireInstanceId(instanceId);
     const id = decodeURIComponent(conversationId);
-    await loadConversationScoped(id, uid, user?.orgId);
+    const scope = await callerTenantScope(user);
+    await loadConversationScoped(id, uid, scope);
 
     const rawNewId = body.conversationId?.trim();
     const rawTitle = body.title?.trim();
@@ -257,16 +255,13 @@ export class ConversationsController {
       if (targetId.split(":")[0] !== uid) {
         throw new BadRequestException(`conversationId must start with "${uid}:"`);
       }
-      const existing = await conversationStore.getConversation(
-        targetId,
-        (await resolvePrincipalOrgId(user?.orgId)) ?? undefined,
-      );
+      const existing = await conversationStore.getConversation(targetId, scope);
       if (existing) {
         throw new ConflictException(`Conversation id already in use: ${targetId}`);
       }
     }
 
-    await conversationStore.renameConversation(id, targetId, rawTitle);
+    await conversationStore.renameConversation(id, targetId, scope, rawTitle);
     return { renamed: true, conversationId: targetId };
   }
 
@@ -279,12 +274,17 @@ export class ConversationsController {
   ) {
     const uid = requireInstanceId(instanceId);
     const id = decodeURIComponent(conversationId);
-    await loadConversationScoped(id, uid, user?.orgId);
+    const scope = await callerTenantScope(user);
+    await loadConversationScoped(id, uid, scope);
 
-    const deleted = await conversationStore.deleteConversation(id);
+    // Read the stored attachment keys while the messages still name them; the
+    // objects go after the rows, without holding up the response.
+    const cleanup = await prepareAttachmentCleanup(uid, { conversationIds: [id] });
+    const deleted = await conversationStore.deleteConversation(id, scope);
     if (!deleted) {
       throw new NotFoundException(`Conversation not found: ${id}`);
     }
+    void cleanup();
     return { deleted: true };
   }
 }

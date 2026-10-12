@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import { randomUUID } from "crypto";
 import type { ModelMessage } from "ai";
 import type { MessageHandler, StreamMessageHandler, StreamOutgoingMessage } from "../../channels/types.js";
+import { MissingProviderKeyException } from "./missing-provider-key.exception.js";
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
   ChatCompletionMessage,
 } from "./openai.types.js";
-import { DEFAULT_INSTANCE_ID } from "../../config.js";
 import {
   findInstanceBySlug,
   listActiveInstances,
@@ -17,6 +17,12 @@ import {
   type Instance,
 } from "../../instances/store.js";
 import { asInstanceSlug, type InstanceSlug } from "../../instances/identifiers.js";
+import { orgScope } from "../../authz/scope-filter.js";
+import { NO_TRANSACTION } from "../../database/client.js";
+import { resolveInstanceConfig } from "../../instances/config-resolver.js";
+import { extractMappedFields } from "../../conversations/field-mapping.js";
+import { flushConversationState } from "../../conversations/state.store.js";
+import { isWebChannelEnabled } from "../../instances/channels.store.js";
 
 /**
  * The two principal shapes that can reach GET /v1/models (see AuthGuard): a
@@ -52,17 +58,19 @@ export class OpenAIService {
   async listInstances(principal?: ModelsPrincipal): Promise<Instance[]> {
     if (principal?.kind === "instance") {
       const own = await findInstanceBySlug(asInstanceSlug(principal.instanceSlug));
-      return own && own.status === "active" ? [own] : [];
+      // The key is the Web channel's credential: with Web off it lists nothing.
+      return own && own.status === "active" && (await isWebChannelEnabled(own.id)) ? [own] : [];
     }
-    const orgId = await resolvePrincipalOrgId(principal?.orgId);
-    return orgId ? listActiveInstances(orgId) : [];
+    const organizationId = await resolvePrincipalOrgId(principal?.orgId, NO_TRANSACTION);
+    return organizationId ? listActiveInstances(orgScope(organizationId)) : [];
   }
 
   async chatCompletion(
     request: ChatCompletionRequest,
   ): Promise<ChatCompletionResponse> {
-    const { text, conversationHistory, instanceId, channelId } =
+    const { text, conversationHistory, instanceId, channelId, context } =
       this.prepareRequest(request);
+    await this.preloadContext(instanceId, channelId, context);
 
     // Call the pipeline via messageHandler
     const result = await this.messageHandler({
@@ -72,6 +80,8 @@ export class OpenAIService {
       text,
       metadata: { conversationHistory },
     });
+
+    if (result.failure === "missing_provider_key") throw new MissingProviderKeyException(result.text);
 
     const completionId = `chatcmpl-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
 
@@ -102,19 +112,56 @@ export class OpenAIService {
     };
   }
 
+  /**
+   * `signal` aborts the pipeline itself (the model, further tool steps, and the
+   * persistence of the turn), not just the relay of its events: a caller that
+   * hangs up on an answer should not keep paying for it.
+   */
   async chatCompletionStream(
     request: ChatCompletionRequest,
+    signal?: AbortSignal,
   ): Promise<StreamOutgoingMessage> {
-    const { text, conversationHistory, instanceId, channelId } =
+    const { text, conversationHistory, instanceId, channelId, context } =
       this.prepareRequest(request);
+    await this.preloadContext(instanceId, channelId, context);
 
-    return this.streamMessageHandler({
+    const stream = await this.streamMessageHandler({
       channelType: "web",
       channelId,
       instanceId,
       text,
       metadata: { conversationHistory },
-    });
+    }, signal);
+    if (stream.failure === "missing_provider_key") {
+      const { text: warning } = await stream.completed;
+      throw new MissingProviderKeyException(warning);
+    }
+    return stream;
+  }
+
+  /**
+   * Project the request's call `context` onto the conversation state before the
+   * turn, through the agent's `webContextFieldMapping`, so tools and hooks read
+   * it from `ctx.state`. The pipeline loads the state after this, so even the
+   * first turn's `conversation_start` hooks see it.
+   */
+  private async preloadContext(
+    instanceId: InstanceSlug,
+    channelId: string,
+    context: Record<string, unknown> | undefined,
+  ): Promise<void> {
+    if (!context) return;
+    const { webContextFieldMapping } = await resolveInstanceConfig(instanceId);
+    if (Object.keys(webContextFieldMapping).length === 0) {
+      throw new BadRequestException("This agent maps no web context fields: configure them before sending context");
+    }
+    let mapped: Record<string, unknown>;
+    try {
+      mapped = extractMappedFields(context, webContextFieldMapping);
+    } catch (err) {
+      throw new BadRequestException(err instanceof Error ? err.message : "Invalid context");
+    }
+    await flushConversationState(buildWebConversationId(instanceId, channelId), instanceId, mapped, []);
   }
 
   private prepareRequest(request: ChatCompletionRequest): {
@@ -122,8 +169,11 @@ export class OpenAIService {
     conversationHistory: ModelMessage[];
     instanceId: InstanceSlug;
     channelId: string;
+    context?: Record<string, unknown>;
   } {
     const { messages, chat_id } = request;
+    const context = parseContext(request.context);
+    if (context && !chat_id) throw new BadRequestException("context requires chat_id");
 
     // Extract the last user message as the main text
     const lastUserMsg = [...messages]
@@ -153,13 +203,15 @@ export class OpenAIService {
       Dropping them at the source is what makes the fix real: filtering only
       `toModelMessages` would have left this second path intact.
     */
-    // Use the model field as instance slug (falls back to default).
-    // `request.model` is the client-chosen instance slug; its existence is validated downstream by findInstanceBySlug.
-    const instanceId = request.model ? asInstanceSlug(request.model) : DEFAULT_INSTANCE_ID;
+    // The model field IS the instance slug. Shape is already guaranteed:
+    // `openai.controller.ts` validates it against MODEL_SLUG_RE and answers 400
+    // before this runs, so there is nothing to fall back to. Existence is
+    // checked downstream by findInstanceBySlug.
+    const instanceId = asInstanceSlug(request.model);
 
     const channelId = this.deriveChannelId(messages, chat_id);
 
-    return { text, conversationHistory, instanceId, channelId };
+    return { text, conversationHistory, instanceId, channelId, ...(context ? { context } : {}) };
   }
 
   /**
@@ -204,4 +256,22 @@ export class OpenAIService {
         content: m.content,
       }));
   }
+}
+
+/**
+ * The conversation id the pipeline derives for a web turn
+ * (`${instanceId}:${channelType}:${channelId}`, see `preparePipeline`): state
+ * written before the turn must land on the row the turn will load.
+ */
+export function buildWebConversationId(instanceId: InstanceSlug, channelId: string): string {
+  return `${instanceId}:web:${channelId}`;
+}
+
+/** A request's `context`: absent, or a plain JSON object (anything else is a 400). */
+function parseContext(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new BadRequestException("context must be an object");
+  }
+  return value as Record<string, unknown>;
 }

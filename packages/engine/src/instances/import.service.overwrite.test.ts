@@ -177,6 +177,7 @@ function makeBundle(overrides: Record<string, unknown> = {}) {
         keepHistory: true,
         deleteAfterRun: false,
         maxRetries: 0,
+        maxRunMs: null,
         createdBy: null,
       }],
       mcpServers: [],
@@ -270,6 +271,20 @@ describe("importOverwriteInstance — destructive delete-then-reimport orchestra
     expect(mockImportScheduledTasks).not.toHaveBeenCalled();
   });
 
+  it("should_still_invalidate_caches_and_succeed_with_a_warning_when_the_post_commit_tool_recompute_fails", async () => {
+    // The import has committed by then: failing the request would report an error
+    // for written data, and skipping invalidation would leave the old config cached.
+    mockRecomputeInstanceTools.mockRejectedValueOnce(new Error("recompute failed"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await importOverwriteInstance(TARGET_SLUG, makeBundle());
+
+    expect(mockInvalidatePromptsCache).toHaveBeenCalledWith(INSTANCE_ID);
+    expect(mockInvalidateInstanceConfigCache).toHaveBeenCalledWith(TARGET_SLUG);
+    expect(mockInvalidateHooksCache).toHaveBeenCalledWith(TARGET_SLUG);
+    expect(result.warnings.map((w) => w.type)).toContain("tool_recompute_failed");
+  });
+
   it("should_invalidate_caches_in_the_fixed_order_after_the_transaction_commits", async () => {
     await importOverwriteInstance(TARGET_SLUG, makeBundle());
 
@@ -288,14 +303,18 @@ describe("importOverwriteInstance — destructive delete-then-reimport orchestra
     expect(mockInvalidateHooksCache).toHaveBeenCalledWith(TARGET_SLUG);
   });
 
-  it("should_never_include_the_embedder_columns_in_the_metadata_update", async () => {
-    await importOverwriteInstance(TARGET_SLUG, makeBundle());
+  it("should_preserve_explicit_capabilities_without_updating_embedder_columns", async () => {
+    await importOverwriteInstance(
+      TARGET_SLUG,
+      makeBundle({ memoryEnabled: true, sttProvider: "deepgram" }),
+    );
 
     const updateChain = mockDb.update.mock.results[0].value as unknown as Record<
       string,
       ReturnType<typeof vi.fn>
     >;
     const setArg = updateChain.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg).toMatchObject({ memoryEnabled: true, sttProvider: "deepgram" });
     expect(setArg).not.toHaveProperty("embeddingProvider");
     expect(setArg).not.toHaveProperty("embeddingDim");
   });

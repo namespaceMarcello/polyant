@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { pgTable, uuid, text, timestamp, jsonb, index, primaryKey } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, index, primaryKey, integer } from "drizzle-orm/pg-core";
 
 export const conversations = pgTable(
   "conversations",
@@ -16,11 +16,19 @@ export const conversations = pgTable(
     contextPrompt: text("context_prompt"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+    // Kept by ConversationStore.appendMessages in the statement that bumps
+    // updated_at, so lists and analytics read them instead of counting
+    // conversation_messages per conversation (migration conversation_message_counters).
+    messageCount: integer("message_count").notNull().default(0),
+    userMessageCount: integer("user_message_count").notNull().default(0),
+    lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
   },
   (table) => [
     index("idx_conversations_instance_created").on(table.instanceId, table.createdAt),
     // Conversation list filters by instance_id and orders by updated_at DESC.
     index("idx_conversations_instance_updated").on(table.instanceId, table.updatedAt),
+    // Message-level analytics: the tenant's conversations active in a window.
+    index("idx_conversations_instance_last_message").on(table.instanceId, table.lastMessageAt),
   ],
 );
 
@@ -31,6 +39,12 @@ export interface AttachmentMeta {
   fileName?: string;
   /** Platform S3 key where the file is stored. */
   s3Key: string;
+  /**
+   * The bucket the file was written to. The agent's bucket can change later,
+   * and a delete must reach the file where it is. Absent on files stored
+   * before it was recorded. Kept out of API responses.
+   */
+  bucket?: string;
   sizeBytes?: number;
 }
 
@@ -63,6 +77,14 @@ export interface StepDetail {
   finishReason: string;
   promptTokens?: number;
   completionTokens?: number;
+  /**
+   * This step's cache reads, cache writes and their 5-minute share: subsets of
+   * `promptTokens`, recorded when the provider reports them. A step is one model
+   * call, which is the unit a model priced by prompt length is billed on.
+   */
+  cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheCreation5mInputTokens?: number;
   durationMs: number;
   legacy?: boolean;
 }
@@ -117,6 +139,8 @@ export const conversationMessages = pgTable(
   (table) => [
     index("idx_conversation_messages_conversation_id").on(table.conversationId),
     index("idx_conversation_messages_created_at").on(table.createdAt),
+    // One conversation's messages in time order (history reads, windowed scans).
+    index("idx_conversation_messages_conversation_created").on(table.conversationId, table.createdAt),
   ],
 );
 

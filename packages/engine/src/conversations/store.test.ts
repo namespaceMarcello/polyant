@@ -2,6 +2,10 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { asInstanceSlug } from "../instances/identifiers.js";
+import { orgScope, workspaceSetScope } from "../authz/scope-filter.js";
+
+/** The tenant every test in this file acts in, unless it says otherwise. */
+const SCOPE = orgScope("org-test");
 
 // ---------------------------------------------------------------------------
 // Chain mock: each chained method returns the chain itself; awaiting resolves
@@ -397,12 +401,16 @@ describe("ConversationStore", () => {
       const insChain = createChainMock(undefined);
       mockDb.insert.mockReturnValue(insChain as any);
 
-      await conversationStore.ensureConversation(id);
+      await conversationStore.ensureConversation(id, asInstanceSlug("instance-1"));
 
       expect(insChain.values).toHaveBeenCalledWith(
         expect.objectContaining({
           conversationId: id,
-          instanceId: null,
+          // Not null: a conversation with no agent belongs to no workspace and
+          // no organization, so every tenancy predicate (`instance_id IN (…)`)
+          // is false on it — the row would be invisible to its own tenant and
+          // unreachable by any scoped delete.
+          instanceId: "instance-1",
           channel: "web",
           userIdentifier: null,
         }),
@@ -475,7 +483,12 @@ describe("ConversationStore", () => {
       await conversationStore.appendMessages(id, [{ role: "user", content: "Hello" }]);
 
       expect(mockDb.transaction).toHaveBeenCalledTimes(1);
-      expect(updChain.set).toHaveBeenCalledWith({ updatedAt: expect.any(Date) });
+      // The message counters ride on the same update (exact values: integration test).
+      expect(updChain.set).toHaveBeenCalledWith(expect.objectContaining({
+        updatedAt: expect.any(Date),
+        messageCount: expect.anything(),
+        userMessageCount: expect.anything(),
+      }));
       expect(updChain.where).toHaveBeenCalledWith({ type: "eq", args: ["conversation_id", id] });
     });
 
@@ -728,7 +741,7 @@ describe("ConversationStore", () => {
         .mockResolvedValueOnce(rows)
         .mockResolvedValueOnce(countRows);
 
-      const result = await conversationStore.listConversations({});
+      const result = await conversationStore.listConversations({ scope: SCOPE });
 
       expect(result.total).toBe(42);
       expect(result.conversations).toHaveLength(1);
@@ -755,7 +768,7 @@ describe("ConversationStore", () => {
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ total: 0 }]);
 
-      const result = await conversationStore.listConversations();
+      const result = await conversationStore.listConversations({ scope: SCOPE });
 
       expect(result.conversations).toEqual([]);
       expect(result.total).toBe(0);
@@ -787,7 +800,7 @@ describe("ConversationStore", () => {
         .mockResolvedValueOnce(rows)
         .mockResolvedValueOnce([{ total: 1 }]);
 
-      const result = await conversationStore.listConversations({});
+      const result = await conversationStore.listConversations({ scope: SCOPE });
 
       const conv = result.conversations[0];
       expect(conv.title).toBeNull();
@@ -810,7 +823,7 @@ describe("ConversationStore", () => {
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([]);
 
-      const result = await conversationStore.listConversations({});
+      const result = await conversationStore.listConversations({ scope: SCOPE });
 
       expect(result.total).toBe(0);
     });
@@ -824,7 +837,7 @@ describe("ConversationStore", () => {
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ total: 0 }]);
 
-      await conversationStore.listConversations({});
+      await conversationStore.listConversations({ scope: workspaceSetScope(new Set()) });
 
       const sawUnsatisfiablePredicate = (sqlMock as unknown as ReturnType<typeof vi.fn>).mock.calls.some(
         (args: unknown[]) => Array.isArray(args[0]) && (args[0] as string[]).join("") === "false",
@@ -832,12 +845,12 @@ describe("ConversationStore", () => {
       expect(sawUnsatisfiablePredicate).toBe(true);
     });
 
-    it("scopes to the caller's organization when orgId is present", async () => {
+    it("scopes to the caller's organization", async () => {
       mockDb.execute
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ total: 0 }]);
 
-      await conversationStore.listConversations({ orgId: "org-a" });
+      await conversationStore.listConversations({ scope: orgScope("org-a") });
 
       const sawOrgScopedSubquery = (sqlMock as unknown as ReturnType<typeof vi.fn>).mock.calls.some(
         (args: unknown[]) => Array.isArray(args[0]) && (args[0] as string[]).join("").includes("join workspaces"),
@@ -891,7 +904,7 @@ describe("ConversationStore", () => {
         .mockResolvedValueOnce(rows)
         .mockResolvedValueOnce([{ total: 1 }]);
 
-      const result = await conversationStore.searchConversations("hello");
+      const result = await conversationStore.searchConversations("hello", { scope: SCOPE });
 
       expect(result.total).toBe(1);
       expect(result.conversations[0]).toEqual(
@@ -930,7 +943,7 @@ describe("ConversationStore", () => {
         .mockResolvedValueOnce(rows)
         .mockResolvedValueOnce([{ total: 1 }]);
 
-      const result = await conversationStore.searchConversations("abc-123");
+      const result = await conversationStore.searchConversations("abc-123", { scope: SCOPE });
 
       expect(result.conversations[0]).toEqual(
         expect.objectContaining({
@@ -946,7 +959,7 @@ describe("ConversationStore", () => {
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ total: 0 }]);
 
-      await conversationStore.searchConversations("50%_x");
+      await conversationStore.searchConversations("50%_x", { scope: SCOPE });
 
       const sqlFn = sqlMock as unknown as ReturnType<typeof vi.fn>;
       const interpolatedValues = sqlFn.mock.calls.flat();
@@ -978,7 +991,7 @@ describe("ConversationStore", () => {
       };
       mockDb.execute.mockResolvedValueOnce([row]);
 
-      const result = await conversationStore.getConversation("conv-abc");
+      const result = await conversationStore.getConversation("conv-abc", SCOPE);
 
       expect(result).not.toBeNull();
       expect(result!.conversationId).toBe("conv-abc");
@@ -998,7 +1011,7 @@ describe("ConversationStore", () => {
     it("returns null when not found (empty result)", async () => {
       mockDb.execute.mockResolvedValueOnce([]);
 
-      const result = await conversationStore.getConversation("nonexistent");
+      const result = await conversationStore.getConversation("nonexistent", SCOPE);
       expect(result).toBeNull();
     });
 
@@ -1022,7 +1035,7 @@ describe("ConversationStore", () => {
       };
       mockDb.execute.mockResolvedValueOnce([row]);
 
-      const result = await conversationStore.getConversation("conv-xyz");
+      const result = await conversationStore.getConversation("conv-xyz", SCOPE);
 
       expect(result).not.toBeNull();
       expect(result!.createdAt).toBeNull();
@@ -1119,6 +1132,32 @@ describe("ConversationStore", () => {
       expect(result.messages[0].metadata).toEqual(audioMeta);
     });
 
+    // The bucket an attachment was written to is storage configuration, kept
+    // for the deletes; a reader of the transcript sees the reference only.
+    it("leaves the storage bucket out of the attachments it returns", async () => {
+      const msgRows = [
+        {
+          id: "msg-1",
+          role: "user",
+          content: "foto",
+          steps: null,
+          attachments: [{ type: "image", s3Key: "attachments/a/c/x.jpg", bucket: "acme-private", sizeBytes: 3 }],
+          metadata: null,
+          createdAt: new Date("2025-06-01"),
+        },
+      ];
+      const msgChain = createChainMock(msgRows);
+      const countChain = createChainMock([{ total: 1 }]);
+      let selectCallCount = 0;
+      mockDb.select.mockImplementation(() => {
+        selectCallCount++;
+        return selectCallCount === 1 ? (msgChain as any) : (countChain as any);
+      });
+
+      const result = await conversationStore.getMessages("conv-1");
+      expect(result.messages[0].attachments).toEqual([{ type: "image", s3Key: "attachments/a/c/x.jpg", sizeBytes: 3 }]);
+    });
+
     it("uses default limit 50 and offset 0", async () => {
       const msgChain = createChainMock([]);
       const countChain = createChainMock([{ total: 0 }]);
@@ -1188,6 +1227,20 @@ describe("ConversationStore", () => {
     // Order: messages, ai_logs, pipeline_traces, tool_audit_logs, hook_executions, memories, conversation_state, principal_secrets, conversations
     const EXPECTED_DELETE_CALLS = 9;
 
+    it("returns false and touches nothing when the conversation belongs to another tenant", async () => {
+      const id = uid("agent:web:foreign");
+      // The ownership probe finds no row for this tenant.
+      mockDb.execute.mockResolvedValueOnce([] as never);
+
+      const result = await conversationStore.deleteConversation(id, SCOPE);
+
+      expect(result).toBe(false);
+      // Nothing was deleted: the refusal happens before the first statement,
+      // inside the transaction, so a caller cannot delete another tenant's
+      // conversation by id even if it skipped the controller's own check.
+      expect(mockDb.delete).not.toHaveBeenCalled();
+    });
+
     it("cascades delete across all conversation-scoped tables and returns true when found", async () => {
       const id = uid();
       const sideChain = createChainMock(undefined);
@@ -1202,7 +1255,9 @@ describe("ConversationStore", () => {
           : (sideChain as any);
       });
 
-      const result = await conversationStore.deleteConversation(id);
+      // The store checks the row belongs to this tenant before touching anything.
+      mockDb.execute.mockResolvedValueOnce([{ ok: 1 }] as never);
+      const result = await conversationStore.deleteConversation(id, SCOPE);
 
       expect(result).toBe(true);
       expect(mockDb.delete).toHaveBeenCalledTimes(EXPECTED_DELETE_CALLS);
@@ -1221,7 +1276,9 @@ describe("ConversationStore", () => {
           : (sideChain as any);
       });
 
-      const result = await conversationStore.deleteConversation(id);
+      // The store checks the row belongs to this tenant before touching anything.
+      mockDb.execute.mockResolvedValueOnce([{ ok: 1 }] as never);
+      const result = await conversationStore.deleteConversation(id, SCOPE);
       expect(result).toBe(false);
     });
 
@@ -1246,7 +1303,8 @@ describe("ConversationStore", () => {
           ? (delConvChain as any)
           : (sideChain as any);
       });
-      await conversationStore.deleteConversation(id);
+      mockDb.execute.mockResolvedValueOnce([{ ok: 1 }] as never);
+      await conversationStore.deleteConversation(id, SCOPE);
 
       vi.clearAllMocks();
 
@@ -1275,6 +1333,16 @@ describe("ConversationStore", () => {
     // hook_executions, memories, conversation_state, conversations
     const EXPECTED_UPDATE_CALLS = 8;
 
+    it("returns false and touches nothing when the conversation belongs to another tenant", async () => {
+      const id = uid("agent:web:foreign");
+      mockDb.execute.mockResolvedValueOnce([] as never);
+
+      const result = await conversationStore.renameConversation(id, `${id}#archived`, SCOPE, "x");
+
+      expect(result).toBe(false);
+      expect(mockDb.update).not.toHaveBeenCalled();
+    });
+
     it("propagates the new id across all conversation-scoped tables and returns true", async () => {
       const id = uid("agent:whatsapp:+3900");
       const newId = uid("agent:whatsapp:+3911");
@@ -1286,7 +1354,9 @@ describe("ConversationStore", () => {
         return n === EXPECTED_UPDATE_CALLS ? (convChain as any) : (sideChain as any);
       });
 
-      const result = await conversationStore.renameConversation(id, newId, "New title");
+      // The store checks the row belongs to this tenant before touching anything.
+      mockDb.execute.mockResolvedValueOnce([{ ok: 1 }] as never);
+      const result = await conversationStore.renameConversation(id, newId, SCOPE, "New title");
 
       expect(result).toBe(true);
       expect(mockDb.update).toHaveBeenCalledTimes(EXPECTED_UPDATE_CALLS);
@@ -1298,7 +1368,9 @@ describe("ConversationStore", () => {
       const convChain = createChainMock([{ id: "uuid-1" }]);
       mockDb.update.mockReturnValue(convChain as any);
 
-      const result = await conversationStore.renameConversation(id, id, "Renamed only");
+      // The store checks the row belongs to this tenant before touching anything.
+      mockDb.execute.mockResolvedValueOnce([{ ok: 1 }] as never);
+      const result = await conversationStore.renameConversation(id, id, SCOPE, "Renamed only");
 
       expect(result).toBe(true);
       expect(mockDb.update).toHaveBeenCalledTimes(1);
@@ -1309,7 +1381,9 @@ describe("ConversationStore", () => {
       const convChain = createChainMock([]); // returning length === 0
       mockDb.update.mockReturnValue(convChain as any);
 
-      const result = await conversationStore.renameConversation(id, id, "x");
+      // The store checks the row belongs to this tenant before touching anything.
+      mockDb.execute.mockResolvedValueOnce([{ ok: 1 }] as never);
+      const result = await conversationStore.renameConversation(id, id, SCOPE, "x");
       expect(result).toBe(false);
     });
 
@@ -1331,7 +1405,8 @@ describe("ConversationStore", () => {
         n++;
         return n === EXPECTED_UPDATE_CALLS ? (convChain as any) : (sideChain as any);
       });
-      await conversationStore.renameConversation(oldId, newId, "New");
+      mockDb.execute.mockResolvedValueOnce([{ ok: 1 }] as never);
+      await conversationStore.renameConversation(oldId, newId, SCOPE, "New");
 
       vi.clearAllMocks();
 

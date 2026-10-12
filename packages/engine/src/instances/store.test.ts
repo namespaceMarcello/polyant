@@ -42,17 +42,26 @@ const { mockDb } = vi.hoisted(() => {
   return { mockDb };
 });
 
-vi.mock("../database/client.js", () => ({ db: mockDb }));
+vi.mock("../database/client.js", () => ({ db: mockDb,
+  // `NO_TRANSACTION` IS `db`, named for what a call site means by passing it.
+  get NO_TRANSACTION() {
+    return mockDb;
+  },
+}));
 
 // The three seeds are stubbed so the transaction test can assert they received
 // the SAME executor the row was written with — which is the whole property.
-const { mockSeedPrompts, mockSeedTools, mockSeedSkills } = vi.hoisted(() => ({
+const { mockSeedPrompts, mockSeedTools, mockSeedSkills, mockEnableToolsByName } = vi.hoisted(() => ({
+  mockEnableToolsByName: vi.fn(),
   mockSeedPrompts: vi.fn(),
   mockSeedTools: vi.fn(),
   mockSeedSkills: vi.fn(),
 }));
 vi.mock("./prompts.store.js", () => ({ seedInstancePrompts: mockSeedPrompts }));
-vi.mock("./instance-tools.store.js", () => ({ seedInstanceTools: mockSeedTools }));
+vi.mock("./instance-tools.store.js", () => ({
+  seedInstanceTools: mockSeedTools,
+  enableToolsByName: mockEnableToolsByName,
+}));
 vi.mock("./instance-skills.store.js", () => ({ seedInstanceSkills: mockSeedSkills }));
 
 vi.mock("./schema.js", () => ({
@@ -114,6 +123,11 @@ const { mockBuildOrgScopedAgentFilter } = vi.hoisted(() => ({
 
 vi.mock("../authz/scope-filter.js", () => ({
   buildOrgScopedAgentFilter: mockBuildOrgScopedAgentFilter,
+  // The condition form is what the agent-list paths use: it always returns a
+  // predicate, so it cannot be dropped by `and(...)`'s filter(Boolean).
+  tenantScopedAgentCondition: (scope: { organizationId: string }, column: string) =>
+    mockBuildOrgScopedAgentFilter(scope.organizationId, column),
+  orgScope: (organizationId: string) => ({ organizationId }),
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -139,6 +153,7 @@ import {
   updateInstance,
   deleteInstance,
   listAllInstances,
+  listAgentWorkspaceSlugs,
   resolveWorkspaceIdForPrincipal,
   createInstanceWithDefaults,
 } from "./store.js";
@@ -152,6 +167,8 @@ import { knowledgeDocuments } from "../knowledge/schema.js";
 import { scheduledTasks } from "../scheduled-tasks/schema.js";
 import { principalSecrets } from "../conversations/principal-secrets.schema.js";
 import { DEFAULT_EMBEDDING_DIM } from "../embeddings-gateway/config.js";
+import type { TenantScope } from "../authz/scope-filter.js";
+import { NO_TRANSACTION } from "../database/client.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -183,6 +200,15 @@ function mockDefaultWorkspaceSelect() {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+/**
+ * A scope for these tests. This file mocks `scope-filter`, so the real
+ * constructors are not available here and the brand has to be asserted once —
+ * in one place, named, rather than with a cast at every call site.
+ */
+function testScope(shape: Record<string, unknown>): TenantScope {
+  return shape as unknown as TenantScope;
+}
+
 describe("instances/store", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -196,7 +222,7 @@ describe("instances/store", () => {
       const chain = createChainMock([fakeInstance]);
       mockDb.select.mockReturnValue(chain as any);
 
-      const result = await listActiveInstances();
+      const result = await listActiveInstances(testScope({ organizationId: "org-test" }));
 
       expect(result).toEqual([fakeInstance]);
       expect(mockDb.select).toHaveBeenCalled();
@@ -208,9 +234,25 @@ describe("instances/store", () => {
       const chain = createChainMock([]);
       mockDb.select.mockReturnValue(chain as any);
 
-      const result = await listActiveInstances();
+      const result = await listActiveInstances(testScope({ organizationId: "org-test" }));
 
       expect(result).toEqual([]);
+    });
+  });
+
+  describe("listAgentWorkspaceSlugs", () => {
+    it("maps agent slug to workspace slug and applies the tenant scope", async () => {
+      const chain = createChainMock([{ slug: "a", workspaceSlug: "ws-1" }]);
+      mockDb.select.mockReturnValue(chain as any);
+      mockBuildOrgScopedAgentFilter.mockClear();
+
+      const result = await listAgentWorkspaceSlugs(testScope({ organizationId: "org-test" }));
+
+      expect(result).toEqual(new Map([["a", "ws-1"]]));
+      // The scope predicate (agents of another org are excluded) is the one
+      // every agent-list read uses, bound to the caller's organization.
+      expect(mockBuildOrgScopedAgentFilter).toHaveBeenCalledWith("org-test", "instances.slug");
+      expect(chain.where).toHaveBeenCalledWith({ type: "orgFilter", orgId: "org-test", column: "instances.slug" });
     });
   });
 
@@ -299,7 +341,7 @@ describe("instances/store", () => {
         description: "A default assistant",
         provider: "openai",
         model: "gpt-4o",
-      });
+      }, NO_TRANSACTION);
 
       expect(result).toEqual(fakeInstance);
       expect(mockDb.insert).toHaveBeenCalled();
@@ -310,6 +352,7 @@ describe("instances/store", () => {
         provider: "openai",
         model: "gpt-4o",
         embeddingDim: DEFAULT_EMBEDDING_DIM,
+        authEnabled: true,
         embeddingProvider: "openai",
         workspaceId: "ws-default",
       });
@@ -321,7 +364,7 @@ describe("instances/store", () => {
       const chain = createChainMock([{ ...fakeInstance, description: null, provider: null, model: null }]);
       mockDb.insert.mockReturnValue(chain as any);
 
-      await createInstance({ slug: asInstanceSlug("minimal"), name: "Minimal" });
+      await createInstance({ slug: asInstanceSlug("minimal"), name: "Minimal" }, NO_TRANSACTION);
 
       expect(chain.values).toHaveBeenCalledWith({
         slug: "minimal",
@@ -330,9 +373,20 @@ describe("instances/store", () => {
         provider: null,
         model: null,
         embeddingDim: DEFAULT_EMBEDDING_DIM,
+        authEnabled: true,
         embeddingProvider: "openai",
         workspaceId: "ws-default",
       });
+    });
+
+    it("should_create_new_agents_with_authentication_required", async () => {
+      mockDefaultWorkspaceSelect();
+      const chain = createChainMock([fakeInstance]);
+      mockDb.insert.mockReturnValue(chain as any);
+
+      await createInstance({ slug: asInstanceSlug("secure"), name: "Secure" }, NO_TRANSACTION);
+
+      expect(chain.values).toHaveBeenCalledWith(expect.objectContaining({ authEnabled: true }));
     });
 
     it("should_insert_into_the_caller_org_workspace_when_an_orgId_is_given", async () => {
@@ -340,7 +394,7 @@ describe("instances/store", () => {
       const chain = createChainMock([{ ...fakeInstance, workspaceId: "ws-org-b" }]);
       mockDb.insert.mockReturnValue(chain as any);
 
-      await createInstance({ slug: asInstanceSlug("b-agent"), name: "B", orgId: "org-b" });
+      await createInstance({ slug: asInstanceSlug("b-agent"), name: "B", orgId: "org-b" }, NO_TRANSACTION);
 
       expect(chain.values).toHaveBeenCalledWith(
         expect.objectContaining({ workspaceId: "ws-org-b" }),
@@ -357,7 +411,7 @@ describe("instances/store", () => {
       const chain = createChainMock([{ id: "ws-org-b" }]);
       mockDb.select.mockReturnValue(chain as any);
 
-      const result = await resolveWorkspaceIdForPrincipal("org-b");
+      const result = await resolveWorkspaceIdForPrincipal("org-b", NO_TRANSACTION);
 
       expect(result).toBe("ws-org-b");
       // Constrained to org B's workspaces — not the deployment-wide is_default row.
@@ -372,7 +426,7 @@ describe("instances/store", () => {
     it("should_throw_when_the_caller_org_owns_no_workspace", async () => {
       mockDb.select.mockReturnValue(createChainMock([]) as any);
 
-      await expect(resolveWorkspaceIdForPrincipal("org-b")).rejects.toThrow(/no workspace/i);
+      await expect(resolveWorkspaceIdForPrincipal("org-b", NO_TRANSACTION)).rejects.toThrow(/no workspace/i);
     });
 
     it("should_throw_when_the_principal_has_no_org_and_several_orgs_exist", async () => {
@@ -381,7 +435,7 @@ describe("instances/store", () => {
       );
 
       // Fail closed — picking the seeded default here is the cross-tenant write.
-      await expect(resolveWorkspaceIdForPrincipal(undefined)).rejects.toThrow(
+      await expect(resolveWorkspaceIdForPrincipal(undefined, NO_TRANSACTION)).rejects.toThrow(
         /organization/i,
       );
     });
@@ -391,7 +445,7 @@ describe("instances/store", () => {
         .mockReturnValueOnce(createChainMock([{ id: "org-only" }]) as any)
         .mockReturnValueOnce(createChainMock([{ id: "ws-only" }]) as any);
 
-      await expect(resolveWorkspaceIdForPrincipal(undefined)).resolves.toBe("ws-only");
+      await expect(resolveWorkspaceIdForPrincipal(undefined, NO_TRANSACTION)).resolves.toBe("ws-only");
     });
 
     // The ADDRESSED workspace — the segment in the URL the caller is on, arriving
@@ -402,7 +456,7 @@ describe("instances/store", () => {
       const chain = createChainMock([{ id: "ws-sandbox" }]);
       mockDb.select.mockReturnValue(chain as any);
 
-      const result = await resolveWorkspaceIdForPrincipal("org-b", undefined, "sandbox");
+      const result = await resolveWorkspaceIdForPrincipal("org-b", NO_TRANSACTION, "sandbox");
 
       expect(result).toBe("ws-sandbox");
       // Constrained on BOTH the organization and the slug: matching the slug alone
@@ -421,7 +475,7 @@ describe("instances/store", () => {
       mockDb.select.mockReturnValue(createChainMock([]) as any);
 
       await expect(
-        resolveWorkspaceIdForPrincipal("org-b", undefined, "someone-elses"),
+        resolveWorkspaceIdForPrincipal("org-b", NO_TRANSACTION, "someone-elses"),
       ).rejects.toThrow(/does not belong to the caller/i);
     });
   });
@@ -451,6 +505,114 @@ describe("instances/store", () => {
       const result = await updateInstance(asInstanceSlug("nonexistent"), { name: "No Match" });
 
       expect(result).toBeUndefined();
+    });
+
+    /*
+      The patch handed to Drizzle, not just "set was called". The six per-agent
+      settings were added to the schema, the controller and the DTO and to
+      neither the type nor UPDATABLE_INSTANCE_KEYS, so every PATCH of them wrote
+      `updatedAt` and nothing else — a save the panel reported as successful and
+      the reload undid. Asserting the shape of `set` is what sees that.
+    */
+    it("writes the six per-agent settings, and null clears one", async () => {
+      const chain = createChainMock([fakeInstance]);
+      mockDb.update.mockReturnValue(chain as any);
+
+      await updateInstance(asInstanceSlug("default"), {
+        datetimeTimezone: "Europe/Rome",
+        datetimeLocale: "it-IT",
+        dedupSimilarityThreshold: 0.85,
+        messageSoftDebounceMs: 0,
+        messageTypingDelayMs: 1500,
+        messageMaxRestarts: null,
+      });
+
+      expect(chain.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          datetimeTimezone: "Europe/Rome",
+          datetimeLocale: "it-IT",
+          dedupSimilarityThreshold: 0.85,
+          messageSoftDebounceMs: 0,
+          messageTypingDelayMs: 1500,
+          messageMaxRestarts: null,
+        }),
+      );
+    });
+
+    describe("turning Knowledge on", () => {
+      const KNOWLEDGE_TOOLS = ["searchKnowledge", "getKnowledge"];
+
+      beforeEach(() => {
+        mockEnableToolsByName.mockReset();
+      });
+
+      /** select(...).from(...).where(...).for("update") resolves to `before`; update(...) returns the row. */
+      function arrange(before: { knowledgeEnabled: boolean } | undefined) {
+        mockDb.select.mockReturnValue(createChainMock(before ? [before] : []) as any);
+        mockDb.update.mockReturnValue(
+          createChainMock([{ ...fakeInstance, knowledgeEnabled: true }]) as any,
+        );
+      }
+
+      it("assigns the knowledge tools on the off -> on transition, in the same transaction", async () => {
+        arrange({ knowledgeEnabled: false });
+
+        await updateInstance(asInstanceSlug("default"), { knowledgeEnabled: true });
+
+        expect(mockEnableToolsByName).toHaveBeenCalledTimes(1);
+        expect(mockEnableToolsByName).toHaveBeenCalledWith("uuid-1", KNOWLEDGE_TOOLS, mockDb);
+      });
+
+      it("does not touch the tools when Knowledge was already on", async () => {
+        arrange({ knowledgeEnabled: true });
+
+        await updateInstance(asInstanceSlug("default"), { knowledgeEnabled: true });
+
+        expect(mockEnableToolsByName).not.toHaveBeenCalled();
+      });
+
+      it("does not touch the tools when the patch leaves Knowledge alone", async () => {
+        mockDb.update.mockReturnValue(createChainMock([fakeInstance]) as any);
+
+        await updateInstance(asInstanceSlug("default"), { name: "Other" });
+
+        expect(mockEnableToolsByName).not.toHaveBeenCalled();
+      });
+
+      it("does not touch the tools when Knowledge is turned off", async () => {
+        mockDb.update.mockReturnValue(createChainMock([fakeInstance]) as any);
+
+        await updateInstance(asInstanceSlug("default"), { knowledgeEnabled: false });
+
+        expect(mockEnableToolsByName).not.toHaveBeenCalled();
+      });
+
+      it("assigns nothing and returns undefined when the agent does not exist", async () => {
+        mockDb.select.mockReturnValue(createChainMock([]) as any);
+        mockDb.update.mockReturnValue(createChainMock([]) as any);
+
+        const result = await updateInstance(asInstanceSlug("nope"), { knowledgeEnabled: true });
+
+        expect(result).toBeUndefined();
+        expect(mockEnableToolsByName).not.toHaveBeenCalled();
+      });
+    });
+
+    it("drops a key that is not on the whitelist", async () => {
+      const chain = createChainMock([fakeInstance]);
+      mockDb.update.mockReturnValue(chain as any);
+
+      // A JSON body can carry anything; NestJS does not strip it.
+      await updateInstance(asInstanceSlug("default"), {
+        name: "Kept",
+        embeddingDim: 9999,
+        isPlatformAdmin: true,
+      } as never);
+
+      const patch = chain.set.mock.calls[0][0];
+      expect(patch).toHaveProperty("name", "Kept");
+      expect(patch).not.toHaveProperty("embeddingDim");
+      expect(patch).not.toHaveProperty("isPlatformAdmin");
     });
   });
 
@@ -635,11 +797,11 @@ describe("instances/store", () => {
   // listActiveInstances — org scoping (feeds GET /v1/models)
   // -----------------------------------------------------------------------
   describe("listActiveInstances — organization scoping", () => {
-    it("should_and_the_org_filter_with_the_active_status_when_an_orgId_is_given", async () => {
+    it("should_and_the_tenant_filter_with_the_active_status", async () => {
       const chain = createChainMock([fakeInstance]);
       mockDb.select.mockReturnValue(chain as any);
 
-      await listActiveInstances("org-a");
+      await listActiveInstances(testScope({ organizationId: "org-a" }));
 
       expect(mockBuildOrgScopedAgentFilter).toHaveBeenCalledWith("org-a", "slug");
       expect(chain.where).toHaveBeenCalledWith({

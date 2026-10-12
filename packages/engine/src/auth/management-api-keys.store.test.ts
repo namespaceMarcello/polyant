@@ -14,10 +14,12 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockSelectRows, mockUpdate, mockVerifyPassword } = vi.hoisted(() => ({
+const { mockSelectRows, mockUpdate, mockVerifyPassword, mockInsertValues, mockDelete } = vi.hoisted(() => ({
   mockSelectRows: vi.fn(),
   mockUpdate: vi.fn(),
   mockVerifyPassword: vi.fn(),
+  mockInsertValues: vi.fn(),
+  mockDelete: vi.fn(),
 }));
 
 vi.mock("../database/client.js", () => ({
@@ -30,6 +32,14 @@ vi.mock("../database/client.js", () => ({
       }),
     }),
     update: mockUpdate,
+    // The row written is echoed back, as `RETURNING` would.
+    insert: () => ({
+      values: (values: Record<string, unknown>) => {
+        mockInsertValues(values);
+        return { returning: async () => [{ ...values, lastUsedAt: null, createdAt: new Date() }] };
+      },
+    }),
+    delete: () => ({ where: () => ({ returning: () => mockDelete() }) }),
   },
 }));
 
@@ -37,7 +47,11 @@ vi.mock("../users/password.util.js", () => ({
   verifyPassword: mockVerifyPassword,
 }));
 
+import { createHash } from "node:crypto";
 import {
+  createManagementApiKey,
+  deleteManagementApiKey,
+  hashManagementApiKeySecret,
   parseManagementApiKeyToken,
   validateManagementApiKey,
 } from "./management-api-keys.store.js";
@@ -78,6 +92,13 @@ describe("parseManagementApiKeyToken", () => {
 
   it("returns null for an empty token", () => {
     expect(parseManagementApiKeyToken("")).toBeNull();
+  });
+
+  // The id is a uuid column. Any other value made Postgres raise a cast error,
+  // logged at error level, on every anonymous request that sent one.
+  it("returns null when the id is not a uuid", () => {
+    expect(parseManagementApiKeyToken("pk_x_y")).toBeNull();
+    expect(parseManagementApiKeyToken("pk_1111-2222_secret")).toBeNull();
   });
 });
 
@@ -149,5 +170,113 @@ describe("validateManagementApiKey", () => {
     expect(set).toHaveBeenCalledWith(
       expect.objectContaining({ lastUsedAt: expect.any(Date) }),
     );
+  });
+});
+
+// bcrypt at cost 12 takes about 250 ms of event-loop time, and it ran on every
+// request a management key authenticated. The secret is 32 random bytes, which
+// a slow hash adds nothing to, so a SHA-256 digest is stored instead.
+describe("validateManagementApiKey — key hash", () => {
+  const sha256Of = (secret: string) => `sha256:${createHash("sha256").update(secret).digest("hex")}`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("hashes a secret as a SHA-256 digest", () => {
+    expect(hashManagementApiKeySecret("s3cret")).toBe(sha256Of("s3cret"));
+  });
+
+  it("accepts a key stored as a SHA-256 digest without running bcrypt", async () => {
+    mockSelectRows.mockResolvedValue([row({ keyHash: sha256Of("s3cret") })]);
+    wireUpdateChain();
+
+    const result = await validateManagementApiKey(`pk_${VALID_ID}_s3cret`);
+
+    expect(result?.orgId).toBe("org-1");
+    expect(mockVerifyPassword).not.toHaveBeenCalled();
+  });
+
+  it("refuses a wrong secret against a SHA-256 digest", async () => {
+    mockSelectRows.mockResolvedValue([row({ keyHash: sha256Of("s3cret") })]);
+
+    expect(await validateManagementApiKey(`pk_${VALID_ID}_other`)).toBeNull();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("stores the SHA-256 digest of a bcrypt key the first time it verifies", async () => {
+    mockSelectRows.mockResolvedValue([row()]);
+    mockVerifyPassword.mockResolvedValue(true);
+    const { set } = wireUpdateChain();
+
+    await validateManagementApiKey(`pk_${VALID_ID}_s3cret`);
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ keyHash: sha256Of("s3cret") }));
+  });
+
+  it("leaves a bcrypt key alone when the secret does not match", async () => {
+    mockSelectRows.mockResolvedValue([row()]);
+    mockVerifyPassword.mockResolvedValue(false);
+
+    await validateManagementApiKey(`pk_${VALID_ID}_wrong`);
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+});
+
+// The token is handed out once and never stored, so the only proof that it
+// works is that the guard's own validation path accepts it against the row the
+// store wrote.
+describe("createManagementApiKey", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns a token that validates to the issuing organization and permissions", async () => {
+    const { key, token } = await createManagementApiKey({
+      organizationId: "org-1",
+      name: "ci",
+      permissions: ["agent:read", "org:write"],
+      expiresAt: null,
+    });
+
+    expect(token).toMatch(/^pk_[0-9a-f-]{36}_[0-9a-f]{64}$/);
+    const written = mockInsertValues.mock.calls[0][0];
+    expect(written.id).toBe(key.id);
+    // Only a digest is written; the plaintext secret appears nowhere in the row.
+    const secret = token.slice(`pk_${key.id}_`.length);
+    expect(JSON.stringify(written)).not.toContain(secret);
+
+    mockSelectRows.mockResolvedValue([written]);
+    wireUpdateChain();
+    const principal = await validateManagementApiKey(token);
+
+    expect(principal?.orgId).toBe("org-1");
+    expect([...(principal?.permissions ?? [])].sort()).toEqual(["agent:read", "org:write"]);
+  });
+
+  it("issues a different secret every time", async () => {
+    const input = { organizationId: "org-1", name: "ci", permissions: [], expiresAt: null };
+    const a = await createManagementApiKey(input);
+    const b = await createManagementApiKey(input);
+    expect(a.token).not.toBe(b.token);
+    expect(a.key.id).not.toBe(b.key.id);
+  });
+});
+
+describe("deleteManagementApiKey", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reports false for an id that is not a uuid, without querying", async () => {
+    expect(await deleteManagementApiKey("org-1", "not-a-uuid")).toBe(false);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("reports whether a row of the organization was deleted", async () => {
+    mockDelete.mockResolvedValueOnce([{ id: VALID_ID }]).mockResolvedValueOnce([]);
+    expect(await deleteManagementApiKey("org-1", VALID_ID)).toBe(true);
+    expect(await deleteManagementApiKey("org-1", VALID_ID)).toBe(false);
   });
 });

@@ -32,9 +32,7 @@ export interface ComputeConstructProps {
     web: { cpu: number; memory: number };
   };
   appConfig: {
-    defaultInstanceId: string;
     timezone: string;
-    locale: string;
   };
   loggingRetentionDays: number;
   certificate?: acm.ICertificate;
@@ -117,12 +115,21 @@ export class ComputeConstruct extends Construct {
       environment: {
         API_PORT: "4000",
         POSTGRES_SSL: "true",
-        DEFAULT_INSTANCE_ID: props.appConfig.defaultInstanceId,
-        DATETIME_TIMEZONE: props.appConfig.timezone,
-        DATETIME_LOCALE: props.appConfig.locale,
-        // When ALB OIDC auth is configured, engine trusts x-amzn-oidc-data
-        // headers instead of requiring its own Auth.js session.
-        ...(props.auth ? { AUTH_MODE: "alb-oidc" } : {}),
+        // The engine formats dates in the RUNTIME zone and locale unless an agent
+        // declares its own, so the deployment's zone is `TZ` — there is no engine
+        // variable for it any more. `DATETIME_LOCALE` is gone with it: until 1.1.x
+        // it set the locale of the prompt's current date, of history summaries
+        // and of the debug payload log, and the locale is now the agent's
+        // setting. `DEFAULT_INSTANCE_ID` is gone too: every caller names its
+        // agent, so its fallback could not fire.
+        TZ: props.appConfig.timezone,
+        // One proxy hop: the ALB. Without it `req.ip` is the ALB node's own
+        // address for every request, so every per-address rate limit is shared
+        // by all callers, every bot's webhook included.
+        TRUST_PROXY: "1",
+        // ALB OIDC auth, when configured, is an outer gate only: the engine does
+        // not read the x-amzn-oidc-data header and authenticates every request
+        // itself.
       },
       secrets: {
         POSTGRES_HOST: ecs.Secret.fromSecretsManager(props.dbSecret, "host"),
@@ -133,8 +140,8 @@ export class ComputeConstruct extends Construct {
         ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(props.appSecret, "encryption_key"),
         AUTH_SECRET: ecs.Secret.fromSecretsManager(props.appSecret, "auth_secret"),
         // Only needed for local email/password accounts (web → engine credentials
-        // verify). Harmless placeholder otherwise. GOOGLE_* are NOT injected here:
-        // the engine never reads them — Google OAuth is handled entirely by the web.
+        // verify). Harmless placeholder otherwise. No GOOGLE_* variables are
+        // injected anywhere: federated sign-in is not part of this edition.
         AUTH_INTERNAL_SECRET: ecs.Secret.fromSecretsManager(props.appSecret, "auth_internal_secret"),
       },
       logging: ecs.LogDrivers.awsLogs({
@@ -175,7 +182,7 @@ export class ComputeConstruct extends Construct {
         // (no decrypt → no MissingSecret throw), so AUTH_SECRET is not needed.
         // AUTH_TRUST_HOST tells Auth.js to trust X-Forwarded-Host behind the ALB.
         ...(props.auth
-          ? { AUTH_MODE: "alb-oidc", AUTH_TRUST_HOST: "true" }
+          ? { AUTH_TRUST_HOST: "true" }
           : {}),
       },
       logging: ecs.LogDrivers.awsLogs({
@@ -304,6 +311,20 @@ export class ComputeConstruct extends Construct {
         elbv2.ListenerCondition.pathPatterns(["/v1/chat/completions"]),
       ],
       priority: 8,
+      action: elbv2.ListenerAction.forward([engineTg]),
+    });
+
+    // Inbound channel traffic is PUBLIC even when OIDC is on: providers (Telegram,
+    // Slack, Twilio, email relays, HubSpot) and HTTP-channel clients cannot sign
+    // in, and each route authenticates the caller itself — a provider signature,
+    // a secret token in the path or header, or the channel's own credential.
+    // Without this rule the paths fall through to the web target, which answers
+    // 404.
+    listener.addAction("InboundChannelsPublic", {
+      conditions: [
+        elbv2.ListenerCondition.pathPatterns(["/webhooks/*", "/channels/http/*"]),
+      ],
+      priority: 7,
       action: elbv2.ListenerAction.forward([engineTg]),
     });
 

@@ -5,7 +5,6 @@ import { existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { z } from "zod";
-import { asInstanceSlug } from "./instances/identifiers.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -15,11 +14,11 @@ const packageEnv = resolve(__dirname, "../.env");
 const monorepoEnv = resolve(__dirname, "../../../.env");
 
 if (existsSync(packageEnv)) {
-  dotenv.config({ path: packageEnv });
+  dotenv.config({ path: packageEnv, quiet: true });
 } else if (existsSync(monorepoEnv)) {
-  dotenv.config({ path: monorepoEnv });
+  dotenv.config({ path: monorepoEnv, quiet: true });
 } else {
-  dotenv.config();
+  dotenv.config({ quiet: true });
 }
 
 /**
@@ -27,8 +26,8 @@ if (existsSync(packageEnv)) {
  * `.optional()` accepts only `undefined`, while `.default()` fires only on
  * `undefined`. So an input the sample documents as skippable ("Leave empty for
  * no promotion") was either rejected outright or silently coerced to a wrong
- * value: `Number("")` is `0`, so `MESSAGE_SOFT_DEBOUNCE_MS=` meant 0ms, and
- * `DATETIME_TIMEZONE=` made `Intl` throw on every LLM turn.
+ * value: `Number("")` is `0`, so `THROTTLE_TTL_MS=` meant a zero-length window,
+ * and an empty string where a URL was expected made its parser throw.
  *
  * Mapping `""` → `undefined` across the WHOLE input is the fix, not a per-field
  * whitelist: a whitelist has to be extended by whoever adds the next optional
@@ -80,16 +79,39 @@ const configSchema = z.preprocess(stripEmptyStrings, z.object({
       .enum(["true", "false"])
       .default("false")
       .transform((v): boolean => v === "true"),
-  }),
-
-  // Memory (pgvector)
-  memory: z.object({
-    dedupSimilarityThreshold: z.coerce.number().default(0.90),
+    /**
+     * Connections of the main pool: the message pipeline, the API, the jobs.
+     * 10 is what postgres.js defaults to, and what this pool always used.
+     */
+    poolMax: z.coerce.number().int().min(1).default(10),
+    /**
+     * A separate, smaller pool for analytics and dashboard reads, so heavy
+     * aggregates queue among themselves instead of taking the connections a
+     * conversation turn waits for. Measured: 50 panel users on the shared pool
+     * raised a turn's p95 overhead from 270 ms to 1 s.
+     */
+    analyticsPoolMax: z.coerce.number().int().min(1).default(3),
+    /** Per-statement cap on that pool, so one runaway aggregate cannot hold a connection. */
+    analyticsStatementTimeoutMs: z.coerce.number().int().min(1000).default(15_000),
   }),
 
   // HTTP Server (NestJS)
   server: z.object({
     port: z.coerce.number().default(4000),
+    /**
+     * Public origin of the engine, as the DEPLOYMENT declares it: `BASE_URL`
+     * when set, otherwise `http://localhost:<port>` from the transform below, so
+     * consumers read a string and never a fallback.
+     *
+     * It is the BOOTSTRAP value, not the last word. `platform_settings.base_url`
+     * wins where an administrator has set one, which is how a wrong public URL
+     * is corrected without a redeploy — see `platform-settings.store.ts`, the
+     * one place the two are combined. Nothing outside that resolver should read
+     * this field. The four callers that build a public URL from
+     * it (webhook callbacks, the two OAuth redirect builders, the A2A agent card)
+     * each used to write that fallback themselves — four chances to disagree
+     * about what an unset BASE_URL means.
+     */
     baseUrl: z.string().optional(),
     /**
      * Express `trust proxy` setting. Controls whether `X-Forwarded-*` headers
@@ -110,20 +132,24 @@ const configSchema = z.preprocess(stripEmptyStrings, z.object({
         if (typeof v === "number") return v;
         return v === "true";
       }),
-    // Per-IP rate limiting (@nestjs/throttler). Enabled by default; set
-    // THROTTLE_ENABLED=false to disable ALL throttling (global default + every
-    // per-route @Throttle override) — intended for parallel dev/eval runs that
-    // would otherwise trip the limits from a single IP. Only the literal "false"
-    // disables (z.coerce.boolean() would treat "false" as true).
+    // Per-IP rate limiting (@nestjs/throttler): whether it runs at all. The
+    // WINDOW and the LIMIT are platform settings, edited in the panel; this
+    // switch is not, because it exists for parallel dev/eval runs that would
+    // otherwise trip the limits from a single IP, and because a limiter that can
+    // be turned off from inside the product is no use to a locked-out
+    // administrator. THROTTLE_ENABLED=false disables ALL throttling, the global
+    // default and every per-route @Throttle override alike. Only the literal
+    // "false" disables (z.coerce.boolean() would treat "false" as true).
     throttle: z.object({
       enabled: z
         .string()
         .optional()
         .transform((v) => v !== "false"),
-      ttlMs: z.coerce.number().int().positive().default(60_000),
-      limit: z.coerce.number().int().positive().default(30),
     }),
-  }),
+  }).transform((server) => ({
+    ...server,
+    baseUrl: server.baseUrl ?? `http://localhost:${server.port}`,
+  })),
 
   // Encryption (AES-256-GCM requires a 32-byte key = 64 hex characters)
   encryption: z.object({
@@ -133,33 +159,12 @@ const configSchema = z.preprocess(stripEmptyStrings, z.object({
     ),
   }),
 
-  // Datetime (used in supervisor system prompt)
-  datetime: z.object({
-    // No explicit DATETIME_TIMEZONE / DATETIME_LOCALE → follow the runtime zone/locale
-    // (driven by TZ and LANG/LC_ALL respectively, else the system defaults).
-    // resolvedOptions() reflects the env vars set before Node started.
-    timezone: z.string().default(Intl.DateTimeFormat().resolvedOptions().timeZone),
-    locale: z.string().default(Intl.DateTimeFormat().resolvedOptions().locale),
-  }),
-
   // Auth (Auth.js JWT decryption + credentials provider)
   auth: z.object({
     secret: z.string().min(32, "AUTH_SECRET must be at least 32 characters"),
     /** Shared secret between web and engine for the internal credentials endpoint.
      *  When unset, /api/auth/credentials/verify is disabled (only Google login works). */
     internalSecret: z.string().min(16).optional(),
-    /** Auth source: "session" (Auth.js JWT) or "alb-oidc" (trust ALB x-amzn-oidc-data header).
-     *  Use "alb-oidc" when deployed behind an AWS ALB with OIDC authentication — the ALB
-     *  has already authenticated the user, so the engine trusts the forwarded claims.
-     *
-     *  "alb-oidc" is currently REFUSED at boot rather than accepted: since RBAC
-     *  became unconditional, a gateway-forwarded principal carries no `orgId` and
-     *  holds no role bindings, so it is denied on every `@RequirePermission`
-     *  route (see `authz/permission.guard.ts`). Accepting the value would boot a
-     *  panel that looks healthy and 403s on every management call; refusing it
-     *  names the problem while the operator can still act on it. Restore the
-     *  value here once the gateway identity is mapped onto a local user. */
-    mode: z.enum(["session", "alb-oidc"]).default("session"),
     /** RBAC: the user with this email is promoted to Platform Admin on boot by
      *  the OrganizationsModule bootstrap. It sets `is_platform_admin = true` and
      *  nothing else — that flag is the sole authority for platform-admin
@@ -167,7 +172,6 @@ const configSchema = z.preprocess(stripEmptyStrings, z.object({
      *  the account from the same flag. Idempotent; unset = no promotion
      *  (migration 0076 reconciles any pre-existing platform-admin user before
      *  the old `users.role` column is dropped). */
-    platformAdminEmail: z.string().email().optional(),
   }),
 
   // NOTE: there is no `authz.enforce`. RBAC is enforced unconditionally — see the
@@ -184,77 +188,12 @@ const configSchema = z.preprocess(stripEmptyStrings, z.object({
     password: z.string().optional(),
   }),
 
-  // Platform S3 (conversation attachment storage — optional, attachments not persisted if missing)
-  platformS3: z.object({
-    bucket: z.string(),
-    region: z.string(),
-    accessKeyId: z.string(),
-    secretAccessKey: z.string(),
-  }).optional(),
-
-  // Inbound message coordinator (WhatsApp/Telegram). Collapses burst fragments
-  // and cancels in-flight pipelines when a new fragment arrives.
-  //   softDebounceMs: sliding coalescing window before the pipeline fires
-  //   typingDelayMs: delay before sending the channel's typing indicator
-  //   maxRestarts: cap on consecutive cancel-and-restart cycles per conversation
-  coordinator: z.object({
-    softDebounceMs: z.coerce.number().int().min(0).default(2000),
-    typingDelayMs: z.coerce.number().int().min(0).default(1500),
-    maxRestarts: z.coerce.number().int().min(0).default(3),
-  }),
-
-  // PDF rendering (markdownToPdf tool). `concurrency` caps how many puppeteer
-  // pages render in parallel inside the singleton Chromium browser. Each page
-  // costs ~50-100MB RSS during render, so the default is conservative — bump
-  // up in environments with more RAM, down on tight container memory.
-  pdf: z.object({
-    concurrency: z.coerce.number().int().min(1).max(32).default(3),
-  }),
-
-  // Agent-to-agent invocation (virtual `agent` channel).
-  //   callTimeoutMs: maximum wall-clock duration of a single sub-agent call.
-  //     On timeout the synthesised tool returns an error string to the caller.
-  agent: z.object({
-    callTimeoutMs: z.coerce.number().int().positive().default(60000),
-  }),
-
-  // Activity stream (SSE) resource limits.
-  //   maxConnections:    global cap on concurrent SSE subscribers (across all users).
-  //   maxPerUser:        per-authenticated-user cap on concurrent SSE subscribers.
-  // Excess connections are rejected with HTTP 503 + Retry-After.
-  activityStream: z.object({
-    maxConnections: z.coerce.number().int().positive().default(50),
-    maxPerUser: z.coerce.number().int().positive().default(5),
-  }),
-
-  // Knowledge ingestion resource limits.
-  //   maxDocsPerInstance: hard cap on the number of knowledge documents an
-  //     instance may hold. Uploads beyond the cap are rejected with 400.
-  knowledge: z.object({
-    maxDocsPerInstance: z.coerce.number().int().positive().default(500),
-  }),
-
-  // Analytics retention. Daily housekeeping deletes rows older than
-  // `retentionDays` from `ai_logs` and `pipeline_traces` so the tables don't
-  // grow unboundedly. Default 90 days.
-  analytics: z.object({
-    retentionDays: z.coerce.number().int().positive().default(90),
-  }),
 
   // Plugin roots. `dirs` are absolute paths (from PLUGIN_DIRS, comma-separated)
   // the tool loader scans for external plugins in addition to the convention
   // dir (src/plugins/*). Primarily local dev / explicit override.
   plugins: z.object({
     dirs: z.array(z.string()).default([]),
-  }),
-
-  // External MCP (Model Context Protocol) client servers (instance-configured,
-  // consumed via @ai-sdk/mcp).
-  //   connectTimeoutMs: bounds the per-server createMCPClient()+tools() round
-  //     trip so one hung/slow server can't stall every turn. On expiry the
-  //     server is treated exactly like a dead server (log warn + skip).
-  mcp: z.object({
-    connectTimeoutMs: z.coerce.number().int().positive().default(10000),
   }),
 }));
 
@@ -278,13 +217,24 @@ function parseDatabaseUrl(): { user: string; password: string; host: string; por
   }
 }
 
-function buildDatabaseUrl(): string {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  const user = process.env.POSTGRES_USER ?? "polyant";
-  const password = process.env.POSTGRES_PASSWORD ?? "";
-  const host = process.env.POSTGRES_HOST ?? "localhost";
-  const port = process.env.POSTGRES_PORT ?? "5432";
-  const database = process.env.POSTGRES_DB ?? "polyant";
+/**
+ * Assemble the connection string from whichever form the deployment provides.
+ * Both are first-class: `DATABASE_URL` is what a managed provider hands you,
+ * while the individual `POSTGRES_*` are what a deployment gets — the CDK wires
+ * each one from a separate field of the Aurora secret and cannot read a secret's
+ * value at synth time to build a URL.
+ *
+ * The credentials are percent-encoded, which `parseDatabaseUrl` above already
+ * assumed by decoding them. Interpolated raw, a password containing `@`, `/` or
+ * `:` produced a URL that parses as a different host.
+ */
+export function buildDatabaseUrl(env: Record<string, string | undefined> = process.env): string {
+  if (env.DATABASE_URL) return env.DATABASE_URL;
+  const user = encodeURIComponent(env.POSTGRES_USER ?? "polyant");
+  const password = encodeURIComponent(env.POSTGRES_PASSWORD ?? "");
+  const host = env.POSTGRES_HOST ?? "localhost";
+  const port = env.POSTGRES_PORT ?? "5432";
+  const database = env.POSTGRES_DB ?? "polyant";
   return `postgresql://${user}:${password}@${host}:${port}/${database}`;
 }
 
@@ -299,9 +249,9 @@ function loadConfig(): Config {
       password: process.env.POSTGRES_PASSWORD ?? dbUrlParsed?.password,
       databaseUrl: buildDatabaseUrl(),
       ssl: process.env.POSTGRES_SSL,
-    },
-    memory: {
-      dedupSimilarityThreshold: process.env.DEDUP_SIMILARITY_THRESHOLD,
+      poolMax: process.env.POSTGRES_POOL_MAX,
+      analyticsPoolMax: process.env.POSTGRES_ANALYTICS_POOL_MAX,
+      analyticsStatementTimeoutMs: process.env.POSTGRES_ANALYTICS_STATEMENT_TIMEOUT_MS,
     },
     server: {
       port: process.env.API_PORT,
@@ -309,53 +259,18 @@ function loadConfig(): Config {
       trustProxy: process.env.TRUST_PROXY,
       throttle: {
         enabled: process.env.THROTTLE_ENABLED,
-        ttlMs: process.env.THROTTLE_TTL_MS,
-        limit: process.env.THROTTLE_LIMIT,
       },
     },
     encryption: {
       key: process.env.ENCRYPTION_KEY,
     },
-    datetime: {
-      timezone: process.env.DATETIME_TIMEZONE,
-      locale: process.env.DATETIME_LOCALE,
-    },
     auth: {
       secret: process.env.AUTH_SECRET,
       internalSecret: process.env.AUTH_INTERNAL_SECRET,
-      mode: process.env.AUTH_MODE,
-      platformAdminEmail: process.env.PLATFORM_ADMIN_EMAIL,
     },
     initialAdmin: {
       email: process.env.INITIAL_ADMIN_EMAIL,
       password: process.env.INITIAL_ADMIN_PASSWORD,
-    },
-    platformS3: process.env.PLATFORM_S3_BUCKET ? {
-      bucket: process.env.PLATFORM_S3_BUCKET,
-      region: process.env.PLATFORM_S3_REGION,
-      accessKeyId: process.env.PLATFORM_S3_ACCESS_KEY_ID,
-      secretAccessKey: process.env.PLATFORM_S3_SECRET_ACCESS_KEY,
-    } : undefined,
-    coordinator: {
-      softDebounceMs: process.env.MESSAGE_SOFT_DEBOUNCE_MS,
-      typingDelayMs: process.env.MESSAGE_TYPING_DELAY_MS,
-      maxRestarts: process.env.MESSAGE_MAX_RESTARTS,
-    },
-    pdf: {
-      concurrency: process.env.PDF_CONCURRENCY,
-    },
-    agent: {
-      callTimeoutMs: process.env.AGENT_CALL_TIMEOUT_MS,
-    },
-    activityStream: {
-      maxConnections: process.env.SSE_MAX_CONNECTIONS,
-      maxPerUser: process.env.SSE_MAX_CONNECTIONS_PER_USER,
-    },
-    knowledge: {
-      maxDocsPerInstance: process.env.KNOWLEDGE_MAX_DOCS_PER_INSTANCE,
-    },
-    analytics: {
-      retentionDays: process.env.ANALYTICS_RETENTION_DAYS,
     },
     plugins: {
       // CONVENTION-EXCEPTION: PLUGIN_DIRS is parsed here (split + trim) into the
@@ -365,9 +280,6 @@ function loadConfig(): Config {
         .map((s) => s.trim())
         .filter((s) => s.length > 0),
     },
-    mcp: {
-      connectTimeoutMs: process.env.MCP_CONNECT_TIMEOUT_MS,
-    },
   });
 
   if (!result.success) {
@@ -375,25 +287,7 @@ function loadConfig(): Config {
     process.exit(1);
   }
 
-  // Checked here rather than as a schema refinement so `auth.mode` keeps its full
-  // union type: the gateway branch in `auth/auth.guard.ts` is dormant, not deleted,
-  // and narrowing the type to "session" would make it unreachable code the compiler
-  // rejects — leaving the eventual fix with nothing to switch back on.
-  if (result.data.auth.mode === "alb-oidc") {
-    console.error(
-      "Configuration error: AUTH_MODE=alb-oidc is not supported in this release. " +
-        "Since RBAC became unconditional, a gateway-forwarded principal resolves no organization " +
-        "and is denied on every management route — the panel would load and 403 on every call. " +
-        "Use AUTH_MODE=session (see docs/UPGRADING.md).",
-    );
-    process.exit(1);
-  }
-
   return result.data;
 }
 
 export const config = loadConfig();
-
-/** Default instance for mono-instance system. Override via DEFAULT_INSTANCE_ID env var. */
-// CONVENTION-EXCEPTION: reads process.env directly — documented exception in CLAUDE.md (DEFAULT_INSTANCE_ID).
-export const DEFAULT_INSTANCE_ID = asInstanceSlug(process.env.DEFAULT_INSTANCE_ID ?? "default");

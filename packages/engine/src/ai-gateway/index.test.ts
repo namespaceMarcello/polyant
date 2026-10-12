@@ -5,21 +5,31 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockProviderChat = vi.fn();
 const mockProviderChatStream = vi.fn();
 
-vi.mock("./providers/openai.js", () => ({
-  OpenAIProvider: {
-    name: "openai",
-    chat: (...args: unknown[]) => mockProviderChat(...args),
-    chatStream: (...args: unknown[]) => mockProviderChatStream(...args),
-  },
-}));
+// The transport is mocked; the reasoning builders stay REAL, so the tests below
+// exercise the payload the gateway actually sends rather than a stub of it.
+vi.mock("./providers/openai.js", async (importActual) => {
+  const actual = await importActual<typeof import("./providers/openai.js")>();
+  return {
+    ...actual,
+    OpenAIProvider: {
+      name: "openai",
+      chat: (...args: unknown[]) => mockProviderChat(...args),
+      chatStream: (...args: unknown[]) => mockProviderChatStream(...args),
+    },
+  };
+});
 
-vi.mock("./providers/anthropic.js", () => ({
-  AnthropicProvider: {
-    name: "anthropic",
-    chat: vi.fn(),
-    chatStream: vi.fn(),
-  },
-}));
+vi.mock("./providers/anthropic.js", async (importActual) => {
+  const actual = await importActual<typeof import("./providers/anthropic.js")>();
+  return {
+    ...actual,
+    AnthropicProvider: {
+      name: "anthropic",
+      chat: vi.fn(),
+      chatStream: vi.fn(),
+    },
+  };
+});
 
 const mockNebiusChat = vi.fn();
 vi.mock("./providers/nebius.js", () => ({
@@ -45,6 +55,15 @@ vi.mock("./providers/bedrock.js", async (importActual) => {
   };
 });
 
+// The usage a provider pins to a failed call's error. The real map lives in
+// `providers/base.ts`, fed by the SDK's step callbacks; the gateway only reads it.
+const pinnedUsage = vi.hoisted(() => new WeakMap<object, unknown>());
+vi.mock("./providers/base.js", async (importActual) => ({
+  ...(await importActual<typeof import("./providers/base.js")>()),
+  usageCompletedBeforeFailure: (err: unknown) =>
+    (err !== null && typeof err === "object" ? pinnedUsage.get(err) : null) ?? null,
+}));
+
 vi.mock("./logger.js", async (importActual) => {
   // `classifyProviderError` stays REAL: the point of the failure tests below is
   // that the class written to ai_logs is derived from the actual error shape.
@@ -54,7 +73,7 @@ vi.mock("./logger.js", async (importActual) => {
     classifyProviderError: actual.classifyProviderError,
     aiLogger: {
       log: vi.fn(),
-      createEntry: vi.fn().mockReturnValue({ provider: "openai", model: "gpt-4o" }),
+      createEntry: vi.fn().mockReturnValue({ provider: "openai", model: "gpt-6-sol" }),
       initialize: vi.fn(),
       shutdown: vi.fn(),
     },
@@ -119,7 +138,7 @@ function makeChatResponse(overrides = {}) {
     text: "Response text",
     usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150, cachedInputTokens: 0, cacheCreationInputTokens: 0 },
     durationMs: 500,
-    model: "gpt-4o",
+    model: "gpt-6-sol",
     provider: "openai",
     steps: [],
     toolCalls: [],
@@ -141,19 +160,19 @@ describe("AI Gateway", () => {
 
       expect(mockProviderChat).toHaveBeenCalledWith(
         expect.objectContaining({ tier: "standard" }),
-        "gpt-4o",
+        "gpt-6-sol",
       );
       expect(result.text).toBe("Response text");
     });
 
-    it("resolves fast tier to gpt-4o-mini", async () => {
-      mockProviderChat.mockResolvedValue(makeChatResponse({ model: "gpt-4o-mini" }));
+    it("resolves fast tier to gpt-6-luna", async () => {
+      mockProviderChat.mockResolvedValue(makeChatResponse({ model: "gpt-6-luna" }));
 
       await chat(makeRequest({ tier: "fast" }));
 
       expect(mockProviderChat).toHaveBeenCalledWith(
         expect.anything(),
-        "gpt-4o-mini",
+        "gpt-6-luna",
       );
     });
 
@@ -166,13 +185,32 @@ describe("AI Gateway", () => {
       expect(aiLogger.log).toHaveBeenCalled();
     });
 
+    it("prices a model billed by prompt length step by step, not on the turn's sum", async () => {
+      const step = { index: 0, stepType: "initial", text: "", toolCalls: [], finishReason: "tool-calls", durationMs: 1, promptTokens: 40_000, completionTokens: 500 };
+      const anthropicChat = vi.fn().mockResolvedValue(
+        makeChatResponse({
+          model: "claude-haiku-5-5",
+          provider: "anthropic",
+          usage: { promptTokens: 120_000, completionTokens: 1_500, totalTokens: 121_500, cachedInputTokens: 0, cacheCreationInputTokens: 0 },
+          steps: [step, { ...step, index: 1 }, { ...step, index: 2 }],
+        }),
+      );
+      const { AnthropicProvider } = await import("./providers/anthropic.js");
+      (AnthropicProvider as unknown as { chat: unknown }).chat = anthropicChat;
+
+      const result = await chat(makeRequest({ provider: "anthropic", model: "claude-haiku-5-5" }));
+
+      // Three 40K calls under the 100K threshold, not one 120K prompt over it.
+      expect(result.cost?.total).toBeCloseTo((3 * (40_000 * 0.1 + 500 * 0.5)) / 1_000_000, 12);
+    });
+
     it("passes conversationId, instanceId, and callType to logger", async () => {
       mockProviderChat.mockResolvedValue(makeChatResponse());
 
       await chat(makeRequest(), { conversationId: "conv-1", instanceId: asInstanceSlug("user-1") });
 
       expect(aiLogger.createEntry).toHaveBeenCalledWith(
-        "openai", "gpt-4o", "standard", false,
+        "openai", "gpt-6-sol", "standard", false,
         100, 50, 150,
         expect.any(Number),
         500,
@@ -190,7 +228,7 @@ describe("AI Gateway", () => {
       await chat(makeRequest(), { conversationId: "conv-1", instanceId: asInstanceSlug("inst-1"), callType: "service" });
 
       expect(aiLogger.createEntry).toHaveBeenCalledWith(
-        "openai", "gpt-4o", "standard", false,
+        "openai", "gpt-6-sol", "standard", false,
         100, 50, 150,
         expect.any(Number),
         500,
@@ -256,7 +294,7 @@ describe("AI Gateway", () => {
 
       expect(buildLangSmithProviderOptions).toHaveBeenCalledWith(
         { apiKey: "ls-key", project: "test-project" },
-        { conversationId: "conv-1", instanceId: asInstanceSlug("inst-1"), providerName: "openai", modelId: "gpt-4o" },
+        { conversationId: "conv-1", instanceId: asInstanceSlug("inst-1"), providerName: "openai", modelId: "gpt-6-sol" },
       );
       expect(mockProviderChat).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -278,10 +316,103 @@ describe("AI Gateway", () => {
       // factory option structuredOutputs:false). No langsmith key is added.
       expect(mockProviderChat).toHaveBeenCalledWith(
         expect.objectContaining({
-          providerOptions: { openai: { strictJsonSchema: false } },
+          providerOptions: { openai: { reasoningEffort: "none", strictJsonSchema: false } },
         }),
         expect.any(String),
       );
+    });
+
+    describe("switching thinking OFF on a model that reasons by default", () => {
+      // Sending nothing is "off" only for a model whose default is off. That was
+      // every 1P model until gpt-6 (default effort `medium`) and Claude Opus 5 /
+      // Sonnet 5 / Sonnet 5.5 (adaptive when the parameter is omitted): on those, an omitted payload
+      // leaves the model reasoning through a turn the operator switched thinking
+      // off for, and the bill and the latency both show it.
+      it("sends reasoning_effort none to an OpenAI model whose default effort is medium", async () => {
+        mockProviderChat.mockResolvedValue(makeChatResponse());
+
+        await chat(makeRequest({ provider: "openai", model: "gpt-6-sol", thinking: false }));
+
+        expect(mockProviderChat.mock.calls[0][0].providerOptions.openai).toMatchObject({
+          reasoningEffort: "none",
+        });
+      });
+
+      it("sends thinking disabled to Claude Opus 5, which runs adaptive when the parameter is omitted", async () => {
+        const anthropicChat = vi.fn().mockResolvedValue(makeChatResponse());
+        const { AnthropicProvider } = await import("./providers/anthropic.js");
+        (AnthropicProvider as unknown as { chat: unknown }).chat = anthropicChat;
+
+        await chat(makeRequest({ provider: "anthropic", model: "claude-opus-5", thinking: false }));
+
+        expect(anthropicChat.mock.calls[0][0].providerOptions.anthropic).toMatchObject({
+          thinking: { type: "disabled" },
+        });
+      });
+
+      it("sends thinking disabled to Claude Sonnet 5, which also runs adaptive by default", async () => {
+        const anthropicChat = vi.fn().mockResolvedValue(makeChatResponse());
+        const { AnthropicProvider } = await import("./providers/anthropic.js");
+        (AnthropicProvider as unknown as { chat: unknown }).chat = anthropicChat;
+
+        await chat(makeRequest({ provider: "anthropic", model: "claude-sonnet-5", thinking: false }));
+
+        expect(anthropicChat.mock.calls[0][0].providerOptions.anthropic).toMatchObject({
+          thinking: { type: "disabled" },
+        });
+      });
+
+      it("sends between_tools to Claude Sonnet 5.5, which answers disabled with a 400", async () => {
+        const anthropicChat = vi.fn().mockResolvedValue(makeChatResponse());
+        const { AnthropicProvider } = await import("./providers/anthropic.js");
+        (AnthropicProvider as unknown as { chat: unknown }).chat = anthropicChat;
+
+        await chat(makeRequest({ provider: "anthropic", model: "claude-sonnet-5-5", thinking: false }));
+
+        const sent = anthropicChat.mock.calls[0][0].providerOptions.anthropic;
+        expect(sent.thinking).toEqual({ type: "between_tools" });
+        // between_tools is refused at xhigh/max, so an off turn must carry no effort.
+        expect(sent).not.toHaveProperty("effort");
+      });
+
+      it("switches thinking off on the anthropic fast tier, so service jobs do not reason on Haiku 5.5", async () => {
+        const anthropicChat = vi.fn().mockResolvedValue(makeChatResponse());
+        const { AnthropicProvider } = await import("./providers/anthropic.js");
+        (AnthropicProvider as unknown as { chat: unknown }).chat = anthropicChat;
+
+        await chat(makeRequest({ provider: "anthropic", tier: "fast" }));
+
+        expect(anthropicChat.mock.calls[0][1]).toBe("claude-haiku-5-5");
+        const sent = anthropicChat.mock.calls[0][0].providerOptions.anthropic;
+        expect(sent.thinking).toEqual({ type: "disabled" });
+        // `disabled` is refused above effort high, so an off turn must carry no effort.
+        expect(sent).not.toHaveProperty("effort");
+      });
+
+      it("sends nothing to a model that has no off-switch at all", async () => {
+        // gpt-6-astra publishes no `none` effort: it reasons on every call, so a
+        // payload claiming to switch it off would be a parameter it rejects and a
+        // debug capture that lies about what the gateway did.
+        mockProviderChat.mockResolvedValue(makeChatResponse());
+
+        await chat(makeRequest({ provider: "openai", model: "gpt-6-astra", thinking: false }));
+
+        expect(mockProviderChat.mock.calls[0][0].providerOptions.openai).not.toHaveProperty(
+          "reasoningEffort",
+        );
+      });
+
+      it("leaves a model whose default is already off alone", async () => {
+        // gpt-5.4 goes to zero reasoning tokens with thinking off (live-verified),
+        // so it declares no off-switch and must keep receiving nothing.
+        mockProviderChat.mockResolvedValue(makeChatResponse());
+
+        await chat(makeRequest({ provider: "openai", model: "gpt-5.4", thinking: false }));
+
+        expect(mockProviderChat.mock.calls[0][0].providerOptions.openai).not.toHaveProperty(
+          "reasoningEffort",
+        );
+      });
     });
 
     it("disables Nebius thinking via chat_template_kwargs when thinking is off", async () => {
@@ -322,10 +453,12 @@ describe("AI Gateway", () => {
 
       // gpt-oss ignores enable_thinking (a Qwen-only chat-template kwarg), so
       // sending it just masks the truth. The gateway must send nothing and let
-      // the model fall back to its own reasoning default.
-      const opts = mockNebiusChat.mock.calls[0][0].providerOptions.nebius;
-      expect(opts).not.toHaveProperty("chat_template_kwargs");
-      expect(opts).toEqual({});
+      // the model fall back to its own reasoning default. "Nothing" is now the
+      // absent namespace rather than an empty one — an empty object reached the
+      // wire identically, but showed up in a captured debug payload as if the
+      // gateway had configured something.
+      const opts = mockNebiusChat.mock.calls[0][0].providerOptions?.nebius;
+      expect(opts ?? {}).toEqual({});
     });
 
     it("sends Bedrock effort-based reasoningConfig for gpt-oss when thinking is on", async () => {
@@ -360,7 +493,7 @@ describe("AI Gateway", () => {
       );
 
       const cfg = mockBedrockChat.mock.calls[0][0].providerOptions.bedrock.reasoningConfig;
-      expect(cfg).toEqual({ type: "adaptive", maxReasoningEffort: "high" });
+      expect(cfg).toEqual({ type: "adaptive", maxReasoningEffort: "high", display: "summarized" });
       expect(cfg).not.toHaveProperty("budgetTokens");
     });
 
@@ -373,6 +506,30 @@ describe("AI Gateway", () => {
 
       const opts = mockBedrockChat.mock.calls[0][0].providerOptions;
       expect(opts?.bedrock).toBeUndefined();
+    });
+
+    it.each([
+      ["eu.anthropic.claude-sonnet-5", "disabled"],
+      ["eu.anthropic.claude-opus-5", "disabled"],
+      ["global.anthropic.claude-sonnet-5-5", "between_tools"],
+    ])("switches %s off through additionalModelRequestFields (%s)", async (model, type) => {
+      // These run adaptive when `thinking` is omitted, and the SDK drops
+      // `reasoningConfig: {type:"disabled"}` for Claude without writing anything,
+      // so the off-switch has to travel as the raw Anthropic field.
+      mockBedrockChat.mockResolvedValue(makeChatResponse());
+
+      await chat(makeRequest({ provider: "bedrock", model, thinking: false }));
+
+      const bedrockOpts = mockBedrockChat.mock.calls[0][0].providerOptions.bedrock;
+      expect(bedrockOpts).toEqual({ additionalModelRequestFields: { thinking: { type } } });
+    });
+
+    it("sends no off-switch to Opus 5.5 on Bedrock, which refuses one", async () => {
+      mockBedrockChat.mockResolvedValue(makeChatResponse());
+
+      await chat(makeRequest({ provider: "bedrock", model: "eu.anthropic.claude-opus-5-5", thinking: false }));
+
+      expect(mockBedrockChat.mock.calls[0][0].providerOptions?.bedrock).toBeUndefined();
     });
 
     it("omits Bedrock reasoningConfig for a non-reasoning model even if thinking is on", async () => {
@@ -427,7 +584,7 @@ describe("AI Gateway", () => {
       await stream.response;
 
       expect(aiLogger.createEntry).toHaveBeenCalledWith(
-        "openai", "gpt-4o", "standard", false,
+        "openai", "gpt-6-sol", "standard", false,
         100, 50, 150,
         expect.any(Number),
         500,
@@ -453,7 +610,7 @@ describe("AI Gateway", () => {
 
       expect(buildLangSmithProviderOptions).toHaveBeenCalledWith(
         { apiKey: "ls-key", project: "test-project" },
-        { conversationId: "conv-1", instanceId: asInstanceSlug("inst-1"), providerName: "openai", modelId: "gpt-4o" },
+        { conversationId: "conv-1", instanceId: asInstanceSlug("inst-1"), providerName: "openai", modelId: "gpt-6-sol" },
       );
       expect(mockProviderChatStream).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -537,10 +694,25 @@ describe("AI Gateway", () => {
       expect(entry.costUsd).toBe(0);
     });
 
-    it("writes NOTHING when the turn was preempted by the message coordinator", async () => {
+    it("logs the tokens and cost of the steps the call completed before it failed", async () => {
+      // A multi-step call that dies at step N was billed for steps 1..N-1; the
+      // provider pins that usage to the error it throws.
+      const err = apiError(400);
+      pinnedUsage.set(err, { promptTokens: 1_000_000, completionTokens: 0, cachedInputTokens: 0, cacheCreationInputTokens: 0 });
+      mockProviderChat.mockRejectedValue(err);
+
+      await expect(chat(makeRequest())).rejects.toBe(err);
+
+      const entry = loggedEntry();
+      expect(entry.outcome).toBe("error");
+      expect(entry.promptTokens).toBe(1_000_000);
+      expect(entry.costUsd).toBeGreaterThan(0);
+    });
+
+    it("writes NOTHING when the turn was preempted before any model call answered", async () => {
       // cancel-and-restart is the routine path — it fires whenever a user sends a
-      // second message before the first reply lands. Counting it as a provider
-      // failure would make a failure rate mostly measure how fast people type.
+      // second message before the first reply lands. A turn it stopped before
+      // anything was billed has no cost to record and is no failure.
       const controller = new AbortController();
       controller.abort();
       mockProviderChat.mockRejectedValue(new Error("aborted"));
@@ -548,6 +720,40 @@ describe("AI Gateway", () => {
       await expect(chat(makeRequest({ abortSignal: controller.signal }))).rejects.toThrow();
 
       expect(aiLogger.log).not.toHaveBeenCalled();
+    });
+
+    it("logs a preempted turn's billed model calls as `aborted`, never as an error", async () => {
+      // The coordinator aborted after the provider had answered: that answer
+      // was billed. Sums of cost count the row; error rates, which read
+      // `outcome = 'error'`, do not.
+      const controller = new AbortController();
+      controller.abort();
+      const err = new Error("aborted");
+      pinnedUsage.set(err, { promptTokens: 88, completionTokens: 17, cachedInputTokens: 0, cacheCreationInputTokens: 0 });
+      mockProviderChat.mockRejectedValue(err);
+
+      await expect(chat(makeRequest({ abortSignal: controller.signal }))).rejects.toBe(err);
+
+      const entry = loggedEntry();
+      expect(entry.outcome).toBe("aborted");
+      expect(entry.errorKind).toBeNull();
+      expect(entry.promptTokens).toBe(88);
+      expect(entry.costUsd).toBeGreaterThan(0);
+    });
+
+    // A caller's own deadline (`AbortSignal.timeout`) aborts the signal too,
+    // but nobody preempted the call: the provider was too slow. Read as a
+    // preemption it wrote no row at all, and `timeout` could never be recorded.
+    it("logs a call its deadline aborted as a timeout error", async () => {
+      const controller = new AbortController();
+      controller.abort(new DOMException("The operation timed out.", "TimeoutError"));
+      mockProviderChat.mockRejectedValue(controller.signal.reason);
+
+      await expect(chat(makeRequest({ abortSignal: controller.signal }))).rejects.toThrow();
+
+      const entry = loggedEntry();
+      expect(entry.outcome).toBe("error");
+      expect(entry.errorKind).toBe("timeout");
     });
 
     it("writes exactly one row when a stream fails after being established", async () => {

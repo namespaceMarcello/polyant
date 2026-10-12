@@ -46,6 +46,15 @@ vi.mock("../../management-audit/management-audit-logger.js", async () => {
 
 import { InstanceChannelsController } from "./instance-channels.controller.js";
 
+const { mockResolveInstanceConfig } = vi.hoisted(() => ({ mockResolveInstanceConfig: vi.fn() }));
+vi.mock("../../instances/config-resolver.js", () => ({ resolveInstanceConfig: mockResolveInstanceConfig }));
+
+// The platform policies are a row; this suite has no database. The values are
+// the shipped defaults, so the assertions read the same as before they moved.
+vi.mock("../../platform/platform-settings.store.js", () => ({
+  resolvePlatformSettings: async () => ({ baseUrl: "http://localhost:4000" }),
+}));
+
 const ACCOUNT_SID = "AC00000000000000000000000000000001";
 const API_KEY_SID = "SK00000000000000000000000000000002";
 const USER = { id: "u1", email: "admin@example.com" } as never;
@@ -472,6 +481,24 @@ describe("InstanceChannelsController — whatsapp credential modes", () => {
     });
   });
 
+  // The PUT validated the `:type` segment and the DELETE did not, so the two
+  // routes disagreed about whether the segment is a ChannelType. Deleting an
+  // invalid type matched no row, but the asymmetry is what makes the next
+  // reader conclude the cast is checked everywhere.
+  describe("channel type validation on delete", () => {
+    it("should_reject_an_unknown_channel_type_without_touching_the_store", async () => {
+      await expect(controller.removeChannel("acme", "discord", USER)).rejects.toThrow(BadRequestException);
+
+      expect(mockDeleteChannelConfig).not.toHaveBeenCalled();
+    });
+
+    it("should_reject_a_prototype_key_as_a_channel_type", async () => {
+      await expect(controller.removeChannel("acme", "constructor", USER)).rejects.toThrow(BadRequestException);
+
+      expect(mockDeleteChannelConfig).not.toHaveBeenCalled();
+    });
+  });
+
   describe("validation error translation", () => {
     it("should_translate_a_ZodError_from_the_store_into_a_BadRequestException", async () => {
       mockSetChannelConfig.mockRejectedValue(new ZodError([]));
@@ -486,5 +513,42 @@ describe("InstanceChannelsController — whatsapp credential modes", () => {
         BadRequestException,
       );
     });
+  });
+});
+
+describe("InstanceChannelsController — the web channel", () => {
+  let controller: InstanceChannelsController;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    controller = new InstanceChannelsController();
+    mockGetChannelConfig.mockResolvedValue(null);
+    mockSetChannelConfig.mockResolvedValue({ mintedWebhookSecret: false, config: {} });
+  });
+
+  it("refuses to switch Web on while authentication is on and no key exists", async () => {
+    mockResolveInstanceConfig.mockResolvedValue({ authEnabled: true, authApiKey: undefined });
+    await expect(controller.setChannel("acme", "web", { config: {}, enabled: true }, USER))
+      .rejects.toBeInstanceOf(BadRequestException);
+    expect(mockSetChannelConfig).not.toHaveBeenCalled();
+  });
+
+  it("switches Web on when authentication is on and a key exists", async () => {
+    mockResolveInstanceConfig.mockResolvedValue({ authEnabled: true, authApiKey: "k" });
+    const res = await controller.setChannel("acme", "web", { config: {}, enabled: true }, USER);
+    expect(mockSetChannelConfig).toHaveBeenCalledWith("uuid-1", "web", {}, true, undefined);
+    expect(res.channel).toMatchObject({ channelType: "web", enabled: true });
+  });
+
+  it("switches Web on without a key once authentication was turned off", async () => {
+    mockResolveInstanceConfig.mockResolvedValue({ authEnabled: false, authApiKey: undefined });
+    await controller.setChannel("acme", "web", { config: {}, enabled: true }, USER);
+    expect(mockSetChannelConfig).toHaveBeenCalled();
+  });
+
+  it("switches Web off with no precondition", async () => {
+    await controller.setChannel("acme", "web", { config: {}, enabled: false }, USER);
+    expect(mockResolveInstanceConfig).not.toHaveBeenCalled();
+    expect(mockSetChannelConfig).toHaveBeenCalledWith("uuid-1", "web", {}, false, undefined);
   });
 });

@@ -2,6 +2,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { z } from "zod";
+import { artifactApiFor } from "./artifact-store.js";
 import { asInstanceSlug } from "../../instances/identifiers.js";
 
 // ---------------------------------------------------------------------------
@@ -28,12 +29,25 @@ vi.mock("fs", () => ({
 // Skill env (for placeholder substitution) and the pipeline logger, so a test
 // can assert WHAT each of them saw — the log must keep the placeholder while
 // execute gets the resolved value.
-const { mockGetSkillEnvEntries, mockToolCall } = vi.hoisted(() => ({
+const { mockGetSkillEnvEntries, mockToolCall, mockServedSkills, mockResolveInstanceId } = vi.hoisted(() => ({
   mockGetSkillEnvEntries: vi.fn(),
   mockToolCall: vi.fn(),
+  // A placeholder resolves only while its skill is served to the agent, so the
+  // substitution asks the DB two more questions — mocked here, or this unit
+  // test reaches for a real Postgres.
+  mockServedSkills: vi.fn(
+    async (...args: unknown[]) => new Set(args[1] as string[]),
+  ),
+  mockResolveInstanceId: vi.fn(async (..._args: unknown[]) => "uuid-instance"),
 }));
 vi.mock("../../instances/skill-env.store.js", () => ({
   getSkillEnvEntries: (...a: unknown[]) => mockGetSkillEnvEntries(...a),
+}));
+vi.mock("../../instances/instance-skills.store.js", () => ({
+  filterServedSkillSlugs: (...a: unknown[]) => mockServedSkills(...a),
+}));
+vi.mock("../../instances/resolve-instance-id.js", () => ({
+  resolveInstanceId: (...a: unknown[]) => mockResolveInstanceId(...a),
 }));
 vi.mock("../../utils/pipeline-logger.js", () => ({
   pipelineLog: { toolCall: (...a: unknown[]) => mockToolCall(...a), toolResult: vi.fn() },
@@ -88,6 +102,7 @@ const noopAudit = { log: () => {} };
 const mockCtx: ToolContext = {
   instanceId: asInstanceSlug("test-instance"),
   audit: noopAudit,
+  artifacts: artifactApiFor("test-agent", null),
 };
 
 // ---------------------------------------------------------------------------

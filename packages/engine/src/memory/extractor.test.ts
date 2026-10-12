@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { asInstanceSlug } from "../instances/identifiers.js";
 
 const mockChat = vi.fn();
@@ -31,6 +31,12 @@ vi.mock("../conversations/index.js", () => ({
 
 import { extractMemories } from "./extractor.js";
 
+// The dedup threshold is the agent's, resolved ONCE per extraction from its
+// row. Mocked so the suite stays about extraction rather than the lookup.
+vi.mock("../instances/store.js", () => ({
+  findInstanceBySlug: async () => ({ dedupSimilarityThreshold: null }),
+}));
+
 describe("extractMemories", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -39,6 +45,9 @@ describe("extractMemories", () => {
     mockResolveEmbeddingContext.mockResolvedValue({
       instanceId: "user-1",
       dimensions: 1024,
+      // `providerName` is what the row records — the embedder's own name, not
+      // the transport its credentials speak.
+      providerName: "openai",
       credentials: { provider: "openai", apiKey: "k" },
     });
   });
@@ -84,6 +93,10 @@ describe("extractMemories", () => {
       embedding: [0.1, 0.2, 0.3],
       dimensions: 1024,
       provider: "openai",
+      // Resolved, not passed through: the agent's row says null, so the resolver
+      // answers with the deployment default. The store's own fallback is for the
+      // two callers that have no agent config to resolve from.
+      dedupSimilarityThreshold: 0.9,
     });
     expect(results).toHaveLength(1);
     expect(results[0]).toEqual({
@@ -288,5 +301,37 @@ describe("extractMemories", () => {
     }));
 
     expect(results).toHaveLength(2);
+  });
+});
+
+describe("extractMemories unparseable reply logging", () => {
+  const original = process.env.LOG_LEVEL;
+  afterEach(() => {
+    if (original === undefined) delete process.env.LOG_LEVEL;
+    else process.env.LOG_LEVEL = original;
+    vi.restoreAllMocks();
+  });
+
+  async function outputAt(level: string): Promise<string> {
+    vi.resetModules();
+    process.env.LOG_LEVEL = level;
+    const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    mockResolveEmbeddingContext.mockResolvedValue({});
+    mockGetRecentMessages.mockResolvedValue([{ role: "user", content: "x", createdAt: new Date() }]);
+    mockChat.mockResolvedValue({ text: "SECRET-CONVERSATION-ECHO not json" });
+    const { extractMemories: fresh } = await import("./extractor.js");
+    await fresh("conv-1", asInstanceSlug("user-1"));
+    return [...out.mock.calls, ...err.mock.calls].map((c) => String(c[0])).join("\n");
+  }
+
+  it("does not print the model reply at info", async () => {
+    const o = await outputAt("info");
+    expect(o).toContain("Failed to parse");
+    expect(o).not.toContain("SECRET-CONVERSATION-ECHO");
+  });
+
+  it("prints the model reply at debug", async () => {
+    expect(await outputAt("debug")).toContain("SECRET-CONVERSATION-ECHO");
   });
 });

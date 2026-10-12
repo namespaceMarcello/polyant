@@ -498,6 +498,118 @@
       "when": 1787875200000,
       "tag": "0077_ai_log_outcome",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1788739200000,
+      "tag": "0078_scheduler_crash_safety",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1788825600000,
+      "tag": "0079_org_knowledge_doc_cap",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1788912000000,
+      "tag": "0080_env_vars_to_product",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1788998400000,
+      "tag": "0081_drop_s3_endpoint_secret",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1790035200000,
+      "tag": "0082_platform_settings_expand",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1790121600000,
+      "tag": "0083_agent_capability_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1790726400000,
+      "tag": "0084_add_trace_cache_write_5m_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1790726400001,
+      "tag": "0085_add_web_context_field_mapping",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1790875496026,
+      "tag": "0086_conversation_message_counters",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1790929000000,
+      "tag": "0087_rename_extracted_tools",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1790929000001,
+      "tag": "0088_attachment_storage_opt_in",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1791381125212,
+      "tag": "0089_rename_extracted_tools_file_upload",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1791794360000,
+      "tag": "0090_new_agents_require_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1791880000000,
+      "tag": "0091_web_channel",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1791970000000,
+      "tag": "0092_playground_use",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1792050000000,
+      "tag": "0093_user_onboarding",
+      "breakpoints": true
     }
   ]
 }

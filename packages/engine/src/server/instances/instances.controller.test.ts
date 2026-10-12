@@ -19,6 +19,7 @@ const {
   mockSeedTools,
   mockSeedSkills,
   mockInvalidateCache,
+  mockResolveEffectiveModelSelection,
   mockProviderConfigs,
   mockEmbeddingProviderChanged,
   mockResetEmbeddings,
@@ -39,6 +40,12 @@ const {
   mockCountMemories: vi.fn().mockResolvedValue(0),
   mockCountDocuments: vi.fn().mockResolvedValue(0),
   mockInvalidateCache: vi.fn(),
+  mockResolveEffectiveModelSelection: vi.fn(
+    (provider: string | null, model: string | null) => ({
+      provider: provider ?? "openai",
+      model: model ?? (provider === "anthropic" ? "claude-sonnet" : "gpt-4o"),
+    }),
+  ),
   mockProviderConfigs: {
     openai: {
       tiers: { fast: "gpt-4o-mini", standard: "gpt-4o", heavy: "o3" },
@@ -47,6 +54,10 @@ const {
         "gpt-4o": { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
         "o3": { input: 2.0, output: 8.0 },
       },
+    },
+    anthropic: {
+      tiers: { fast: "claude-sonnet-5-5", standard: "claude-sonnet-5-5", heavy: "claude-sonnet-5-5" },
+      models: { "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 4, cacheWrite5m: 2.5 } },
     },
     bedrock: {
       tiers: { fast: "titan", standard: "titan", heavy: "titan" },
@@ -69,9 +80,11 @@ vi.mock("../../instances/instance-tools.store.js", () => ({ seedInstanceTools: m
 vi.mock("../../instances/instance-skills.store.js", () => ({ seedInstanceSkills: mockSeedSkills }));
 vi.mock("../../instances/config-resolver.js", () => ({
   invalidateInstanceConfigCache: mockInvalidateCache,
+  resolveEffectiveModelSelection: mockResolveEffectiveModelSelection,
 }));
 vi.mock("../../ai-gateway/config.js", () => ({
   providerConfigs: mockProviderConfigs,
+  DEFAULT_PROVIDER: "openai",
   isThinkingCapable: vi.fn().mockReturnValue(false),
   temperatureSupported: (provider: string, modelId: string, thinking: boolean): boolean => {
     if (provider === "openai" && /^(o[134]|gpt-5)/.test(modelId)) return false;
@@ -107,6 +120,14 @@ vi.mock("../memories/memory-status.js", () => ({
     .mockResolvedValue({ needsOpenAIKey: false, canEnable: true }),
   computeEmbedderStatus: vi.fn().mockResolvedValue({ needsCredentials: false }),
 }));
+
+const { mockPrepareAttachmentCleanup, mockRunAttachmentCleanup, mockStopAllForInstance } = vi.hoisted(() => ({
+  mockPrepareAttachmentCleanup: vi.fn(),
+  mockRunAttachmentCleanup: vi.fn(async () => undefined),
+  mockStopAllForInstance: vi.fn(async () => undefined),
+}));
+vi.mock("../../attachments/attachment-cleanup.js", () => ({ prepareAttachmentCleanup: mockPrepareAttachmentCleanup }));
+vi.mock("../../channels/channel-manager.js", () => ({ channelManager: { stopAllForInstance: mockStopAllForInstance } }));
 
 import { InstancesController } from "./instances.controller.js";
 import { BadRequestException, ConflictException, NotFoundException } from "@nestjs/common";
@@ -193,10 +214,15 @@ describe("InstancesController", () => {
 
       // Allowed fields
       const allowed = new Set([
-        "id", "slug", "name", "description", "status", "provider", "model",
+        "id", "slug", "name", "description", "status", "provider", "model", "effectiveProvider", "effectiveModel",
         "memoryEnabled", "knowledgeEnabled", "langsmithEnabled", "langsmithProject",
-        "authEnabled", "thinkingEnabled", "thinkingLevel", "temperature", "stateInPromptEnabled", "datetimeInjectionEnabled", "cacheEnabled", "cacheTtl", "a2aEnabled", "toolResultsInHistoryEnabled", "debugEnabled", "sttProvider", "embeddingDim", "embeddingProvider", "icon", "createdAt", "updatedAt",
-        "optoutEnabled", "optoutStopKeywords", "optoutResumeKeywords", "optoutClosingMessage", "optoutResumeMessage", "optoutInjectPromptHint",
+        "authEnabled", "thinkingEnabled", "thinkingLevel", "temperature", "stateInPromptEnabled", "datetimeInjectionEnabled",
+        // The six that moved off the environment. On the allow-list because the
+        // panel has to render what is set, and null has to stay visible as null.
+        "datetimeTimezone", "datetimeLocale", "dedupSimilarityThreshold",
+        "messageSoftDebounceMs", "messageTypingDelayMs", "messageMaxRestarts",
+        "cacheEnabled", "cacheTtl", "a2aEnabled", "toolResultsInHistoryEnabled", "debugEnabled", "attachmentStorageEnabled", "sttProvider", "embeddingDim", "embeddingProvider", "icon", "createdAt", "updatedAt",
+        "optoutEnabled", "optoutStopKeywords", "optoutResumeKeywords", "optoutClosingMessage", "optoutResumeMessage", "optoutInjectPromptHint", "webContextFieldMapping",
         // Derived status blocks, not columns: `memory` is gated on the memory
         // flag, `embedder` is not — which is why the Knowledge tab needs it.
         "memory", "embedder",
@@ -207,6 +233,23 @@ describe("InstancesController", () => {
       }
       // The leak canary must be excluded.
       expect("internalSecretFlag" in instance).toBe(false);
+    });
+
+    it("reports the provider and model used by the runtime when overrides are empty", async () => {
+      mockFindInstanceBySlug.mockResolvedValue({
+        ...fullInstance,
+        provider: null,
+        model: null,
+      });
+
+      const { instance } = await controller.getBySlug("test-one");
+
+      expect(instance).toMatchObject({
+        provider: null,
+        model: null,
+        effectiveProvider: "openai",
+        effectiveModel: "gpt-4o",
+      });
     });
 
     it("emits icon as a URL + cache-busting query, never as the raw data URI", async () => {
@@ -430,6 +473,93 @@ describe("InstancesController", () => {
     });
   });
   // -------------------------------------------------------------------------
+  // Model validation — a PATCH that changes only the model carries no provider,
+  // and the agent's stored one is the one the gateway will run it on. Checking
+  // the body alone read "openai" for every agent.
+  // -------------------------------------------------------------------------
+  describe("update — model is validated against the agent's provider", () => {
+    const bedrockInstance = { ...fullInstance, provider: "bedrock", model: "openai.gpt-oss-120b-1:0" };
+
+    it("accepts a model of the stored provider when the body omits it", async () => {
+      mockFindInstanceBySlug.mockResolvedValue(bedrockInstance);
+      mockUpdateInstance.mockResolvedValue(bedrockInstance);
+
+      await expect(
+        controller.update("test-one", { model: "openai.gpt-oss-120b-1:0" }),
+      ).resolves.toBeDefined();
+      expect(mockUpdateInstance).toHaveBeenCalled();
+    });
+
+    it("refuses a model of another provider, naming the agent's own", async () => {
+      mockFindInstanceBySlug.mockResolvedValue(bedrockInstance);
+
+      await expect(controller.update("test-one", { model: "gpt-4o" })).rejects.toThrow(
+        /Invalid model "gpt-4o" for provider "bedrock"/,
+      );
+      expect(mockUpdateInstance).not.toHaveBeenCalled();
+    });
+
+    it("validates against the incoming provider when the body changes both", async () => {
+      mockFindInstanceBySlug.mockResolvedValue(bedrockInstance);
+      mockUpdateInstance.mockResolvedValue({ ...bedrockInstance, provider: "openai", model: "gpt-4o" });
+
+      await expect(
+        controller.update("test-one", { provider: "openai", model: "gpt-4o" }),
+      ).resolves.toBeDefined();
+    });
+
+    it("falls back to the gateway default when the body clears the provider", async () => {
+      mockFindInstanceBySlug.mockResolvedValue(bedrockInstance);
+
+      await expect(
+        controller.update("test-one", { provider: null, model: "openai.gpt-oss-120b-1:0" }),
+      ).rejects.toThrow(/for provider "openai"/);
+    });
+
+    it("refuses a provider change that leaves the stored model on the old provider", async () => {
+      mockFindInstanceBySlug.mockResolvedValue(bedrockInstance);
+
+      await expect(controller.update("test-one", { provider: "openai" })).rejects.toThrow(
+        /Invalid model "openai.gpt-oss-120b-1:0" for provider "openai"/,
+      );
+      expect(mockUpdateInstance).not.toHaveBeenCalled();
+    });
+
+    it("refuses clearing the provider when the stored model belongs to another one", async () => {
+      mockFindInstanceBySlug.mockResolvedValue(bedrockInstance);
+
+      await expect(controller.update("test-one", { provider: null })).rejects.toThrow(
+        /Invalid model "openai.gpt-oss-120b-1:0" for provider "openai"/,
+      );
+      expect(mockUpdateInstance).not.toHaveBeenCalled();
+    });
+
+    it("accepts a provider change when the body also clears the model", async () => {
+      mockFindInstanceBySlug.mockResolvedValue(bedrockInstance);
+      mockUpdateInstance.mockResolvedValue({ ...bedrockInstance, provider: "openai", model: null });
+
+      await expect(controller.update("test-one", { provider: "openai", model: null })).resolves.toBeDefined();
+      expect(mockUpdateInstance).toHaveBeenCalled();
+    });
+
+    it("leaves a PATCH that touches neither provider nor model alone", async () => {
+      // A row that predates this check must still accept unrelated edits.
+      const mismatched = { ...fullInstance, provider: "bedrock", model: "gpt-4o" };
+      mockFindInstanceBySlug.mockResolvedValue(mismatched);
+      mockUpdateInstance.mockResolvedValue({ ...mismatched, name: "Renamed" });
+
+      await expect(controller.update("test-one", { name: "Renamed" })).resolves.toBeDefined();
+      expect(mockUpdateInstance).toHaveBeenCalled();
+    });
+
+    it("reports a missing agent before judging the model", async () => {
+      mockFindInstanceBySlug.mockResolvedValue(null);
+
+      await expect(controller.update("nope", { model: "gpt-4o" })).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Temperature — clamp on PATCH, expose on GET
   // -------------------------------------------------------------------------
   describe("update — temperature clamping", () => {
@@ -465,6 +595,107 @@ describe("InstancesController", () => {
   });
 
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // webContextFieldMapping — normalized at the edge, reserved keys refused
+  // -------------------------------------------------------------------------
+  describe("update — webContextFieldMapping", () => {
+    beforeEach(() => {
+      mockFindInstanceBySlug.mockResolvedValue(fullInstance);
+      mockUpdateInstance.mockResolvedValue(fullInstance);
+      mockEmbeddingProviderChanged.mockReturnValue(false);
+    });
+
+    it("stores the mapping trimmed, without the editor's blank rows", async () => {
+      await controller.update("test-one", { webContextFieldMapping: { " phone ": " caller.phone ", "": "" } });
+      expect(mockUpdateInstance).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ webContextFieldMapping: { phone: "caller.phone" } }),
+      );
+    });
+
+    it("rejects a reserved state key or a malformed mapping (400)", async () => {
+      for (const webContextFieldMapping of [{ _channel: "x" }, { phone: "" }, ["phone"]]) {
+        await expect(
+          controller.update("test-one", { webContextFieldMapping: webContextFieldMapping as never }),
+        ).rejects.toThrow(BadRequestException);
+      }
+      expect(mockUpdateInstance).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The six per-agent settings — validated at the edge
+  // -------------------------------------------------------------------------
+  describe("update — the six per-agent settings", () => {
+    beforeEach(() => {
+      mockFindInstanceBySlug.mockResolvedValue(fullInstance);
+      mockUpdateInstance.mockResolvedValue(fullInstance);
+      mockEmbeddingProviderChanged.mockReturnValue(false);
+    });
+
+    it("passes accepted values through to the store", async () => {
+      await controller.update("test-one", {
+        datetimeTimezone: "Europe/Rome",
+        datetimeLocale: "it-IT",
+        dedupSimilarityThreshold: 0.85,
+        messageSoftDebounceMs: 0,
+        messageTypingDelayMs: 1500,
+        messageMaxRestarts: 2,
+      });
+      expect(mockUpdateInstance).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          datetimeTimezone: "Europe/Rome",
+          datetimeLocale: "it-IT",
+          dedupSimilarityThreshold: 0.85,
+          messageSoftDebounceMs: 0,
+          messageTypingDelayMs: 1500,
+          messageMaxRestarts: 2,
+        }),
+      );
+    });
+
+    it("accepts null for each of the six — that is the clear", async () => {
+      await controller.update("test-one", {
+        datetimeTimezone: null,
+        datetimeLocale: null,
+        dedupSimilarityThreshold: null,
+        messageSoftDebounceMs: null,
+        messageTypingDelayMs: null,
+        messageMaxRestarts: null,
+      });
+      expect(mockUpdateInstance).toHaveBeenCalled();
+    });
+
+    /*
+      The body is JSON and nothing upstream narrows it, so each of these reached
+      the column before: a truthiness test skipped `""` entirely, and `"abc"`
+      is neither `< 0` nor `> 1`. The panel already sends null for an emptied
+      field, so what this closes is the direct API caller.
+    */
+    it.each([
+      ["datetimeTimezone", ""],
+      ["datetimeLocale", ""],
+      ["datetimeTimezone", "   "],
+      ["datetimeTimezone", "Mars/Olympus_Mons"],
+      ["datetimeTimezone", 42],
+      ["datetimeLocale", 42],
+      ["dedupSimilarityThreshold", "abc"],
+      ["dedupSimilarityThreshold", Number.NaN],
+      ["dedupSimilarityThreshold", 1.5],
+      ["dedupSimilarityThreshold", -0.1],
+      ["messageSoftDebounceMs", -1],
+      ["messageTypingDelayMs", 1.5],
+      ["messageMaxRestarts", "abc"],
+    ])("rejects %s = %p", async (field, value) => {
+      await expect(
+        controller.update("test-one", { [field]: value } as never),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockUpdateInstance).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Models endpoint — capability hints
   // -------------------------------------------------------------------------
   describe("getModels", () => {
@@ -495,6 +726,59 @@ describe("InstancesController", () => {
       const o3 = res.providers.openai.models.find((m) => m.id === "o3");
       expect(o3?.costCacheRead).toBe(2.0);
       expect(o3?.costCacheWrite).toBe(2.0);
+    });
+
+    it("publishes the 5m write rate only on models with two write tiers", () => {
+      const res = controller.getModels();
+      const sonnet = res.providers.anthropic.models.find((m) => m.id === "claude-sonnet-5-5");
+      expect(sonnet?.costCacheWrite).toBe(4); // a write with no reported TTL: 1h
+      expect(sonnet?.costCacheWrite5m).toBe(2.5);
+      const gpt4o = res.providers.openai.models.find((m) => m.id === "gpt-4o");
+      expect(gpt4o).not.toHaveProperty("costCacheWrite5m");
+    });
+
+  });
+
+  // -------------------------------------------------------------------------
+  // Deleting an agent takes the files its users sent along. The keys and the
+  // bucket credentials both go with the agent, so they are read before.
+  // -------------------------------------------------------------------------
+  describe("remove — stored attachments", () => {
+    beforeEach(() => {
+      mockPrepareAttachmentCleanup.mockResolvedValue(mockRunAttachmentCleanup);
+    });
+
+    it("prepares the cleanup before the delete and runs it after", async () => {
+      const order: string[] = [];
+      mockPrepareAttachmentCleanup.mockImplementation(async () => {
+        order.push("prepare");
+        return async () => void order.push("cleanup");
+      });
+      mockDeleteInstance.mockImplementation(async () => {
+        order.push("delete");
+        return true;
+      });
+
+      await controller.remove("test-one");
+
+      expect(mockPrepareAttachmentCleanup).toHaveBeenCalledWith("test-one", { allConversations: true });
+      expect(order).toEqual(["prepare", "delete", "cleanup"]);
+    });
+
+    it("leaves the files alone when there was no agent to delete", async () => {
+      mockDeleteInstance.mockResolvedValue(false);
+
+      await expect(controller.remove("test-one")).rejects.toThrow(NotFoundException);
+      expect(mockRunAttachmentCleanup).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("update — attachmentStorageEnabled", () => {
+    it("refuses a value that is not a boolean, before writing anything", async () => {
+      await expect(
+        controller.update("test-one", { attachmentStorageEnabled: "false" as unknown as boolean }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockUpdateInstance).not.toHaveBeenCalled();
     });
   });
 });

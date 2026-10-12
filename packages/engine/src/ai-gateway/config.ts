@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { TierMapping, CostBreakdown } from "./types.js";
-import { providerConfigs, getModelCapabilities, findModelCapabilities } from "./model-catalog.js";
-import type { ModelCapabilities, ReasoningLevel } from "./model-catalog.js";
+import { providerConfigs, getModelCapabilities } from "./model-catalog.js";
+import type { ModelCapabilities, ReasoningLevel, ReasoningToggle, WireDialect } from "./model-catalog.js";
 
 // The per-model catalog (data) lives in model-catalog.ts; re-exported here so
 // existing importers (`./config.js`) keep working. This file holds the LOGIC:
 // model resolution, cost estimation, and the capability gates — each now a
 // catalog LOOKUP with a logged regex fallback for un-catalogued model ids.
-export { providerConfigs } from "./model-catalog.js";
+export { providerConfigs, DEFAULT_PROVIDER } from "./model-catalog.js";
 export type { ProviderConfig, ModelCapabilities } from "./model-catalog.js";
 
 export function resolveModel(provider: string, tier: string): string {
@@ -32,28 +32,38 @@ export function resolveModel(provider: string, tier: string): string {
  * that every catalogued row matches its heuristic (behaviour-preserving migration).
  */
 
+/**
+ * The Bedrock Nova family, as the cache fallbacks recognise it. Named once
+ * because two gates ask about it and they must agree: an id that counted as
+ * Nova for "can cache" but not for "can cache on a tool message" would be told
+ * to place a `cachePoint` that Nova 400s on — the exact failure the tool-message
+ * gate exists to prevent, on the path where no catalog row can correct it.
+ */
+const BEDROCK_NOVA = /nova/;
+
 /** Bedrock families that support Converse prompt caching (`cachePoint`). */
-const BEDROCK_CACHE_CAPABLE = /anthropic|nova/;
+const BEDROCK_CACHE_CAPABLE = new RegExp(`anthropic|${BEDROCK_NOVA.source}`);
 
 /** Reasoning-capability fallback — the historical per-provider heuristic. */
 export function reasoningCapableFallback(provider: string, modelId: string): boolean {
   if (!provider || !modelId) return false;
   switch (provider) {
     case "openai":
-      // Reasoning families: o1, o3, o4 (any suffix) and the gpt-5 line.
-      return /^(o[134]|gpt-5)/.test(modelId);
+      // Reasoning families: o1, o3, o4 (any suffix) and the gpt-5 / gpt-6 lines.
+      return /^(o[134]|gpt-5|gpt-6)/.test(modelId);
     case "anthropic":
-      // Claude 3.7 + the Claude 4 family (sonnet, opus, haiku), sonnet-5, fable-5.
-      return /^claude-(3-7|opus-4|sonnet-4|sonnet-5|haiku-4|fable-5)/.test(modelId);
+      // Claude 3.7 + the Claude 4 family (sonnet, opus, haiku), sonnet-5, opus-5,
+      // haiku-5, fable-5 (which also covers fable-5-1).
+      return /^claude-(3-7|opus-4|opus-5|sonnet-4|sonnet-5|haiku-4|haiku-5|fable-5)/.test(modelId);
     case "bedrock":
       // Anthropic Claude 4+ (haiku/sonnet/opus — haiku LIVE-VERIFIED to reason on
       // Bedrock) + OpenAI gpt-oss (effort) + MiniMax M (live-verified), with or
       // without a cross-region inference-profile prefix (eu./us./apac./global.).
-      return /^(?:(?:eu|us|apac|global)\.)?(?:anthropic\.claude-(?:haiku-4|sonnet-4|sonnet-5|opus-4)|openai\.gpt-oss)|^minimax\.minimax-m/.test(modelId);
+      return /^(?:(?:eu|us|apac|global)\.)?(?:anthropic\.claude-(?:haiku-4|haiku-5|sonnet-4|sonnet-5|opus-4|opus-5)|openai\.gpt-oss)|^minimax\.minimax-m/.test(modelId);
     case "nebius":
       // Reasoning families served by Nebius (emit reasoning_content). IDs carry an
       // org prefix, so match the model segment case-insensitively.
-      return /(qwen3\.5|-thinking|deepseek-v4|glm-5|gpt-oss|kimi-k2|minimax-m|hermes-4|nemotron|reasoner)/i.test(modelId);
+      return /(qwen3\.5|-thinking|deepseek-v4|glm-5|gpt-oss|kimi-k[23]|minimax-m|hermes-4|nemotron|reasoner)/i.test(modelId);
     default:
       return false;
   }
@@ -72,7 +82,15 @@ export function reasoningCapableFallback(provider: string, modelId: string): boo
  */
 export function reasoningAlwaysOnFallback(modelId: string): boolean {
   if (!modelId) return false;
-  return /gpt-oss|^o[134]\b|gpt-5\.6|minimax-m|kimi-k2|-thinking/i.test(modelId);
+  // The alternatives that name a POINT release are anchored and terminated on
+  // purpose: `claude-opus-5-5` cannot be switched off and `claude-opus-5` can,
+  // and one is a prefix of the other (on Bedrock too, behind a profile prefix).
+  // Same for `gpt-6-astra` against the rest of its family. Both Fable releases
+  // are always-on.
+  return (
+    /gpt-oss|^o[134]\b|gpt-5\.6|minimax-m|kimi-k[23]|-thinking/i.test(modelId) ||
+    /^gpt-6-astra$|^(?:(?:eu|us|apac|global)\.anthropic\.)?claude-opus-5-5$|^claude-fable-5(?:-1)?$/i.test(modelId)
+  );
 }
 
 /**
@@ -82,7 +100,7 @@ export function reasoningAlwaysOnFallback(modelId: string): boolean {
  *     reasoning OFF (200) and 400s only with reasoning ON, so it is temperature:true
  *     (the reasoning-ON case is handled by temperatureSupported, not by omitting the
  *     param wholesale). Mirrors reasoningAlwaysOnFallback's OpenAI split.
- *   - Anthropic removed sampling params on Opus 4.7/4.8, Sonnet 5, Fable 5.
+ *   - Anthropic removed sampling params on Opus 4.7/4.8, Sonnet 5, Haiku 5, Fable 5.
  *   - Bedrock serves the same Claude models via optional region profiles.
  */
 export function temperatureRejectedFallback(provider: string, modelId: string): boolean {
@@ -90,11 +108,11 @@ export function temperatureRejectedFallback(provider: string, modelId: string): 
     case "openai":
       // Both alternatives are anchored: `^` binds only to the first branch of a
       // top-level `|`, so without the group `my-gpt-5.6-tune` would match too.
-      return /^(?:o[134]\b|gpt-5\.6)/.test(modelId);
+      return /^(?:o[134]\b|gpt-5\.6|gpt-6)/.test(modelId);
     case "anthropic":
-      return /^claude-(opus-4-[78]|sonnet-5|fable-5)/.test(modelId);
+      return /^claude-(opus-4-[78]|opus-5|sonnet-5|haiku-5|fable-5)/.test(modelId);
     case "bedrock":
-      return /^(?:(?:eu|us|apac|global)\.)?anthropic\.claude-(opus-4-[78]|sonnet-5|fable-5)/.test(modelId);
+      return /^(?:(?:eu|us|apac|global)\.)?anthropic\.claude-(opus-4-[78]|opus-5|sonnet-5|haiku-5|fable-5)/.test(modelId);
     default:
       return false;
   }
@@ -105,7 +123,7 @@ export function temperatureRejectedFallback(provider: string, modelId: string): 
  * wire, for un-catalogued ids. Consolidates the last two mechanism regexes here
  * (adaptive-Claude + Bedrock gpt-oss effort) so NO provider file branches on a
  * model-id regex. Returns `undefined` for non-reasoning ids.
- *   - adaptive: Anthropic/Bedrock Claude Opus 4.7/4.8, Sonnet 5, Fable 5 (reject
+ *   - adaptive: Anthropic/Bedrock Claude Opus 4.7/4.8, Sonnet 5, Haiku 5, Fable 5 (reject
  *     the legacy `enabled`+budgetTokens shape with a 400 — live-verified).
  *   - effort: OpenAI/Nebius reasoning_effort; Bedrock gpt-oss + MiniMax
  *     maxReasoningEffort (MiniMax ignores the level — always reasons — but the effort
@@ -119,7 +137,7 @@ export function reasoningControlFallback(
   if (!reasoningCapableFallback(provider, modelId)) return undefined;
   const claudeAdaptive =
     (provider === "anthropic" || provider === "bedrock") &&
-    /claude-(?:opus-4-[78]|sonnet-5|fable-5)/.test(modelId);
+    /claude-(?:opus-4-[78]|opus-5|sonnet-5|haiku-5|fable-5)/.test(modelId);
   if (claudeAdaptive) return "adaptive";
   switch (provider) {
     case "openai":
@@ -146,6 +164,16 @@ export function cacheCapableFallback(provider: string, model: string): boolean {
   }
 }
 
+/**
+ * Tool-message cache-marker fallback for un-catalogued ids: Amazon Nova on
+ * Bedrock rejects a `cachePoint` on a message carrying tool content (400,
+ * "extraneous key [cachePoint] is not permitted"); every other cache-capable
+ * family accepts one anywhere.
+ */
+export function cacheOnToolMessagesFallback(provider: string, model: string): boolean {
+  return !(provider === "bedrock" && BEDROCK_NOVA.test(model));
+}
+
 /** One-shot warning (deduped per gate+provider+model) when a regex fallback fires. */
 const catalogFallbackWarned = new Set<string>();
 export function warnCatalogFallback(gate: string, provider: string, modelId: string): void {
@@ -167,6 +195,24 @@ export interface CacheTokenUsage {
   cachedInputTokens?: number;
   /** Input tokens written to the prompt cache (Anthropic bills these at a premium). */
   cacheCreationInputTokens?: number;
+  /**
+   * The part of `cacheCreationInputTokens` the provider reported as 5-minute-TTL
+   * writes (Anthropic's `cache_creation.ephemeral_5m_input_tokens`). Absent when
+   * the provider reports no TTL split: every write is then billed at `cacheWrite`.
+   */
+  cacheCreation5mInputTokens?: number;
+}
+
+/** The rates one model call is billed at. */
+type CallRates = Pick<ModelCapabilities, "input" | "output" | "cacheRead" | "cacheWrite" | "cacheWrite5m">;
+
+/**
+ * The rates of ONE model call with a prompt of `promptTokens`: the model's
+ * `longPrompt` rates past its threshold, its base rates otherwise.
+ */
+function ratesForPrompt(pricing: ModelCapabilities, promptTokens: number): CallRates {
+  const long = pricing.longPrompt;
+  return long && promptTokens > long.above ? long : pricing;
 }
 
 /**
@@ -177,10 +223,13 @@ export interface CacheTokenUsage {
  * discount (Nebius) and for non-cacheable families. This is the single pricing
  * source — there is no separate multiplier table.
  */
-function resolveCacheRates(pricing: ModelCapabilities): { read: number; write: number } {
+function resolveCacheRates(pricing: CallRates): { read: number; write: number; write5m: number } {
+  const write = pricing.cacheWrite ?? pricing.input;
   return {
     read: pricing.cacheRead ?? pricing.input,
-    write: pricing.cacheWrite ?? pricing.input,
+    write,
+    // A model with one write tier bills a reported 5m write like any other write.
+    write5m: pricing.cacheWrite5m ?? write,
   };
 }
 
@@ -207,6 +256,10 @@ export function estimateCost(
  * Like `estimateCost`, but returns the per-bucket split (regular input, cache
  * read+write, output) alongside the total. Persisted per-message on
  * `pipeline_traces` so the admin panel can show input/cache/output costs.
+ *
+ * The tokens are those of ONE model call when the model is priced by prompt
+ * length (`longPrompt`), since its threshold is judged per call; a turn of
+ * several calls goes through `estimateTurnCostBreakdown`.
  */
 export function estimateCostBreakdown(
   provider: string,
@@ -220,14 +273,18 @@ export function estimateCostBreakdown(
 
   const cacheRead = Math.max(0, cache?.cachedInputTokens ?? 0);
   const cacheWrite = Math.max(0, cache?.cacheCreationInputTokens ?? 0);
+  // The reported 5m writes are a subset of all writes; the rest (1h, or TTL
+  // not reported) are billed at `cacheWrite`, exactly as before the split.
+  const cacheWrite5m = Math.min(cacheWrite, Math.max(0, cache?.cacheCreation5mInputTokens ?? 0));
   const regularInput = Math.max(0, promptTokens - cacheRead - cacheWrite);
-  const rates = resolveCacheRates(pricing);
+  const callRates = ratesForPrompt(pricing, promptTokens);
+  const rates = resolveCacheRates(callRates);
 
-  const input = (regularInput * pricing.input) / 1_000_000;
+  const input = (regularInput * callRates.input) / 1_000_000;
   const cacheReadCost = (cacheRead * rates.read) / 1_000_000;
-  const cacheWriteCost = (cacheWrite * rates.write) / 1_000_000;
+  const cacheWriteCost = ((cacheWrite - cacheWrite5m) * rates.write + cacheWrite5m * rates.write5m) / 1_000_000;
   const cacheCost = cacheReadCost + cacheWriteCost;
-  const output = (completionTokens * pricing.output) / 1_000_000;
+  const output = (completionTokens * callRates.output) / 1_000_000;
 
   return {
     input,
@@ -239,9 +296,83 @@ export function estimateCostBreakdown(
   };
 }
 
+/** The token usage of one model call: one step of a tool loop, or a whole turn. */
+export interface CallUsage extends CacheTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
+/**
+ * The cost of a turn, which can be several model calls (the steps of a tool
+ * loop). A model priced by prompt length is priced call by call from `calls`,
+ * because its threshold applies to each call: three 40K-token steps are three
+ * calls under a 100K threshold, while their 120K sum is over it. Every other
+ * model costs the same per token at any length, so it is priced on `total`,
+ * exactly as before; so is a priced-by-length turn whose calls were not
+ * reported, which is then billed at the rates its total falls in.
+ */
+export function estimateTurnCostBreakdown(
+  provider: string,
+  model: string,
+  total: CallUsage,
+  calls: readonly CallUsage[] | undefined,
+): CostBreakdown {
+  const ofCall = (u: CallUsage) =>
+    estimateCostBreakdown(provider, model, u.promptTokens, u.completionTokens, {
+      cachedInputTokens: u.cachedInputTokens,
+      cacheCreationInputTokens: u.cacheCreationInputTokens,
+      cacheCreation5mInputTokens: u.cacheCreation5mInputTokens,
+    });
+  if (!getModelCapabilities(provider, model)?.longPrompt || !calls?.length) return ofCall(total);
+  const sum: CostBreakdown = { input: 0, cache: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 };
+  for (const call of calls) {
+    const c = ofCall(call);
+    sum.input += c.input;
+    sum.cache += c.cache;
+    sum.cacheRead += c.cacheRead;
+    sum.cacheWrite += c.cacheWrite;
+    sum.output += c.output;
+    sum.total += c.total;
+  }
+  return sum;
+}
+
+/**
+ * Embedding prices, USD per 1M input tokens, keyed by embedder name
+ * (`instances.embedding_provider`) and model id. OpenAI from its pricing page;
+ * Titan from the AWS Price List API at eu-south-1 (Milan), the Region every
+ * deployment calls from (2026-10-06). A registered OpenAI-compatible embedder
+ * has no row, so its calls are logged with their tokens and a cost of 0.
+ */
+export const embeddingPricingPerMillion: Record<string, Record<string, number>> = {
+  openai: { "text-embedding-3-small": 0.02 },
+  bedrock: { "amazon.titan-embed-text-v2:0": 0.023 },
+};
+
+export function estimateEmbeddingCost(provider: string, model: string, tokens: number): number {
+  if (!Number.isFinite(tokens) || tokens <= 0) return 0;
+  const perMillion = embeddingPricingPerMillion[provider]?.[model];
+  return perMillion == null ? 0 : (tokens * perMillion) / 1_000_000;
+}
+
+/**
+ * Speech-to-text prices, USD per minute of audio, keyed by provider and the
+ * model the response reports. List prices, never promotional ones:
+ * - Deepgram Nova-3 monolingual, pre-recorded pay-as-you-go (the engine posts
+ *   the whole file to /v1/listen), from deepgram.com/pricing.
+ * - Amazon Transcribe standard streaming, $0.0001667 per second in every
+ *   Region that offers it, from the AWS Price List API (published 2026-09-11).
+ *   Billed per second with no minimum.
+ */
 export const sttPricingPerMinute: Record<string, Record<string, number>> = {
   openai: {
     "whisper-1": 0.006,
+  },
+  deepgram: {
+    "nova-3": 0.0043,
+  },
+  aws: {
+    "transcribe-streaming": 0.0001667 * 60,
   },
 };
 
@@ -284,18 +415,25 @@ export function isThinkingCapable(provider: string, modelId: string): boolean {
  * only the effort (low|medium|high) is adjustable, there is no "off" (gpt-oss,
  * the OpenAI o-series, and gpt-5.6 — all live-verified). A model that is always-on is necessarily
  * thinking-capable, so callers use this to REFINE the `isThinkingCapable`
- * verdict — not replace it. Takes model id alone (provider-agnostic: gpt-oss is
- * gpt-oss whatever serves it), so it does a cross-provider catalog lookup.
+ * verdict — not replace it.
+ *
+ * Takes the PROVIDER as well as the model id, and every caller has one. It used
+ * to look the id up across providers on the premise that "gpt-oss is gpt-oss
+ * whatever serves it" — true of the capability, false of the lookup: a model id
+ * is unique within its provider and nothing makes it unique across providers
+ * (open-weight models are served under the same bare name by more than one),
+ * each with its own prices and effort levels, so a cross-provider lookup answers
+ * from whichever row was declared first, with nothing in the log.
  *
  * Consumed by GET /api/instances/models (frontend locks the toggle ON + shows an
- * "always reasons" hint) and by ai-gateway resolveCallConfig (Nebius: never send
- * the Qwen-only `enable_thinking:false` kwarg to a model that ignores it).
+ * "always reasons" hint) and by ai-gateway resolveCallConfig (never send an
+ * off-switch kwarg to a model that ignores it).
  */
-export function isReasoningAlwaysOn(modelId: string): boolean {
-  if (!modelId) return false;
-  const entry = findModelCapabilities(modelId);
+export function isReasoningAlwaysOn(provider: string, modelId: string): boolean {
+  if (!provider || !modelId) return false;
+  const entry = getModelCapabilities(provider, modelId);
   if (entry) return entry.reasoningAlwaysOn ?? false;
-  warnCatalogFallback("isReasoningAlwaysOn", "", modelId);
+  warnCatalogFallback("isReasoningAlwaysOn", provider, modelId);
   return reasoningAlwaysOnFallback(modelId);
 }
 
@@ -327,6 +465,10 @@ export function reasoningLevelsFallback(provider: string, modelId: string): read
   const control = reasoningControlFallback(provider, modelId);
   if (!control) return [];
   if (control === "adaptive") return ["low", "medium", "high", "xhigh", "max"];
+  // gpt-6 publishes `max` as well; gpt-5.x stops at `xhigh`.
+  if (control === "effort" && provider === "openai" && /^gpt-6/.test(modelId)) {
+    return ["low", "medium", "high", "xhigh", "max"];
+  }
   if (control === "effort" && provider === "openai" && /^gpt-5/.test(modelId)) {
     return ["low", "medium", "high", "xhigh"];
   }
@@ -349,13 +491,21 @@ export function reasoningLevelsFor(provider: string, modelId: string): readonly 
 
 /**
  * Clamp a requested reasoning level to what the model actually accepts, falling
- * back to "medium" (which every reasoning model supports). Prevents a direct API
- * caller from sending an out-of-range effort that the provider 400s on — the
- * single enforcement point at the ai-gateway boundary.
+ * back to a level it does accept — `medium` where the model takes it, otherwise
+ * the first of its published set. Prevents a direct API caller from sending an
+ * out-of-range effort that the provider 400s on: the single enforcement point at
+ * the ai-gateway boundary.
  */
 export function resolveReasoningLevel(provider: string, modelId: string, requested: string): ReasoningLevel {
   const levels = reasoningLevelsFor(provider, modelId);
-  return (levels as readonly string[]).includes(requested) ? (requested as ReasoningLevel) : "medium";
+  if ((levels as readonly string[]).includes(requested)) return requested as ReasoningLevel;
+  // The fallback has to be a level THIS model accepts. It used to be `medium`
+  // unconditionally, which held only while every catalogued model accepted it.
+  // Providers do publish effort sets without it (high|max only, or xhigh in place
+  // of high), and there the old fallback sent the one value the endpoint 400s on
+  // — from inside the clamp whose job is to prevent exactly that.
+  if ((levels as readonly string[]).includes("medium")) return "medium";
+  return levels[0] ?? "medium";
 }
 
 /**
@@ -415,4 +565,63 @@ export function cacheSupported(provider: string, model: string): boolean {
   if (entry) return entry.cache;
   warnCatalogFallback("cacheSupported", provider, model);
   return cacheCapableFallback(provider, model);
+}
+
+/**
+ * Whether a cache marker may ride on a message carrying TOOL content. Separate
+ * from {@link cacheSupported} because the two answers genuinely differ: Nova
+ * caches its system prefix happily and 400s only once a tool call enters the
+ * transcript, so collapsing them would cost the whole cache to fix the tool
+ * turn. Absent field → true (the Anthropic behaviour every other row has).
+ */
+export function cacheOnToolMessagesSupported(provider: string, model: string): boolean {
+  const entry = getModelCapabilities(provider, model);
+  if (entry) return entry.cacheOnToolMessages ?? true;
+  warnCatalogFallback("cacheOnToolMessagesSupported", provider, model);
+  return cacheOnToolMessagesFallback(provider, model);
+}
+
+/**
+ * The wire dialect the gateway speaks to a provider — the switch `resolveCallConfig`
+ * keys its thinking payload on, so a new provider costs a catalog row and no
+ * branch there. `undefined` for a provider with no catalog (which `resolveModel`
+ * would already have rejected), and the caller then sends no thinking config.
+ */
+export function wireDialectFor(provider: string): WireDialect | undefined {
+  return providerConfigs[provider]?.wireDialect;
+}
+
+/**
+ * How to switch a model's thinking OFF on the wire: the model's own
+ * `reasoningOff` when it disagrees with its provider, else the provider's
+ * `defaultReasoningOff`. An un-catalogued model id therefore still gets its
+ * provider's off-switch, which is what keeps a drifting Nebius id from silently
+ * reasoning through a turn the operator switched thinking off for.
+ *
+ * `undefined` = nothing to send; absence of a thinking payload IS off (every
+ * OpenAI/Anthropic/Bedrock model). Callers must skip `reasoningAlwaysOn` models:
+ * they have no off, and sending one a kwarg it ignores is noise at best.
+ */
+export function reasoningOffFor(provider: string, modelId: string): ReasoningToggle | undefined {
+  if (!provider) return undefined;
+  const config = providerConfigs[provider];
+  if (!config) return undefined;
+  const model = config.models[modelId];
+  if (model?.reasoningOff) return model.reasoningOff;
+  // A model that has to be switched ON is already off when we send nothing, so
+  // the provider default does not apply to it — handing it one would send a
+  // parameter it never declared (an effort value the endpoint does not accept is
+  // a 400).
+  if (model?.reasoningOn) return undefined;
+  return config.defaultReasoningOff;
+}
+
+/**
+ * How to switch a model's thinking ON, for the models that do not reason by
+ * default and need more than an effort level to start. `undefined`
+ * for everything else — the effort payload alone starts them.
+ */
+export function reasoningOnFor(provider: string, modelId: string): ReasoningToggle | undefined {
+  if (!provider) return undefined;
+  return providerConfigs[provider]?.models[modelId]?.reasoningOn;
 }

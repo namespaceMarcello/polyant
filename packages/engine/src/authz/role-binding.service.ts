@@ -96,6 +96,18 @@ export class RoleBindingService {
   /** Remove a member and every role binding they hold in an organization. */
   async removeMember(input: RemoveBindingInput): Promise<void> {
     const { organizationId, userId, actorId } = input;
+    // Removing YOURSELF is not a member-management action, it is leaving — and
+    // this path offers none of what leaving needs: the caller keeps a session
+    // whose organization it no longer belongs to, so the panel it is looking at
+    // is already gone at the next reload, and the Owner-last guard below is the
+    // only thing that would have stopped an organization's sole administrator
+    // from locking everyone out of it. The actor-outrank guard cannot catch
+    // this: a user always ranks equal to itself, so it passes.
+    if (actorId && actorId === userId) {
+      throw new ForbiddenException(
+        "You cannot remove yourself from the organization: ask another administrator.",
+      );
+    }
     await withOrganizationMemberLock(organizationId, async (transaction) => {
       await this.assertActorOutranks(organizationId, actorId, userId, undefined, transaction);
       await this.assertNotLastOwner(organizationId, userId, transaction);
@@ -125,8 +137,8 @@ export class RoleBindingService {
     organizationId: string,
     actorId: string | undefined,
     targetUserId: string,
-    assignedRoleKey?: SystemRoleKey,
-    executor?: DbExecutor,
+    assignedRoleKey: SystemRoleKey | undefined,
+    executor: DbExecutor,
   ): Promise<void> {
     if (!actorId) return;
     if (await this.authz.isPlatformAdmin(actorId)) return;
@@ -151,7 +163,7 @@ export class RoleBindingService {
   private async levelOf(
     organizationId: string,
     userId: string,
-    executor?: DbExecutor,
+    executor: DbExecutor,
   ): Promise<number> {
     const roleKey = await getOrgScopeRoleKey(organizationId, userId, executor);
     return roleKey && isSystemRoleKey(roleKey) ? roleLevel(roleKey) : 0;
@@ -164,7 +176,7 @@ export class RoleBindingService {
   private async assertNotLastOwner(
     organizationId: string,
     userId: string,
-    executor?: DbExecutor,
+    executor: DbExecutor,
   ): Promise<void> {
     const currentRole = await getOrgScopeRoleKey(organizationId, userId, executor);
     if (currentRole !== OWNER_ROLE_KEY) return;

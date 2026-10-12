@@ -8,9 +8,10 @@ import { deleteAllKnowledgeForInstance } from "../knowledge/store.js";
 import { defaultDimForProvider } from "./config.js";
 import type { EmbeddingDim, EmbeddingProvider } from "./types.js";
 import type { InstanceSlug, InstanceUuid } from "../instances/identifiers.js";
+import { allTenantsScope } from "../authz/scope-filter.js";
 
 /**
- * Whether the instance's EMBEDDING provider changed (openai↔bedrock). The
+ * Whether the instance's EMBEDDING provider changed. The
  * embedding provider is now an independent field, decoupled from the chat
  * `provider`: changing only the chat LLM never touches embeddings. The embedding
  * space is provider-specific, so a change makes existing vectors uninterpretable
@@ -58,7 +59,16 @@ export async function resetEmbeddingsForProviderSwitch(
     // slug, not the UUID) — they MUST be filtered by slug or the delete matches
     // zero rows. The instances table is keyed by UUID. Passing the wrong one was
     // the bug that left the data orphaned while only realigning embedding_dim.
-    const memoriesDeleted = await deleteAllMemories(slug, undefined, tx);
+    // The wipe is scoped by SLUG, which already pins exactly one agent and
+    // therefore one tenant; this service runs on a provider switch, with no
+    // principal to resolve an organization from. It used to pass `undefined`
+    // here, which the store read as "no tenant filter" — the same thing a
+    // forgotten argument produced, on a DELETE.
+    const memoriesDeleted = await deleteAllMemories(
+      slug,
+      allTenantsScope("embedding provider switch: scoped by agent slug, runs with no principal"),
+      tx,
+    );
     const { documents, chunks } = await deleteAllKnowledgeForInstance(slug, tx);
 
     await tx

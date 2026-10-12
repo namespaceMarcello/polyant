@@ -50,6 +50,24 @@ export interface OrganizationMember {
   roleKey: MemberRole | null;
 }
 
+// ── Management API keys ─────────────────────────────────────────────
+
+/** A management API key as listed. The secret is never returned after creation. */
+export interface ManagementApiKey {
+  id: string;
+  name: string;
+  permissions: string[];
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+
+/** The creation response: the only time the plaintext token is available. */
+export interface CreatedManagementApiKey {
+  key: ManagementApiKey;
+  token: string;
+}
+
 // ── Instances ───────────────────────────────────────────────────────
 
 export interface Instance {
@@ -60,6 +78,9 @@ export interface Instance {
   status: string;
   provider: string | null;
   model: string | null;
+  /** Values the runtime uses after applying its provider and standard-tier fallback. */
+  effectiveProvider: string;
+  effectiveModel: string;
   memoryEnabled: boolean;
   knowledgeEnabled: boolean;
   langsmithEnabled: boolean;
@@ -87,6 +108,17 @@ export interface Instance {
   stateInPromptEnabled: boolean;
   /** When true, the current date/time is injected into every turn. */
   datetimeInjectionEnabled: boolean;
+  /**
+   * Six behaviours that used to be deployment configuration. `null` means the
+   * agent declares none and the deployment default applies — so the panel must
+   * keep null visible as an empty field, never fill it in with the default.
+   */
+  datetimeTimezone: string | null;
+  datetimeLocale: string | null;
+  dedupSimilarityThreshold: number | null;
+  messageSoftDebounceMs: number | null;
+  messageTypingDelayMs: number | null;
+  messageMaxRestarts: number | null;
   /** Per-instance prompt-cache switch (off skips cache markers → no cache write). */
   cacheEnabled: boolean;
   /** Cross-turn Anthropic cache TTL ("5m" | "1h"). */
@@ -97,6 +129,8 @@ export interface Instance {
   toolResultsInHistoryEnabled: boolean;
   /** When true, the exact LLM request payload is persisted per turn (debug/analysis). */
   debugEnabled: boolean;
+  /** When true, files users send are copied to the agent's bucket so they can be reopened. */
+  attachmentStorageEnabled: boolean;
   /** When true, inbound STOP/START keyword handling is active for this instance. */
   optoutEnabled: boolean;
   optoutStopKeywords: string[];
@@ -105,6 +139,8 @@ export interface Instance {
   optoutResumeMessage: string | null;
   /** When true, a read-only opt-out hint is injected into the supervisor prompt. */
   optoutInjectPromptHint: boolean;
+  /** Web/API channel: conversation state key → dot-path into a request's `context`. */
+  webContextFieldMapping: Record<string, string>;
   sttProvider: string | null;
   icon: string | null;
   /**
@@ -114,11 +150,13 @@ export interface Instance {
    */
   embeddingDim?: number;
   /**
-   * Embedder provider, chosen independently of the chat `provider`:
-   * "openai" | "bedrock" (Anthropic has no embeddings API). Changing it wipes
-   * memories + knowledge, since vectors are not portable across providers.
+   * Embedder provider, chosen independently of the chat `provider` (Anthropic has
+   * no embeddings API). One of the ids in `ModelsResponse.embedders` — not a
+   * closed union, because an embedder can be registered at boot and the engine
+   * validates the value against its own registry. Changing it wipes memories +
+   * knowledge, since vectors are not portable across providers.
    */
-  embeddingProvider?: "openai" | "bedrock";
+  embeddingProvider?: string;
   /**
    * Provider-aware memory readiness, computed server-side. `needsOpenAIKey` is
    * true when memory is enabled but the embeddings provider lacks the required
@@ -135,9 +173,9 @@ export interface Instance {
    * reports all-false whenever memory is off and therefore cannot speak for an
    * agent that uses only knowledge.
    *
-   * Computed by the engine because the browser cannot see the `AWS_REGION` env
-   * fallback: a client-side copy of this rule reports a false "AWS credentials
-   * needed" for a bedrock agent whose embeddings actually work.
+   * Computed by the engine because the rule's inputs are the agent's encrypted
+   * secrets, which never reach the browser: a client-side copy reports a false
+   * "AWS credentials needed" for a bedrock agent whose embeddings actually work.
    */
   embedder?: {
     needsCredentials: boolean;
@@ -195,6 +233,21 @@ export interface ModelInfo {
    */
   costCacheRead: number;
   costCacheWrite: number;
+  /** Rate of the writes a message reports as 5m TTL, on models with two write tiers (Anthropic 1P). */
+  costCacheWrite5m?: number;
+  /**
+   * Only on models priced by prompt length (Claude Haiku 5.5): the rates of a
+   * single model call whose prompt exceeds `above` tokens. They replace every
+   * rate above for that call.
+   */
+  costLongPrompt?: {
+    above: number;
+    costInput: number;
+    costOutput: number;
+    costCacheRead: number;
+    costCacheWrite: number;
+    costCacheWrite5m?: number;
+  };
   /** True when the provider+model has real prompt caching (a discount) — a UI hint. */
   supportsCache: boolean;
   /**
@@ -235,6 +288,14 @@ export interface ModelInfo {
 
 export interface ModelsResponse {
   providers: Record<string, { models: ModelInfo[] }>;
+  /**
+   * The embedders this deployment can use — the two built in plus any registered
+   * at boot. Served rather than hardcoded in the panel: a second list here was
+   * pinned to OpenAI and Bedrock, so a registered embedder could not be selected
+   * at all. `supportedDims` is what makes a switch legal — a provider that cannot
+   * emit the agent's stored dimension would make every embed throw.
+   */
+  embedders: { id: string; supportedDims: number[] }[];
 }
 
 export interface PromptSection {
@@ -256,6 +317,19 @@ export interface RequiredSecretSpec {
   sensitive?: boolean;
   /** Cleartext value for non-sensitive fields (so the UI can preselect or prefill). Never present for sensitive fields. */
   currentValue?: string;
+}
+
+/**
+ * How the panel names a plugin whose tools it lists, from the plugin's manifest.
+ * `displayName` and `description` are optional in the manifest; without them the
+ * panel humanizes the namespace.
+ */
+export interface ToolPluginInfo {
+  namespace: string;
+  name: string;
+  version: string;
+  displayName?: string;
+  description?: string;
 }
 
 export interface ToolState {
@@ -362,6 +436,8 @@ export interface ScheduledTask {
   totalRuns: number;
   deleteAfterRun: boolean;
   maxRetries: number;
+  /** Per-run deadline in ms; null → the server default (config.scheduler.defaultMaxRunMs). */
+  maxRunMs: number | null;
   outboundChannel: string | null;
   outboundTarget: string | null;
   keepHistory: boolean;
@@ -458,6 +534,8 @@ export interface ConversationMessage {
   /** Prompt-cache read/write token counts (assistant messages only). */
   cachedInputTokens?: number | null;
   cacheCreationInputTokens?: number | null;
+  /** The 5m-TTL share of `cacheCreationInputTokens`; null when the turn reported no TTL split. */
+  cacheCreation5mInputTokens?: number | null;
   /** Model id used for this turn (assistant messages only). */
   model?: string | null;
   /** Provider that served the model (assistant messages only). */
@@ -840,4 +918,34 @@ export interface TenantWorkspace {
 export interface TenantContextPayload {
   organization: { slug: string; name: string } | null;
   workspaces: TenantWorkspace[];
+  /**
+   * The caller's own first-access guidance state. Absent from an engine that
+   * predates it, in which case the panel offers no guidance at all.
+   */
+  onboarding?: OnboardingState;
 }
+
+export type WizardState = "new" | "done" | "skipped" | "dismissed";
+export type TourState = "new" | "seen" | "done" | "dismissed";
+export type WizardStepId =
+  | "welcome"
+  | "provider"
+  | "model"
+  | "agent"
+  | "chat"
+  | "channels"
+  | "knowledge";
+export type WizardStepState = "todo" | "done" | "skip";
+
+/**
+ * Per-user guidance record, stored on the engine so it follows the person across
+ * devices and organizations. Steps never touched are absent and read as "todo".
+ */
+export interface OnboardingState {
+  wizard: WizardState;
+  interfaceTour: TourState;
+  agentTour: TourState;
+  steps: Partial<Record<WizardStepId, WizardStepState>>;
+}
+
+export type OnboardingPatch = Partial<OnboardingState>;

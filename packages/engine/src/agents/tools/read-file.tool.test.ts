@@ -169,6 +169,30 @@ describe("readFile tool", () => {
     expect(result.error).toContain("File too large");
   });
 
+  it("does not advise a range retry for a file over 512 KB, since a range is refused too", async () => {
+    mockStat.mockResolvedValue({ isFile: () => true, size: 600 * 1024 });
+    const { execute } = buildTool();
+
+    const plain = await execute({ path: "huge.log", tail: null }) as { error: string };
+    const ranged = await execute({ path: "huge.log", tail: 20, offset: null, limit: null }) as { error: string };
+
+    expect(ranged.error).toContain("File too large");
+    expect(plain.error).not.toMatch(/offset|limit|tail/);
+  });
+
+  it("caps tail at 500 lines and says where the window starts", async () => {
+    const lines = Array.from({ length: 900 }, (_, i) => `Line ${i + 1}`);
+    mockStat.mockResolvedValue({ isFile: () => true, size: 9000 });
+    mockReadFile.mockResolvedValue(lines.join("\n"));
+    const { execute } = buildTool();
+
+    const result = await execute({ path: "log.md", tail: 800, offset: null, limit: null }) as { content: string };
+
+    expect(result.content).toContain("Line 401\n");
+    expect(result.content).not.toContain("Line 400\n");
+    expect(result.content).toContain("[lines 401-900 of 900]");
+  });
+
   it("stats and reads the same handle, and closes it on the rejection path too", async () => {
     // The size/type gates must apply to the bytes actually returned: re-resolving the
     // path for the read would let it point at a different file (TOCTOU).
@@ -202,6 +226,79 @@ describe("readFile tool", () => {
     expect(result.content).toContain("Line 1");
     expect(result.content).toContain("[... truncated:");
     expect(result.lines).toBe(600);
+  });
+
+  it("returns the requested line window, not the whole file", async () => {
+    // Without a range the model pays for the entire file on every step of the
+    // turn, which is what made a four-document read blow the request limit (#378).
+    const lines = Array.from({ length: 600 }, (_, i) => `Line ${i + 1}`);
+    mockStat.mockResolvedValue({ isFile: () => true, size: 5000 });
+    mockReadFile.mockResolvedValue(lines.join("\n"));
+    const { execute } = buildTool();
+
+    const result = await execute({ path: "big.txt", tail: null, offset: 180, limit: 3 }) as { content: string; lines: number };
+
+    expect(result.content).toContain("Line 180");
+    expect(result.content).toContain("Line 182");
+    expect(result.content).not.toContain("Line 179");
+    expect(result.content).not.toContain("Line 183");
+    // Total line count, so the model can page the rest deliberately.
+    expect(result.lines).toBe(600);
+    expect(result.content).toContain("[lines 180-182 of 600]");
+  });
+
+  it("reads to the 500-line cap when limit is omitted", async () => {
+    const lines = Array.from({ length: 600 }, (_, i) => `Line ${i + 1}`);
+    mockStat.mockResolvedValue({ isFile: () => true, size: 5000 });
+    mockReadFile.mockResolvedValue(lines.join("\n"));
+    const { execute } = buildTool();
+
+    const result = await execute({ path: "big.txt", tail: null, offset: 50, limit: null }) as { content: string };
+
+    expect(result.content).toContain("Line 50");
+    expect(result.content).toContain("Line 549");
+    expect(result.content).not.toContain("Line 550");
+  });
+
+  it("caps an oversized limit at 500 lines", async () => {
+    const lines = Array.from({ length: 900 }, (_, i) => `Line ${i + 1}`);
+    mockStat.mockResolvedValue({ isFile: () => true, size: 9000 });
+    mockReadFile.mockResolvedValue(lines.join("\n"));
+    const { execute } = buildTool();
+
+    const result = await execute({ path: "big.txt", tail: null, offset: 1, limit: 900 }) as { content: string };
+
+    expect(result.content).toContain("[lines 1-500 of 900]");
+  });
+
+  it("reports an offset past the end of the file instead of returning nothing", async () => {
+    mockStat.mockResolvedValue({ isFile: () => true, size: 30 });
+    mockReadFile.mockResolvedValue("one\ntwo\nthree");
+    const { execute } = buildTool();
+
+    const result = await execute({ path: "small.txt", tail: null, offset: 99, limit: 10 }) as { content: string };
+
+    expect(result.content).toContain("past the end");
+    expect(result.content).toContain("3 lines");
+  });
+
+  it("refuses tail and a line range in the same call", async () => {
+    const { execute } = buildTool();
+
+    const result = await execute({ path: "log.md", tail: 10, offset: 5, limit: 5 }) as { error: string };
+
+    expect(result.error).toMatch(/either tail or offset\/limit/i);
+    expect(mockOpen).not.toHaveBeenCalled();
+  });
+
+  it("still returns the whole file when no range is given", async () => {
+    mockStat.mockResolvedValue({ isFile: () => true, size: 20 });
+    mockReadFile.mockResolvedValue("alpha\nbeta\ngamma");
+    const { execute } = buildTool();
+
+    const result = await execute({ path: "notes.md", tail: null, offset: null, limit: null }) as { content: string };
+
+    expect(result.content).toBe("alpha\nbeta\ngamma");
   });
 
   it("returns error when conversationId is missing", async () => {

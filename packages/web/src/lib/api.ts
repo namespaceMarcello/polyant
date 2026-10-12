@@ -9,6 +9,8 @@ export type {
   ResetPasswordResponse,
   MemberRole,
   OrganizationMember,
+  ManagementApiKey,
+  CreatedManagementApiKey,
   Instance,
   SecretStatus,
   ChannelConfig,
@@ -17,6 +19,7 @@ export type {
   ModelsResponse,
   PromptSection,
   ToolState,
+  ToolPluginInfo,
   RequiredSecretSpec,
   RequiredEnvEntry,
   SkillState,
@@ -89,6 +92,7 @@ import type {
   ModelsResponse,
   PromptSection,
   ToolState,
+  ToolPluginInfo,
   RequiredSecretSpec,
   SkillState,
   SkillEnvStatus,
@@ -120,10 +124,14 @@ import type {
   OptoutContact,
   EmbeddingWipeResult,
   OrganizationMember,
+  ManagementApiKey,
+  CreatedManagementApiKey,
   McpAuthMode,
   McpServer,
   McpTestResult,
   TenantContextPayload,
+  OnboardingState,
+  OnboardingPatch,
 } from "./api-types";
 
 // ── HTTP Client ─────────────────────────────────────────────────────
@@ -210,7 +218,50 @@ export function getUserErrorMessage(err: unknown, fallback: string): string {
 
 // ── API Methods ─────────────────────────────────────────────────────
 
+/**
+ * The numeric installation policies. Named as a list so the form, the patch and
+ * the effective shape below cannot drift apart — the engine keeps the same list
+ * for the same reason.
+ */
+export const PLATFORM_SETTING_NUMBERS = [
+  "analyticsRetentionDays",
+  "sseMaxConnections",
+  "sseMaxConnectionsPerUser",
+  "throttleTtlMs",
+  "throttleLimit",
+  "agentCallTimeoutMs",
+  "mcpConnectTimeoutMs",
+  "schedulerOrphanGraceMs",
+  "schedulerDefaultMaxRunMs",
+] as const;
+
+export type PlatformSettingNumber = (typeof PLATFORM_SETTING_NUMBERS)[number];
+
+export type PlatformSettings = { [K in PlatformSettingNumber]: number | null } & {
+  /** The engine's public origin. Null means `BASE_URL`, or localhost, is in force. */
+  baseUrl: string | null;
+};
+
+/**
+ * Both shapes come back from the engine on purpose: `settings` is what is
+ * STORED (null = unset) and `effective` is what is in FORCE. The form needs
+ * both — an empty field must stay empty, and its placeholder is what that empty
+ * field will actually do.
+ */
+export interface PlatformSettingsResponse {
+  settings: PlatformSettings;
+  effective: { [K in PlatformSettingNumber]: number } & { baseUrl: string };
+}
+
 export const api = {
+  platform: {
+    settings: () => request<PlatformSettingsResponse>("/api/platform/settings"),
+    updateSettings: (body: Partial<PlatformSettings>) =>
+      request<PlatformSettingsResponse>("/api/platform/settings", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+  },
   users: {
     /**
      * One page of installation accounts. `total` is what makes the page
@@ -250,6 +301,12 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
+    /** Writes the caller's own guidance state; the engine returns the merged record. */
+    updateOnboarding: (patch: OnboardingPatch) =>
+      request<{ onboarding: OnboardingState }>("/api/me/onboarding", {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
   },
   members: {
     list: (orgSlug: string) =>
@@ -264,6 +321,22 @@ export const api = {
     remove: (userId: string, orgSlug: string) =>
       request<{ removed: boolean }>(
         `/api/organizations/${encodeURIComponent(orgSlug)}/members/${encodeURIComponent(userId)}`,
+        { method: "DELETE" },
+      ),
+  },
+  apiKeys: {
+    list: (orgSlug: string) =>
+      request<{ keys: ManagementApiKey[] }>(
+        `/api/organizations/${encodeURIComponent(orgSlug)}/api-keys`,
+      ),
+    create: (orgSlug: string, data: { name: string; expiresAt?: string }) =>
+      request<CreatedManagementApiKey>(
+        `/api/organizations/${encodeURIComponent(orgSlug)}/api-keys`,
+        { method: "POST", body: JSON.stringify(data) },
+      ),
+    remove: (orgSlug: string, keyId: string) =>
+      request<{ deleted: boolean }>(
+        `/api/organizations/${encodeURIComponent(orgSlug)}/api-keys/${encodeURIComponent(keyId)}`,
         { method: "DELETE" },
       ),
   },
@@ -284,7 +357,7 @@ export const api = {
         status?: string;
         provider?: string | null;
         model?: string | null;
-        embeddingProvider?: "openai" | "bedrock";
+        embeddingProvider?: string;
         memoryEnabled?: boolean;
         knowledgeEnabled?: boolean;
         langsmithEnabled?: boolean;
@@ -295,11 +368,20 @@ export const api = {
         temperature?: number | null;
         stateInPromptEnabled?: boolean;
         datetimeInjectionEnabled?: boolean;
+        // Nullable, not merely optional: null CLEARS the override back to the
+        // deployment default, while omitting the field leaves it alone.
+        datetimeTimezone?: string | null;
+        datetimeLocale?: string | null;
+        dedupSimilarityThreshold?: number | null;
+        messageSoftDebounceMs?: number | null;
+        messageTypingDelayMs?: number | null;
+        messageMaxRestarts?: number | null;
         cacheEnabled?: boolean;
         cacheTtl?: string;
         a2aEnabled?: boolean;
         toolResultsInHistoryEnabled?: boolean;
         debugEnabled?: boolean;
+        attachmentStorageEnabled?: boolean;
         sttProvider?: "openai" | "aws" | "deepgram" | "disabled";
         optoutEnabled?: boolean;
         optoutStopKeywords?: string[];
@@ -307,6 +389,7 @@ export const api = {
         optoutClosingMessage?: string | null;
         optoutResumeMessage?: string | null;
         optoutInjectPromptHint?: boolean;
+        webContextFieldMapping?: Record<string, string>;
         /** Acknowledge the destructive memory/knowledge wipe on an embedding-provider switch. */
         confirmWipe?: boolean;
       },
@@ -343,9 +426,9 @@ export const api = {
   },
   tools: {
     list: (slug: string) =>
-      request<{ tools: ToolState[] }>(`/api/instances/${encodeURIComponent(slug)}/tools`),
+      request<{ tools: ToolState[]; plugins?: ToolPluginInfo[] }>(`/api/instances/${encodeURIComponent(slug)}/tools`),
     update: (slug: string, enabled: string[]) =>
-      request<{ tools: ToolState[] }>(`/api/instances/${encodeURIComponent(slug)}/tools`, {
+      request<{ tools: ToolState[]; plugins?: ToolPluginInfo[] }>(`/api/instances/${encodeURIComponent(slug)}/tools`, {
         method: "PATCH",
         body: JSON.stringify({ enabled }),
       }),
@@ -404,6 +487,8 @@ export const api = {
   channels: {
     list: (slug: string) =>
       request<{ channels: ChannelConfig[] }>(`/api/instances/${encodeURIComponent(slug)}/channels`),
+    slackWebhookUrl: (slug: string) =>
+      request<{ webhookUrl: string }>(`/api/instances/${encodeURIComponent(slug)}/channels/slack/webhook-url`),
     set: (slug: string, channelType: string, config: Record<string, unknown>, enabled: boolean) =>
       // `webhookUrl` is present only when the saved channel ends up in
       // Twilio API Key mode (see the engine's `buildChannelResponse`).
@@ -517,6 +602,13 @@ export const api = {
       request<{ conversation: ConversationListItem }>(
         `/api/conversations/${encodeURIComponent(conversationId)}?instanceId=${encodeURIComponent(instanceId)}`,
       ),
+    /**
+     * SSE URL following one conversation live: its activity events, plus a
+     * `persisted` event whenever a message or hook execution is stored.
+     * EventSource cannot go through `request()`, so only the path lives here.
+     */
+    liveUrl: (conversationId: string, instanceId: string) =>
+      `/api/activity-stream/conversation?${new URLSearchParams({ conversationId, instanceId }).toString()}`,
     hookExecutions: (conversationId: string, instanceId: string) =>
       request<{ executions: HookExecution[] }>(
         `/api/conversations/${encodeURIComponent(conversationId)}/hooks?instanceId=${encodeURIComponent(instanceId)}`,

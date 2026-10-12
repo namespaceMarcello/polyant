@@ -2,13 +2,12 @@
 
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2, AlertTriangle } from "lucide-react";
+import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -36,15 +35,21 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { api, getUserErrorMessage, type HookEvent, type InstanceHook, type HookFunctionInfo } from "@/lib/api";
+import { api, getUserErrorMessage, type HookEvent, type InstanceHook, type HookFunctionInfo, type RequiredSecretSpec } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n/context";
-
-const HOOK_EVENTS: HookEvent[] = [
-  "conversation_start",
-  "message_received",
-  "response_generated",
-  "response_sent",
-];
+import { PROVIDER_CREDENTIAL_KEYS } from "@/lib/provider-secrets";
+import { useSecretSpecs } from "@/components/instance-secret/use-secret-specs";
+import {
+  HOOK_EVENTS,
+  HookEventField,
+  HookParamFields,
+  HookRunFields,
+  HookSheet,
+  StreamingWarning,
+  type HookSettings,
+} from "./hook-sheet";
+import { SectionActions } from "./section-actions";
 
 interface Props {
   slug: string;
@@ -70,8 +75,8 @@ export function HooksTab({ slug }: Props) {
   const [catalog, setCatalog] = useState<HookFunctionInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] = useState<InstanceHook | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [openHookId, setOpenHookId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<InstanceHook | null>(null);
 
@@ -94,21 +99,39 @@ export function HooksTab({ slug }: Props) {
     void load();
   }, [load]);
 
+  /*
+    The keys a hook function declares, set beside the hook that asks for them —
+    in its sheet, and in the Add dialog once a function is chosen. Provider
+    credentials stay in the Modello section. One form holds every function's
+    keys: a key belongs to the agent, and several hooks can ask for the same one.
+  */
+  const specsOf = useCallback(
+    (functionName: string): RequiredSecretSpec[] =>
+      (catalog.find((fn) => fn.name === functionName)?.requiredSecrets ?? []).filter(
+        (spec) => !PROVIDER_CREDENTIAL_KEYS.has(spec.key),
+      ),
+    [catalog],
+  );
+  const allSpecs = useMemo(() => {
+    const byKey = new Map<string, RequiredSecretSpec>();
+    for (const fn of catalog) for (const spec of specsOf(fn.name)) if (!byKey.has(spec.key)) byKey.set(spec.key, spec);
+    return [...byKey.values()];
+  }, [catalog, specsOf]);
+  const params = useSecretSpecs(slug, allSpecs);
+  const missingParams = (hook: InstanceHook) =>
+    !params.loading &&
+    params.canRead &&
+    specsOf(hook.actionConfig.functionName).some((spec) => spec.optional !== true && !params.isConfigured(spec.key));
+
   const openCreate = () => {
-    setEditing(null);
     setForm(EMPTY_FORM);
     setDialogOpen(true);
   };
 
-  const openEdit = (hook: InstanceHook) => {
-    setEditing(hook);
-    setForm({
-      event: hook.event,
-      functionName: hook.actionConfig.functionName,
-      timeoutMs: hook.timeoutMs,
-      position: hook.position,
-    });
-    setDialogOpen(true);
+  // Keys typed in the dialog and then abandoned must not reappear in a sheet.
+  const onDialogOpenChange = (open: boolean) => {
+    if (!open && !saving) params.reset();
+    setDialogOpen(open);
   };
 
   const handleSave = async () => {
@@ -118,17 +141,14 @@ export function HooksTab({ slug }: Props) {
     }
     setSaving(true);
     try {
-      const data = {
+      // The keys first: the hook runs on its next event and must find them set.
+      if (params.dirty) await params.save();
+      await api.hooks.create(slug, {
         event: form.event,
         actionConfig: { functionName: form.functionName },
         timeoutMs: form.timeoutMs,
         position: form.position,
-      };
-      if (editing) {
-        await api.hooks.update(slug, editing.id, data);
-      } else {
-        await api.hooks.create(slug, data);
-      }
+      });
       toast.success(t("hooks.saved"));
       setDialogOpen(false);
       await load();
@@ -137,6 +157,11 @@ export function HooksTab({ slug }: Props) {
     } finally {
       setSaving(false);
     }
+  };
+
+  const saveSettings = async (hook: InstanceHook, settings: HookSettings) => {
+    await api.hooks.update(slug, hook.id, settings);
+    await load();
   };
 
   const handleToggle = async (hook: InstanceHook, enabled: boolean) => {
@@ -155,6 +180,7 @@ export function HooksTab({ slug }: Props) {
     try {
       await api.hooks.delete(slug, deleting.id);
       toast.success(t("hooks.deleted"));
+      if (openHookId === deleting.id) setOpenHookId(null);
       setDeleting(null);
       await load();
     } catch (err) {
@@ -173,19 +199,16 @@ export function HooksTab({ slug }: Props) {
 
   const knownFunctions = new Set(catalog.map((fn) => fn.name));
   const selectedFn = catalog.find((fn) => fn.name === form.functionName);
+  const openHook = openHookId ? hooks.find((h) => h.id === openHookId) ?? null : null;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <h2 className="text-lg font-medium">{t("hooks.title")}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{t("hooks.description")}</p>
-        </div>
+      <SectionActions>
         <Button size="sm" onClick={openCreate} className="gap-1.5">
           <Plus className="h-4 w-4" />
           {t("hooks.add")}
         </Button>
-      </div>
+      </SectionActions>
 
       {hooks.length === 0 ? (
         <p className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
@@ -214,16 +237,35 @@ export function HooksTab({ slug }: Props) {
                     const named = fnName && fnName.trim().length > 0;
 
                     return (
-                      <div key={hook.id} className="flex items-center gap-3 p-3">
-                        {named ? (
-                          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{fnName}</code>
-                        ) : (
-                          <span className="text-sm text-muted-foreground">
-                            {t("hooks.unknownAction")}
-                          </span>
+                      <div
+                        key={hook.id}
+                        data-state={openHookId === hook.id ? "selected" : undefined}
+                        className={cn(
+                          "flex cursor-pointer items-center gap-3 p-3 hover:bg-muted/50",
+                          "data-[state=selected]:bg-muted",
                         )}
+                        onClick={() => setOpenHookId(hook.id)}
+                      >
+                        <button
+                          type="button"
+                          className="text-left hover:underline"
+                          aria-label={t("hooks.open", { function: named ? fnName : t("hooks.unknownAction") })}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenHookId(hook.id);
+                          }}
+                        >
+                          {named ? (
+                            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{fnName}</code>
+                          ) : (
+                            <span className="text-sm text-muted-foreground">{t("hooks.unknownAction")}</span>
+                          )}
+                        </button>
                         {named && !knownFunctions.has(fnName) && (
                           <Badge variant="destructive">{t("hooks.unknownFunction")}</Badge>
+                        )}
+                        {hook.enabled && missingParams(hook) && (
+                          <Badge variant="outline" className="text-warning">{t("hooks.paramsMissing")}</Badge>
                         )}
                         {/* Both metadata are LABELLED: "10s" and "0" beside a name
                             said nothing about which number was which. */}
@@ -236,26 +278,10 @@ export function HooksTab({ slug }: Props) {
                         <div className="ml-auto flex items-center gap-2">
                           <Switch
                             checked={hook.enabled}
+                            onClick={(e) => e.stopPropagation()}
                             aria-label={t("hooks.enabledLabel")}
                             onCheckedChange={(v) => handleToggle(hook, v)}
                           />
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            aria-label={t("common.edit")}
-                            onClick={() => openEdit(hook)}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            aria-label={t("common.delete")}
-                            className="text-destructive"
-                            onClick={() => setDeleting(hook)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
                         </div>
                       </div>
                     );
@@ -267,31 +293,14 @@ export function HooksTab({ slug }: Props) {
         </div>
       )}
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
+      <Dialog open={dialogOpen} onOpenChange={onDialogOpenChange}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{editing ? t("hooks.editTitle") : t("hooks.createTitle")}</DialogTitle>
+            <DialogTitle>{t("hooks.createTitle")}</DialogTitle>
             <DialogDescription>{t("hooks.dialogDescription")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>{t("hooks.event")}</Label>
-              <Select
-                value={form.event}
-                onValueChange={(v) => setForm((f) => ({ ...f, event: v as HookEvent }))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {HOOK_EVENTS.map((event) => (
-                    <SelectItem key={event} value={event}>
-                      {t(`hooks.events.${event}`)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <HookEventField value={form} onChange={(next) => setForm((f) => ({ ...f, ...next }))} />
             <div className="space-y-2">
               <Label>{t("hooks.function")}</Label>
               <Select
@@ -312,38 +321,18 @@ export function HooksTab({ slug }: Props) {
               {selectedFn?.description && (
                 <p className="text-xs text-muted-foreground">{selectedFn.description}</p>
               )}
-              {selectedFn?.mutatesResponse && (
-                <p className="flex items-start gap-1.5 text-xs text-destructive">
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span>{t("hooks.streamingWarning")}</span>
-                </p>
-              )}
+              {selectedFn?.mutatesResponse && <StreamingWarning />}
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>{t("hooks.timeout")}</Label>
-                <Input
-                  type="number"
-                  min={1000}
-                  max={30000}
-                  step={1000}
-                  value={form.timeoutMs}
-                  onChange={(e) => setForm((f) => ({ ...f, timeoutMs: Number(e.target.value) }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>{t("hooks.position")}</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  value={form.position}
-                  onChange={(e) => setForm((f) => ({ ...f, position: Number(e.target.value) }))}
-                />
-              </div>
-            </div>
+            <HookRunFields value={form} onChange={(next) => setForm((f) => ({ ...f, ...next }))} />
+            {selectedFn && specsOf(selectedFn.name).length > 0 && (
+              <section className="space-y-4 border-t pt-4">
+                <h3 className="text-sm font-medium">{t("hooks.params")}</h3>
+                <HookParamFields specs={specsOf(selectedFn.name)} params={params} />
+              </section>
+            )}
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setDialogOpen(false)}>
+            <Button variant="ghost" onClick={() => onDialogOpenChange(false)}>
               {t("common.cancel")}
             </Button>
             <Button onClick={handleSave} disabled={saving}>
@@ -352,6 +341,16 @@ export function HooksTab({ slug }: Props) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <HookSheet
+        hook={openHook}
+        fn={openHook ? catalog.find((fn) => fn.name === openHook.actionConfig.functionName) ?? null : null}
+        specs={openHook ? specsOf(openHook.actionConfig.functionName) : []}
+        params={params}
+        onSaveSettings={saveSettings}
+        onDelete={setDeleting}
+        onClose={() => setOpenHookId(null)}
+      />
 
       <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <AlertDialogContent>

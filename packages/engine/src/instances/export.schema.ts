@@ -26,6 +26,9 @@ export const exportSkillAssignmentSchema = z.object({
 export const exportSecretSchema = z.object({
   key: z.string(),
   configured: z.boolean(),
+  // Only present for a key a tool or hook declares `sensitive: false` — a base
+  // URL, a `select` choice. A credential travels as its key alone.
+  value: z.string().optional(),
 });
 
 export const exportChannelSchema = z.object({
@@ -103,6 +106,7 @@ export const exportScheduledTaskSchema = z.object({
   keepHistory: z.boolean(),
   deleteAfterRun: z.boolean(),
   maxRetries: z.number(),
+  maxRunMs: z.number().int().min(1_000).nullable().default(null),
   createdBy: z.string().nullable(),
 });
 
@@ -126,14 +130,37 @@ export const exportInstanceDataSchema = z.object({
   //     legacy 1.0 bundles (which lack them) keep validating. ---
   langsmithProject: z.string().nullable().default(null),
   thinkingEnabled: z.boolean().default(false),
+  // The LEVEL, beside the flag. It was the one `instances` column outside the
+  // bundle, so exporting a reasoning agent and importing it back produced an
+  // agent that thinks at a different depth, with nothing to see.
+  thinkingLevel: z.string().default("medium"),
   temperature: z.number().nullable().default(null),
   stateInPromptEnabled: z.boolean().default(false),
   datetimeInjectionEnabled: z.boolean().default(true),
+  /**
+   * The six behaviours that moved off the environment. Nullable and
+   * default-null: an export from a build that predates them restores an agent
+   * that declares none, which is the deployment default — the same behaviour it
+   * had when it was exported.
+   */
+  datetimeTimezone: z.string().nullable().default(null),
+  datetimeLocale: z.string().nullable().default(null),
+  dedupSimilarityThreshold: z.number().min(0).max(1).nullable().default(null),
+  messageSoftDebounceMs: z.number().int().min(0).nullable().default(null),
+  messageTypingDelayMs: z.number().int().min(0).nullable().default(null),
+  messageMaxRestarts: z.number().int().min(0).nullable().default(null),
   cacheEnabled: z.boolean().default(true),
   cacheTtl: z.enum(["5m", "1h"]).default("1h"),
   a2aEnabled: z.boolean().default(false),
   toolResultsInHistoryEnabled: z.boolean().default(false),
   debugEnabled: z.boolean().default(false),
+  /**
+   * Optional with no default: a bundle from a build that predates the switch
+   * says nothing about it. A new agent then takes the column default (off), and
+   * an overwrite import leaves the target's current choice alone instead of
+   * turning it off.
+   */
+  attachmentStorageEnabled: z.boolean().optional(),
   sttProvider: z.string().default("openai"),
   // Embedding provider/dim are applied on import-NEW only — switching them on an
   // existing instance is destructive (wipes vectors), so import-OVERWRITE leaves
@@ -147,6 +174,7 @@ export const exportInstanceDataSchema = z.object({
   optoutClosingMessage: z.string().nullable().default(null),
   optoutResumeMessage: z.string().nullable().default(null),
   optoutInjectPromptHint: z.boolean().default(true),
+  webContextFieldMapping: z.record(z.string(), z.string()).default({}),
   prompts: z.array(exportPromptSchema),
   skills: z.array(exportSkillAssignmentSchema),
   manualTools: z.array(z.string()),
@@ -165,11 +193,13 @@ export const exportInstanceDataSchema = z.object({
 // ---------------------------------------------------------------------------
 
 /** Current bundle format version emitted by the exporter. */
-export const INSTANCE_BUNDLE_VERSION = "1.2" as const;
+export const INSTANCE_BUNDLE_VERSION = "1.3" as const;
 
 export const instanceBundleSchema = z.object({
-  // Accept the legacy 1.0/1.1 formats plus the current 1.2 (additive) format.
-  version: z.union([z.literal("1.0"), z.literal("1.1"), z.literal("1.2")]),
+  // Accept the legacy 1.0-1.2 formats plus the current 1.3 (additive) format.
+  // 1.3 always carries the `web` channel row; an older bundle has none and its
+  // agent's endpoint was online, which `parseBundle` in import.service.ts keeps.
+  version: z.union([z.literal("1.0"), z.literal("1.1"), z.literal("1.2"), z.literal("1.3")]),
   exportedAt: z.string(),
   type: z.literal("instance"),
   instance: exportInstanceDataSchema,

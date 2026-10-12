@@ -67,7 +67,9 @@ export function NavDestination({ destination }: { destination: Destination }) {
 
       {destination.groups.map((group) => (
         <SidebarGroup key={group.key}>
-          {group.labelKey && <SidebarGroupLabel>{t(group.labelKey)}</SidebarGroupLabel>}
+          {group.labelKey && group.key !== "automation" && (
+            <SidebarGroupLabel>{t(group.labelKey)}</SidebarGroupLabel>
+          )}
           <SidebarGroupContent>
             <SidebarMenu>
               {group.items.map((item) => {
@@ -85,7 +87,7 @@ export function NavDestination({ destination }: { destination: Destination }) {
                       className={cn(isActive && ACTIVE_ROW_CLASS)}
                       tooltip={label}
                     >
-                      <Link href={item.href}>
+                      <Link href={item.href} data-tour={`anav-${item.key}`}>
                         <Icon />
                         <span>{label}</span>
                       </Link>

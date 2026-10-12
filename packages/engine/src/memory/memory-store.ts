@@ -4,11 +4,11 @@ import { eq, desc, sql, gt, and, ilike, isNotNull, count as drizzleCount } from 
 import { cosineDistance } from "drizzle-orm/sql/functions";
 import { db, type DbExecutor } from "../database/client.js";
 import { memories } from "./schema.js";
-import { config } from "../config.js";
+import { DEFAULT_DEDUP_SIMILARITY_THRESHOLD } from "../instances/agent-settings.js";
 import { asInstanceSlug, type InstanceSlug } from "../instances/identifiers.js";
 import type { EmbeddingDim, EmbeddingProvider } from "../embeddings-gateway/types.js";
 import { vectorColumnValues } from "../embeddings-gateway/dim-columns.js";
-import { buildOrgScopedAgentFilter } from "../authz/scope-filter.js";
+import { tenantScopedAgentCondition, type TenantScope } from "../authz/scope-filter.js";
 
 // ---- Types ----
 
@@ -34,6 +34,14 @@ export interface InsertMemoryInput {
   dimensions: EmbeddingDim;
   /** Provider that produced the embedding. Stored as `embedding_provider`. */
   provider: EmbeddingProvider;
+  /**
+   * Cosine similarity above which an existing memory is the SAME fact. Absent
+   * means the deployment default: this is a property of an agent's memory, so
+   * the caller that knows the agent resolves it (`instances/agent-settings.ts`)
+   * and the callers that do not — the save-memory tool, the panel's manual
+   * write — get the default.
+   */
+  dedupSimilarityThreshold?: number;
 }
 
 export type MemoryEvent = "ADD" | "UPDATE";
@@ -57,11 +65,6 @@ function activeEmbeddingColumn(dim: EmbeddingDim) {
 }
 
 // ---- Constants ----
-
-/** Cosine similarity threshold for deduplication, sourced from Zod-validated
- *  config (env var `DEDUP_SIMILARITY_THRESHOLD`, default 0.90). If an existing
- *  memory has similarity > this value, treat as duplicate and update. */
-const DEDUP_SIMILARITY_THRESHOLD = config.memory.dedupSimilarityThreshold;
 
 // ---- Store functions ----
 
@@ -103,7 +106,10 @@ async function runUpsertMemoryTx(input: InsertMemoryInput): Promise<UpsertResult
       .from(memories)
       .where(and(
         eq(memories.instanceId, input.instanceId),
-        gt(sql<number>`1 - (${distance})`, DEDUP_SIMILARITY_THRESHOLD),
+        gt(
+          sql<number>`1 - (${distance})`,
+          input.dedupSimilarityThreshold ?? DEFAULT_DEDUP_SIMILARITY_THRESHOLD,
+        ),
       ))
       .orderBy(distance)
       .limit(1);
@@ -243,7 +249,7 @@ export async function getAllMemories(instanceId: InstanceSlug): Promise<MemoryRe
  */
 export async function searchMemories(
   instanceId: InstanceSlug,
-  opts: { search?: string; category?: string; limit?: number; offset?: number; orgId?: string } = {},
+  opts: { scope: TenantScope; search?: string; category?: string; limit?: number; offset?: number },
 ): Promise<{ memories: MemoryRecord[]; total: number }> {
   const limit = opts.limit ?? 20;
   const offset = opts.offset ?? 0;
@@ -251,9 +257,11 @@ export async function searchMemories(
   const conditions = [eq(memories.instanceId, instanceId)];
   if (opts.search) conditions.push(ilike(memories.content, `%${escapeLikePattern(opts.search)}%`));
   if (opts.category) conditions.push(eq(memories.category, opts.category));
-  // Cross-org gate: even with a valid-looking instanceId, only return rows whose
-  // agent belongs to the caller's org (closes param-IDOR at the store layer).
-  if (opts.orgId) conditions.push(buildOrgScopedAgentFilter(opts.orgId));
+  // Cross-tenant gate: even with a valid-looking instanceId, only return rows
+  // whose agent belongs to the caller's tenant (closes param-IDOR at the store
+  // layer). Applied unconditionally — the scope is required, so there is no
+  // absent branch that silently drops the predicate.
+  conditions.push(tenantScopedAgentCondition(opts.scope));
 
   const where = and(...conditions);
 
@@ -290,12 +298,14 @@ export async function searchMemories(
 export async function deleteMemoryForInstance(
   memoryId: string,
   instanceId: InstanceSlug,
-  orgId?: string,
+  scope: TenantScope,
 ): Promise<boolean> {
   const conditions = [eq(memories.id, memoryId), eq(memories.instanceId, instanceId)];
-  // Cross-org gate: a foreign-org instanceId never matches the org subquery, so
-  // an Org-A caller cannot delete an Org-B memory by id.
-  if (orgId) conditions.push(buildOrgScopedAgentFilter(orgId));
+  // Cross-tenant gate: a foreign-org instanceId never matches the tenant
+  // subquery, so an Org-A caller cannot delete an Org-B memory by id. This used
+  // to be `if (orgId) conditions.push(...)`: a caller that passed nothing
+  // deleted by id alone, across every tenant.
+  conditions.push(tenantScopedAgentCondition(scope));
   const result = await db
     .delete(memories)
     .where(and(...conditions))
@@ -304,19 +314,23 @@ export async function deleteMemoryForInstance(
 }
 
 /**
- * Delete all memories for a user. Returns the number of rows removed. Accepts an
- * optional executor (transaction) so the destructive embedding reset can wipe
- * memories + knowledge + realign embedding_dim atomically, and an optional
- * `orgId` cross-org gate so an Org-A caller cannot wipe an Org-B agent's memories
- * via a foreign-org instanceId (param-IDOR closed at the store layer).
+ * Delete all memories for an agent. Returns the number of rows removed. Accepts
+ * an executor (transaction) so the destructive embedding reset can wipe
+ * memories + knowledge + realign embedding_dim atomically, and a REQUIRED
+ * `scope` so an Org-A caller cannot wipe an Org-B agent's memories via a
+ * foreign-org instanceId (param-IDOR closed at the store layer).
+ *
+ * The scope used to be optional, and the predicate `if (orgId)`: the one
+ * non-request caller passed `undefined` on purpose, which made a deliberate
+ * cross-tenant wipe indistinguishable from a forgotten argument — on a DELETE.
  */
 export async function deleteAllMemories(
   instanceId: InstanceSlug,
-  orgId?: string,
-  executor: DbExecutor = db,
+  scope: TenantScope,
+  executor: DbExecutor,
 ): Promise<number> {
   const conditions = [eq(memories.instanceId, instanceId)];
-  if (orgId) conditions.push(buildOrgScopedAgentFilter(orgId));
+  conditions.push(tenantScopedAgentCondition(scope));
   const deleted = await executor
     .delete(memories)
     .where(and(...conditions))

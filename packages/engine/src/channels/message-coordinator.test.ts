@@ -2,6 +2,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { MessageCoordinator } from "./message-coordinator.js";
+import { drainBackgroundTurns, pendingBackgroundTurns } from "./background-turns.js";
 import type { IncomingMessage, OutgoingMessage } from "./types.js";
 import { asInstanceSlug } from "../instances/identifiers.js";
 
@@ -32,9 +33,7 @@ describe("MessageCoordinator", () => {
     const sendTyping = vi.fn().mockResolvedValue(undefined);
 
     const c = new MessageCoordinator({
-      softDebounceMs: 2000,
-      typingDelayMs: 1500,
-      maxRestarts: 3,
+      resolveTimings: async () => ({ softDebounceMs: 2000, typingDelayMs: 1500, maxRestarts: 3 }),
       handler,
       sendOutbound,
       sendTyping,
@@ -69,9 +68,7 @@ describe("MessageCoordinator", () => {
     const sendOutbound = vi.fn().mockResolvedValue(undefined);
 
     const c = new MessageCoordinator({
-      softDebounceMs: 2000,
-      typingDelayMs: 1500,
-      maxRestarts: 3,
+      resolveTimings: async () => ({ softDebounceMs: 2000, typingDelayMs: 1500, maxRestarts: 3 }),
       handler,
       sendOutbound,
     });
@@ -101,9 +98,7 @@ describe("MessageCoordinator", () => {
     const sendTyping = vi.fn().mockResolvedValue(undefined);
 
     const c = new MessageCoordinator({
-      softDebounceMs: 500,
-      typingDelayMs: 1500,
-      maxRestarts: 3,
+      resolveTimings: async () => ({ softDebounceMs: 500, typingDelayMs: 1500, maxRestarts: 3 }),
       handler,
       sendOutbound,
       sendTyping,
@@ -138,9 +133,7 @@ describe("MessageCoordinator", () => {
     const sendOutbound = vi.fn().mockResolvedValue(undefined);
 
     const c = new MessageCoordinator({
-      softDebounceMs: 2000,
-      typingDelayMs: 1500,
-      maxRestarts: 3,
+      resolveTimings: async () => ({ softDebounceMs: 2000, typingDelayMs: 1500, maxRestarts: 3 }),
       handler,
       sendOutbound,
     });
@@ -171,6 +164,44 @@ describe("MessageCoordinator", () => {
     expect(sendOutbound).toHaveBeenCalledWith("my-instance", "whatsapp", "+390000000001", "late-response");
   });
 
+  it("answers old and new fragments in one restart when the aborted run unwinds slower than the debounce", async () => {
+    // The aborted run gives its fragments back only once it has finished
+    // unwinding. Here that takes 5s against a 2s debounce: a restart that read
+    // the buffer when its timer fired answered "second" alone, and a third run
+    // then answered "first".
+    const handler = vi.fn<(m: IncomingMessage, signal: AbortSignal) => Promise<OutgoingMessage>>(
+      async (msg, signal) => {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, 1000);
+          signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            setTimeout(() => reject(err), 5000);
+          });
+        });
+        return { text: `reply to ${msg.text.replaceAll("\n", "+")}` };
+      },
+    );
+    const sendOutbound = vi.fn().mockResolvedValue(undefined);
+
+    const c = new MessageCoordinator({
+      resolveTimings: async () => ({ softDebounceMs: 2000, typingDelayMs: 1500, maxRestarts: 3 }),
+      handler,
+      sendOutbound,
+    });
+
+    await c.onMessage(makeMsg({ text: "first" }));
+    await vi.advanceTimersByTimeAsync(2000); // run 1 starts with "first"
+    await vi.advanceTimersByTimeAsync(500);
+    await c.onMessage(makeMsg({ text: "second" })); // aborts run 1, which unwinds until t=7500
+    await vi.runAllTimersAsync();
+
+    expect(handler.mock.calls.map(([m]) => m.text)).toEqual(["first", "first\nsecond"]);
+    expect(sendOutbound).toHaveBeenCalledTimes(1);
+    expect(sendOutbound).toHaveBeenCalledWith("my-instance", "whatsapp", "+390000000001", "reply to first+second");
+  });
+
   it("stops cancelling after maxRestarts, accumulating fragments for a follow-up flush", async () => {
     let handlerCalls = 0;
     const handler = vi.fn<(m: IncomingMessage, signal: AbortSignal) => Promise<OutgoingMessage>>(
@@ -192,9 +223,7 @@ describe("MessageCoordinator", () => {
     const sendOutbound = vi.fn().mockResolvedValue(undefined);
 
     const c = new MessageCoordinator({
-      softDebounceMs: 1000,
-      typingDelayMs: 500,
-      maxRestarts: 2,
+      resolveTimings: async () => ({ softDebounceMs: 1000, typingDelayMs: 500, maxRestarts: 2 }),
       handler,
       sendOutbound,
     });
@@ -235,9 +264,7 @@ describe("MessageCoordinator", () => {
     const sendTyping = vi.fn().mockResolvedValue(undefined);
 
     const c = new MessageCoordinator({
-      softDebounceMs: 3000,
-      typingDelayMs: 1500,
-      maxRestarts: 3,
+      resolveTimings: async () => ({ softDebounceMs: 3000, typingDelayMs: 1500, maxRestarts: 3 }),
       handler,
       sendOutbound,
       sendTyping,
@@ -270,9 +297,7 @@ describe("MessageCoordinator", () => {
     const sendOutbound = vi.fn().mockResolvedValue(undefined);
 
     const c = new MessageCoordinator({
-      softDebounceMs: 1000,
-      typingDelayMs: 1500,
-      maxRestarts: 3,
+      resolveTimings: async () => ({ softDebounceMs: 1000, typingDelayMs: 1500, maxRestarts: 3 }),
       handler,
       sendOutbound,
     });
@@ -297,9 +322,7 @@ describe("MessageCoordinator", () => {
     const sendOutbound = vi.fn().mockResolvedValue(undefined);
 
     const c = new MessageCoordinator({
-      softDebounceMs: 2000,
-      typingDelayMs: 1500,
-      maxRestarts: 3,
+      resolveTimings: async () => ({ softDebounceMs: 2000, typingDelayMs: 1500, maxRestarts: 3 }),
       handler,
       sendOutbound,
     });
@@ -341,9 +364,7 @@ describe("MessageCoordinator", () => {
     const sendOutbound = vi.fn().mockResolvedValue(undefined);
 
     const c = new MessageCoordinator({
-      softDebounceMs: 1000,
-      typingDelayMs: 500,
-      maxRestarts: 3,
+      resolveTimings: async () => ({ softDebounceMs: 1000, typingDelayMs: 500, maxRestarts: 3 }),
       handler,
       sendOutbound,
     });
@@ -358,38 +379,161 @@ describe("MessageCoordinator", () => {
     expect(sendOutbound).not.toHaveBeenCalled();
   });
 
-  it("rejects invalid configuration", () => {
-    const handler = vi.fn();
-    const sendOutbound = vi.fn();
-    expect(
-      () =>
-        new MessageCoordinator({
-          softDebounceMs: -1,
-          typingDelayMs: 1500,
-          maxRestarts: 3,
-          handler,
-          sendOutbound,
-        }),
-    ).toThrow();
-    expect(
-      () =>
-        new MessageCoordinator({
-          softDebounceMs: 1000,
-          typingDelayMs: -1,
-          maxRestarts: 3,
-          handler,
-          sendOutbound,
-        }),
-    ).toThrow();
-    expect(
-      () =>
-        new MessageCoordinator({
-          softDebounceMs: 1000,
-          typingDelayMs: 1500,
-          maxRestarts: -1,
-          handler,
-          sendOutbound,
-        }),
-    ).toThrow();
+  /**
+   * The constructor no longer validates the timings, because they no longer
+   * arrive as numbers: both sources that produce them are already constrained —
+   * Zod refuses a negative env var at boot, and the migration's CHECK refuses a
+   * negative column. What is worth pinning instead is that the resolution is per
+   * BURST and per agent, which is the behaviour that replaced the three fixed
+   * numbers.
+   */
+  it("resolves the timings once per burst, from the agent the message names", async () => {
+    const handler = vi.fn().mockResolvedValue({ text: "ok" });
+    const sendOutbound = vi.fn().mockResolvedValue(undefined);
+    const resolveTimings = vi.fn(async (msg: { instanceId: string }) =>
+      msg.instanceId === "fast-agent"
+        ? { softDebounceMs: 100, typingDelayMs: 0, maxRestarts: 3 }
+        : { softDebounceMs: 5000, typingDelayMs: 0, maxRestarts: 3 },
+    );
+
+    const c = new MessageCoordinator({ resolveTimings, handler, sendOutbound });
+
+    await c.onMessage(makeMsg({ text: "a", instanceId: asInstanceSlug("fast-agent") }));
+    await c.onMessage(
+      makeMsg({ text: "b", instanceId: asInstanceSlug("slow-agent"), channelId: "+390000000002" }),
+    );
+
+    // The fast agent's window has passed; the slow one's has not.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][0].instanceId).toBe("fast-agent");
+
+    await vi.advanceTimersByTimeAsync(4900);
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(handler.mock.calls[1][0].instanceId).toBe("slow-agent");
+  });
+
+  it("asks the resolver once per burst, not once per fragment", async () => {
+    const handler = vi.fn().mockResolvedValue({ text: "ok" });
+    const sendOutbound = vi.fn().mockResolvedValue(undefined);
+    const resolveTimings = vi.fn(async () => ({
+      softDebounceMs: 1000,
+      typingDelayMs: 0,
+      maxRestarts: 3,
+    }));
+
+    const c = new MessageCoordinator({ resolveTimings, handler, sendOutbound });
+
+    await c.onMessage(makeMsg({ text: "one" }));
+    await c.onMessage(makeMsg({ text: "two" }));
+    await c.onMessage(makeMsg({ text: "three" }));
+
+    // A burst belongs to one conversation and therefore to one agent: asking
+    // again per fragment would let the window change mid-burst.
+    expect(resolveTimings).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The window pinned here is the timings read. It is a DB round-trip in
+   * production (`findInstanceBySlug`), and two fragments of one conversation
+   * arrive as two concurrent webhook requests, so both used to see no state,
+   * both installed one, and the second `states.set` discarded the first
+   * fragment.
+   *
+   * Invoking the two calls WITHOUT an intervening `await` is the whole test:
+   * every other case in this file awaits each fragment in turn, which is
+   * exactly why the overwrite went unseen.
+   */
+  it("keeps both fragments when the second arrives while the burst state is being installed", async () => {
+    const handler = vi.fn().mockResolvedValue({ text: "ok" });
+    const sendOutbound = vi.fn().mockResolvedValue(undefined);
+    let releaseTimings: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseTimings = resolve;
+    });
+    const resolveTimings = vi.fn(async () => {
+      await gate;
+      return { softDebounceMs: 1000, typingDelayMs: 0, maxRestarts: 3 };
+    });
+
+    const c = new MessageCoordinator({ resolveTimings, handler, sendOutbound });
+
+    const first = c.onMessage(makeMsg({ text: "first" }));
+    const second = c.onMessage(makeMsg({ text: "second" }));
+    releaseTimings();
+    await Promise.all([first, second]);
+
+    // One burst, not two: the second fragment waited for the state to be
+    // installed and then appended to it.
+    expect(resolveTimings).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][0].text).toBe("first\nsecond");
+  });
+
+  /**
+   * A failed timings read belongs to the fragment that owns it. The one that was
+   * merely waiting behind it must not inherit the error — it starts the burst
+   * itself instead.
+   */
+  it("does not fail a waiting fragment when the first fragment's timings read rejects", async () => {
+    const handler = vi.fn().mockResolvedValue({ text: "ok" });
+    const sendOutbound = vi.fn().mockResolvedValue(undefined);
+    let releaseTimings: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseTimings = resolve;
+    });
+    const resolveTimings = vi.fn(async () => {
+      if (resolveTimings.mock.calls.length === 1) {
+        await gate;
+        throw new Error("agent lookup failed");
+      }
+      return { softDebounceMs: 1000, typingDelayMs: 0, maxRestarts: 3 };
+    });
+
+    const c = new MessageCoordinator({ resolveTimings, handler, sendOutbound });
+
+    const first = c.onMessage(makeMsg({ text: "first" }));
+    const second = c.onMessage(makeMsg({ text: "second" }));
+    releaseTimings();
+
+    await expect(first).rejects.toThrow("agent lookup failed");
+    await expect(second).resolves.toEqual({ text: "" });
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][0].text).toBe("second");
+  });
+
+  it("keeps an acknowledged burst visible to shutdown until its reply is sent", async () => {
+    // The adapter answered the webhook before the debounce window even
+    // started, so the sender will not retry: shutdown has to wait for the
+    // window, the pipeline and the reply, not just for open HTTP requests.
+    let finishTurn!: (r: OutgoingMessage) => void;
+    const handler = vi.fn(() => new Promise<OutgoingMessage>((r) => (finishTurn = r)));
+    const sendOutbound = vi.fn().mockResolvedValue(undefined);
+    const c = new MessageCoordinator({
+      resolveTimings: async () => ({ softDebounceMs: 2000, typingDelayMs: 1500, maxRestarts: 3 }),
+      handler,
+      sendOutbound,
+    });
+    const before = pendingBackgroundTurns();
+
+    await c.onMessage(makeMsg({ channelId: "+390000000077", text: "ciao" }));
+    expect(pendingBackgroundTurns()).toBe(before + 1);
+
+    const drain = drainBackgroundTurns(60_000);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(pendingBackgroundTurns()).toBe(before + 1);
+
+    finishTurn({ text: "risposta" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sendOutbound).toHaveBeenCalledWith("my-instance", "whatsapp", "+390000000077", "risposta");
+    expect(pendingBackgroundTurns()).toBe(before);
+    c.shutdown();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await drain;
   });
 });

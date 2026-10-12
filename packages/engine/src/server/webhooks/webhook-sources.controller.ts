@@ -60,7 +60,7 @@ export class EventSourcesController {
     const result = await createEventSource(instanceId, parsed.data);
     return {
       ...result,
-      webhookUrl: buildWebhookUrl(result.webhookToken),
+      webhookUrl: await buildWebhookUrl(result.webhookToken),
     };
   }
 
@@ -88,7 +88,7 @@ export class EventSourcesController {
       data.config = Object.keys(cleaned).length > 0 ? cleaned : undefined;
     }
 
-    await updateEventSource(id, instanceId, data);
+    if (!(await updateEventSource(id, instanceId, data))) throw new NotFoundException("Event source not found");
     return { success: true };
   }
 
@@ -101,11 +101,12 @@ export class EventSourcesController {
     const instanceId = await resolveInstanceId(asInstanceSlug(slug));
     if (!instanceId) throw new NotFoundException("Instance not found");
 
-    await deleteEventSource(id, instanceId);
+    if (!(await deleteEventSource(id, instanceId))) throw new NotFoundException("Event source not found");
     return { deleted: true };
   }
 
   @RequirePermission(Permission.ROOM_WRITE)
+  @Header("Cache-Control", "no-store")
   @Post(":id/rotate-token")
   async rotate(
     @Param("slug") slug: string,
@@ -115,9 +116,10 @@ export class EventSourcesController {
     if (!instanceId) throw new NotFoundException("Instance not found");
 
     const newToken = await rotateWebhookToken(id, instanceId);
+    if (!newToken) throw new NotFoundException("Event source not found");
     return {
       webhookToken: newToken,
-      webhookUrl: buildWebhookUrl(newToken),
+      webhookUrl: await buildWebhookUrl(newToken),
     };
   }
 
@@ -141,7 +143,7 @@ export class EventSourcesController {
     const token = await getEventSourceWebhookToken(id, instanceId);
     if (!token) throw new NotFoundException("Event source not found");
 
-    return { webhookUrl: buildWebhookUrl(token) };
+    return { webhookUrl: await buildWebhookUrl(token) };
   }
 
   @RequirePermission(Permission.ROOM_READ)

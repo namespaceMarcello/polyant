@@ -11,11 +11,11 @@ export const instances = pgTable("instances", {
   status: varchar("status", { length: 20 }).notNull().default("active"),
   provider: varchar("provider", { length: 50 }),
   model: varchar("model", { length: 100 }),
-  memoryEnabled: boolean("memory_enabled").notNull().default(true),
+  memoryEnabled: boolean("memory_enabled").notNull().default(false),
   knowledgeEnabled: boolean("knowledge_enabled").notNull().default(false),
   langsmithEnabled: boolean("langsmith_enabled").notNull().default(false),
   langsmithProject: varchar("langsmith_project", { length: 255 }),
-  authEnabled: boolean("auth_enabled").notNull().default(false),
+  authEnabled: boolean("auth_enabled").notNull().default(true),
   thinkingEnabled: boolean("thinking_enabled").notNull().default(false),
   // Reasoning intensity when thinkingEnabled. Currently consumed only by the
   // Nebius provider (maps to reasoning_effort). Portable set: low|medium|high.
@@ -34,6 +34,34 @@ export const instances = pgTable("instances", {
    * section was seeded on by default). Off = time-agnostic assistant.
    */
   datetimeInjectionEnabled: boolean("datetime_injection_enabled").notNull().default(true),
+  /**
+   * How this agent formats the date and time it injects, and how it decides two
+   * memories are the same fact. NULL on any of them means "not set here" and
+   * falls back to the shipped default — see `instances/agent-settings.ts`, which
+   * holds those defaults and is the one place they are resolved.
+   *
+   * They are per-agent because two agents on one installation legitimately
+   * differ: one serving Italian customers and one serving German customers want
+   * different formatting, and the dedup threshold is a property of an agent's
+   * memory rather than of the host.
+   */
+  datetimeTimezone: text("datetime_timezone"),
+  datetimeLocale: text("datetime_locale"),
+  dedupSimilarityThreshold: real("dedup_similarity_threshold"),
+  /**
+   * How this agent collapses a burst of inbound fragments: the coalescing
+   * window, the delay before the typing indicator, and the cap on
+   * cancel-and-restart cycles. NULL falls back to `DEFAULT_MESSAGE_TIMINGS` in
+   * `instances/agent-settings.ts`.
+   *
+   * These shape conversational UX, not capacity: a support agent and a booking
+   * agent want different windows. Zero is a legitimate value for all three (no
+   * debounce, no typing delay, no restart), which is why the constraint is
+   * non-negative rather than positive.
+   */
+  messageSoftDebounceMs: integer("message_soft_debounce_ms"),
+  messageTypingDelayMs: integer("message_typing_delay_ms"),
+  messageMaxRestarts: integer("message_max_restarts"),
   /**
    * Per-instance prompt-cache switch. Off skips ALL cache markers (Anthropic
    * `cacheControl` / Bedrock `cachePoint`) so the provider never pays a cache
@@ -59,6 +87,14 @@ export const instances = pgTable("instances", {
    */
   debugEnabled: boolean("debug_enabled").notNull().default(false),
   /**
+   * When true, files a user sends (photos, documents, voice notes) are copied to
+   * the agent's own bucket (`s3_bucket_name`, `aws_region` and its static keys)
+   * so the conversation view can reopen them. Default false: holding end users'
+   * files is a decision about personal data, separate from configuring a bucket.
+   * The model sees an attachment inline either way.
+   */
+  attachmentStorageEnabled: boolean("attachment_storage_enabled").notNull().default(false),
+  /**
    * GDPR opt-out: when enabled, an end user who sends one of `optoutStopKeywords`
    * is recorded as opted-out (per contact, in `contact_optouts`) and receives no
    * further messages until they send one of `optoutResumeKeywords`. Enforcement is
@@ -73,12 +109,20 @@ export const instances = pgTable("instances", {
   optoutResumeMessage: text("optout_resume_message"),
   /** When true, an informational opt-out hint is injected into the supervisor prompt. */
   optoutInjectPromptHint: boolean("optout_inject_prompt_hint").notNull().default(true),
+  /**
+   * Web channel call context: state key → dot-path into the `context` object a
+   * `chat/stream` request may carry, projected onto the conversation state before
+   * the turn. Empty = the web channel accepts no context.
+   */
+  webContextFieldMapping: jsonb("web_context_field_mapping").$type<Record<string, string>>().notNull().default({}),
   icon: text("icon"),
-  sttProvider: text("stt_provider").notNull().default("openai"),
+  sttProvider: text("stt_provider").notNull().default("disabled"),
   embeddingDim: integer("embedding_dim").notNull().default(1536),
   /**
-   * Embedding provider, chosen INDEPENDENTLY of the chat `provider`. Allowed
-   * values: "openai" | "bedrock" (Anthropic has no embeddings API). Backfilled
+   * Embedding provider, chosen INDEPENDENTLY of the chat `provider` (Anthropic
+   * has no embeddings API, so an agent chatting there embeds elsewhere). Allowed
+   * values are whatever the deployment serves — the two built in plus any
+   * registered at boot — validated by the API, not by this column. Backfilled
    * from the chat provider by migration 0052 so existing instances keep their
    * embedding space. Changing it abandons the old vectors and wipes memories +
    * knowledge (vectors are provider-specific) — see embedding-reset.service.ts.

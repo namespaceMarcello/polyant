@@ -4,8 +4,9 @@ import type { ModelMessage } from "ai";
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
 import { createProvider, type PrepareMessages } from "./base.js";
-import { injectCacheBreakpoints, makeStepMarker, withProviderCacheMarker } from "./prompt-caching.js";
-import { cacheSupported } from "../config.js";
+import { injectCacheBreakpoints, makeStepMarker, withoutProviderCacheMarker, withProviderCacheMarker } from "./prompt-caching.js";
+import { cacheSupported, cacheOnToolMessagesSupported } from "../config.js";
+import type { ReasoningToggle } from "../model-catalog.js";
 
 /**
  * Bedrock Converse cache breakpoint. Bedrock uses a `cachePoint` block (via
@@ -16,9 +17,37 @@ import { cacheSupported } from "../config.js";
  */
 const BEDROCK_CACHE_POINT = { cachePoint: { type: "default" as const } };
 
-/** Decorate a message with Bedrock's `cachePoint` marker — shared by both breakpoint paths. */
-const markBedrock = (message: ModelMessage): ModelMessage =>
-  withProviderCacheMarker(message, "bedrock", BEDROCK_CACHE_POINT);
+/**
+ * True when the message carries tool content — a tool result (`role: "tool"`) or
+ * an assistant tool call. Amazon Nova rejects a `cachePoint` on either
+ * (LIVE-VERIFIED: 400 "extraneous key [cachePoint] is not permitted"), and the
+ * marker that lands there is the moving within-turn one, so the failure appears
+ * only once an agent actually uses a tool — the first turn of every probe passes.
+ */
+function carriesToolContent(message: ModelMessage): boolean {
+  if (message.role === "tool") return true;
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return false;
+  return content.some((part) => {
+    const type = (part as { type?: unknown }).type;
+    return type === "tool-call" || type === "tool-result";
+  });
+}
+
+/**
+ * Decorate a message with Bedrock's `cachePoint` marker — shared by both
+ * breakpoint paths. Returns the message untouched where the model refuses a
+ * marker on tool content: the cost is one lost breakpoint, against a 400 that
+ * kills the whole turn.
+ */
+const markBedrockFor =
+  (modelId: string) =>
+  (message: ModelMessage): ModelMessage => {
+    if (carriesToolContent(message) && !cacheOnToolMessagesSupported("bedrock", modelId)) {
+      return message;
+    }
+    return withProviderCacheMarker(message, "bedrock", BEDROCK_CACHE_POINT);
+  };
 
 /**
  * Inject Bedrock `cachePoint` breakpoints (tools+system and history) for
@@ -33,21 +62,23 @@ export const applyBedrockPromptCaching: PrepareMessages = (input) => {
   if (!cacheSupported("bedrock", input.modelId)) {
     return { instructions: input.system, messages: input.messages };
   }
-  return injectCacheBreakpoints(input, markBedrock);
+  return injectCacheBreakpoints(input, markBedrockFor(input.modelId));
 };
 
 /**
  * Moving cache breakpoint for the multi-step loop — marks the last message on
  * each step (from step 1), gated to cache-capable model families so a
- * `cachePoint` never reaches a model that rejects it. Bedrock's `cachePoint` has
- * no TTL variants, so the step marker reuses the same block as the cross-turn one
- * (unlike Anthropic, where the within-turn marker drops to a 5m TTL). Wired via
+ * `cachePoint` never reaches a model that rejects it. Polyant's `cachePoint`
+ * names no TTL, so every marker is Bedrock's default 5m and the step marker
+ * reuses the same block as the cross-turn one (unlike Anthropic, where the
+ * within-turn marker drops to a 5m TTL under a 1h cross-turn one). Wired via
  * `createProvider`'s `stepMarker` hook.
  */
-export const bedrockStepMarker = makeStepMarker(
-  markBedrock,
-  (modelId) => cacheSupported("bedrock", modelId),
-);
+export const bedrockStepMarker = makeStepMarker({
+  applyMarker: (message, modelId) => markBedrockFor(modelId)(message),
+  clearMarker: (message) => withoutProviderCacheMarker(message, "bedrock", "cachePoint"),
+  isCacheCapable: (modelId) => cacheSupported("bedrock", modelId),
+});
 
 export const BedrockProvider = createProvider(
   "bedrock",
@@ -55,7 +86,20 @@ export const BedrockProvider = createProvider(
     const apiKey = apiKeys?.bedrock_api_key?.trim();
     const accessKeyId = apiKeys?.bedrock_access_key_id?.trim();
     const secretAccessKey = apiKeys?.bedrock_secret_access_key?.trim();
-    const region = apiKeys?.bedrock_region?.trim() || process.env.AWS_REGION?.trim() || "us-east-1";
+    // The region is PER-AGENT (`aws_provider_region`, surfaced here as
+    // `bedrock_region`) and has no deployment-wide fallback: refusing is the
+    // point. The `us-east-1` default that used to sit here was silently wrong
+    // for this catalog, whose Bedrock tiers are `eu.*` inference profiles that
+    // region does not serve — so an agent with no region configured raised a
+    // ValidationException per call instead of naming the missing setting. The
+    // embedder already refused on the same input (`provider-resolver.ts`); the
+    // two halves of one agent now fail the same way.
+    const region = apiKeys?.bedrock_region?.trim();
+    if (!region) {
+      throw new Error(
+        "AWS region is required for Bedrock. Set it in the agent's Model section, under Conversation.",
+      );
+    }
 
     // Per-instance Bedrock API key (bearer token) is the primary auth path and
     // takes precedence over SigV4 — it bypasses AWS credential signing entirely.
@@ -67,8 +111,11 @@ export const BedrockProvider = createProvider(
     // default provider chain so ECS task roles, EC2 instance metadata, SSO, shared
     // credentials, and the AWS_BEARER_TOKEN_BEDROCK env var all work —
     // @ai-sdk/amazon-bedrock only reads env vars by default.
+    // `apiKey: ""` keeps the SDK from filling the key from
+    // AWS_BEARER_TOKEN_BEDROCK: a bearer token outranks SigV4, so the
+    // deployment's token would otherwise sign the calls of the agent's own pair.
     if (accessKeyId && secretAccessKey) {
-      return createAmazonBedrock({ accessKeyId, secretAccessKey, region })(modelId);
+      return createAmazonBedrock({ apiKey: "", accessKeyId, secretAccessKey, region })(modelId);
     }
 
     return createAmazonBedrock({
@@ -111,7 +158,9 @@ export function buildBedrockReasoningOptions(
   // accept up to `max`; gpt-oss only low/medium/high). budget maps to a token
   // preset (budget models expose only the three preset levels).
   if (control === "adaptive") {
-    return { reasoningConfig: { type: "adaptive", maxReasoningEffort: level } };
+    // Adaptive Claude returns its thinking with empty text unless asked for a
+    // summary (see `buildAnthropicThinkingOptions`); the SDK forwards `display`.
+    return { reasoningConfig: { type: "adaptive", maxReasoningEffort: level, display: "summarized" } };
   }
   if (control === "effort") {
     return { reasoningConfig: { type: "enabled", maxReasoningEffort: level } };
@@ -119,5 +168,26 @@ export function buildBedrockReasoningOptions(
   const budgetKey: "low" | "medium" | "high" = level === "low" || level === "high" ? level : "medium";
   return {
     reasoningConfig: { type: "enabled", budgetTokens: BEDROCK_THINKING_BUDGETS[budgetKey] },
+  };
+}
+
+/**
+ * The payload that switches thinking OFF for a Claude model on Bedrock that runs
+ * adaptive when the parameter is omitted (Sonnet 5, Sonnet 5.5, Opus 5) — the
+ * Bedrock twin of `buildAnthropicThinkingOffOptions`, and called only for a row
+ * that declares `reasoningOff`.
+ *
+ * It goes in `additionalModelRequestFields`, which Bedrock forwards to the model
+ * verbatim, and not in `reasoningConfig`: the SDK drops `reasoningConfig:
+ * {type:"disabled"}` for Claude without writing anything, so the model would
+ * keep reasoning (LIVE-VERIFIED 2026-09-29, eu-south-1).
+ */
+export function buildBedrockReasoningOffOptions(
+  toggle: ReasoningToggle | undefined,
+): { additionalModelRequestFields: { thinking: { type: "disabled" | "between_tools" } } } {
+  return {
+    additionalModelRequestFields: {
+      thinking: { type: toggle?.via === "thinking-between-tools" ? "between_tools" : "disabled" },
+    },
   };
 }

@@ -55,20 +55,63 @@ export default defineTool({
 });
 ```
 
+### Declaring parameters people can understand
+
+Every key in `requiredSecrets` is a field someone fills in the agent's Tools
+section, in the panel of the tool that asks for it. Declare it as a spec with a
+`label` and a `description` rather than a bare string:
+
+```ts
+requiredSecrets: [
+  { key: "tavily_api_key", type: "text", label: "Tavily API key",
+    description: "Key of the Tavily account the searches are billed to." },
+],
+```
+
+Both are optional, so a bare string keeps working: the panel then shows the key
+humanized as the title and says the author gave no description. Several tools of
+one plugin may declare the same key; the field is shown once and names every tool
+that asks for it.
+
+`sensitive` decides whether the value is a credential. A `text` field is one by
+default; a `select`, or a field declared `sensitive: false` such as a base URL,
+is readable: the panel shows its current value, and an agent export carries it
+so the imported agent does not ask for it again. A credential is never shown and
+travels as its key alone. A key that any tool or hook declares sensitive is a
+credential for every one of them.
+
+`ctx.artifacts` is an in-process, one-shot handoff between tools in the same
+conversation of the same agent. Each artifact is limited to 10 MB and at most
+10 minutes; one conversation holds at most 20 handles or 25 MB that nothing has
+taken yet, and the process store at most 100 MB or 1,000 live handles. `put`
+throws when a limit is reached. Always `await` both `put` and `take`: they
+answer synchronously in this engine, but the SDK types them as possibly
+asynchronous, so code that awaits them keeps working wherever the store lives.
+Persist anything longer-lived through a storage tool such as the
+[extra plugin](https://github.com/polyant-ai/polyant-extra-plugin)'s
+`extra:fileUpload` instead.
+
 ### Schema rules (OpenAI strict-mode compatible — enforced by `strict-mode.test.ts`)
 - `.nullable()`, **not** `.optional()` / `.default()` (apply defaults in `execute`).
-- No `.transform()` / `.refine()` / `.preprocess()` in `parameters` — move that logic to `execute` and return `{ error }` instead of throwing (see `hubspot-contact.tool.ts`, `http-request.tool.ts`).
+- No `.transform()` / `.refine()` / `.preprocess()` in `parameters` — move that logic to `execute` and return `{ error }` instead of throwing (see `http-request.tool.ts`).
 - No `.url()`/`.email()`/`.uuid()`/`.datetime()` formats — validate strings in `execute`.
 - `z.record(z.string(), z.string())` OK; `z.record(z.unknown())` not.
 
 ## `plugin.json` (plugin repo root)
 
 ```json
-{ "name": "acme-tools", "version": "1.0.0", "engine": ">=0.1.0", "toolsDir": "tools", "namespace": "acme" }
+{
+  "name": "acme-tools", "version": "1.0.0", "engine": ">=0.1.0", "toolsDir": "tools", "namespace": "acme",
+  "displayName": "Acme", "description": "Order status and returns from the Acme back office."
+}
 ```
 
 `namespace` prefixes every tool name → `acme:checkStatus`. Defaults to
-`name`. A plugin whose `engine` range excludes the running engine version is
+`name`. `displayName` and `description` are optional and only change how the
+admin panel presents the plugin: its name in the Origin column and in the tool
+picker, and its sentence when the picker is browsed by plugin. Without them the
+panel humanizes the namespace. Tools are still enabled one by one; the plugin
+is never switched as a whole. A plugin whose `engine` range excludes the running engine version is
 skipped with a warning (the deployment continues). Duplicate final names fail the
 boot loudly.
 
@@ -104,6 +147,41 @@ are identical; a same-name divergent definition fails the boot — use distinct
 names (e.g. `google-gmail`) for divergent scopes. The `OAuthProviderSpec` type is
 exported from the SDK as optional typing for manifests.
 
+### `system` (optional) — what the plugin needs from the image
+
+A plugin that shells out to a binary, links against a system library, or needs an
+environment variable pointing at one declares it in the manifest:
+
+```json
+{
+  "name": "acme-tools", "version": "1.0.0", "engine": ">=0.1.0",
+  "system": {
+    "apk": ["chromium", "nss"],
+    "npmGlobal": [],
+    "env": { "PUPPETEER_EXECUTABLE_PATH": "/usr/bin/chromium-browser" }
+  }
+}
+```
+
+This is read at BUILD time, not at runtime: the engine cannot install anything
+into a running container, and a plugin whose binary is missing must fail on the
+tool call rather than refuse to boot and take every other tool down with it.
+
+`Dockerfile.engine` collects the blocks of every plugin in the build and installs
+the union in the runtime stage; the entrypoint sources the collected env, because
+the variable *names* are not known when the Dockerfile is written. The same env
+also applies to the plugin's own build step, or an `npm install` would fetch a
+private copy of a binary the image already provides. The engine installs no tool
+binaries of its own, so an image built without a plugin does not carry what that
+plugin needs.
+
+A declared variable is a default: it applies only when the container
+environment does not set it, so a value the operator sets — even an empty one —
+always wins over the plugin's. Two plugins declaring the same variable with
+different values fail the build rather than letting one win silently. Package names must be plain enough to
+survive an argument list; beyond that there is no allowlist — including a plugin
+in a build is already the decision to trust it.
+
 ## Loading a plugin — dev
 
 The loader resolves roots from two sources (env wins de-dup):
@@ -124,17 +202,20 @@ where it lives. Two working setups:
   `tsx watch` hot-reloads. Do **not** symlink — `tsx` resolves the symlink's
   realpath (the external repo) and fails to find the monorepo deps.
 
-## Loading a plugin — build-time (deferred)
+## Loading a plugin — build-time
 
-CDK/Docker bake-in: clone each pinned plugin into `dist/plugins/<name>` (or bundle
-it) so its deps resolve in the image. Not yet implemented — the loader is already
-build-time-ready (it scans `<src|dist>/plugins/*`).
+Drop each plugin into `packages/engine/src/plugins/<name>` (gitignored) before
+building the image. The `plugins` stage of `Dockerfile.engine` installs each
+plugin's own dependencies, compiles its TypeScript in place and copies the result
+to `dist/plugins/<name>`, where the loader scans it at boot; the plugin keeps its
+own `node_modules`, so its imports resolve by walk-up rather than from the
+engine's tree. The same stage collects the `system` blocks described above.
 
 ## The SDK as a git dependency
 
 Both the engine and every plugin reference the SDK by pinned tag:
 ```
-"@polyant-ai/plugin-sdk": "git+https://github.com/polyant-ai/polyant-sdk.git#v1.0.0"
+"@polyant-ai/plugin-sdk": "github:polyant-ai/polyant-sdk#v1.9.0"
 ```
 `npm install` clones it and runs its `prepare` (build) → `dist`. The SDK's version
 is the compatibility contract; bump it deliberately and update the ref.
@@ -161,5 +242,4 @@ the steps above.
 
 ## Reference
 - SDK repo + authoring guide: `github.com/polyant-ai/polyant-sdk` (its `README.md`).
-- Design record: `docs/superpowers/specs/2026-07-02-serialized-plugin-mechanism.md`.
 - Authoring skill: `.claude/skills/plugin-authoring/SKILL.md`.

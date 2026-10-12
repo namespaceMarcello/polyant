@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { sanitizeForLog, shouldLog } from "../utils/create-logger.js";
 import type { IncomingMessage, OutgoingMessage } from "./types.js";
+import type { MessageTimingSettings } from "../instances/agent-settings.js";
+import { trackBackgroundTurn } from "./background-turns.js";
 
 /**
  * Per-conversation coordinator for inbound messaging channels that tend to
@@ -27,12 +30,20 @@ import type { IncomingMessage, OutgoingMessage } from "./types.js";
  */
 
 export interface MessageCoordinatorOptions {
-  /** Pre-pipeline coalescing window (ms). Burst fragments within this window collapse into one call. */
-  softDebounceMs: number;
-  /** Delay (ms) before sending the typing indicator. 0 = immediate. */
-  typingDelayMs: number;
-  /** Cap on consecutive cancel-and-restart cycles before degrading to sequential flushes. */
-  maxRestarts: number;
+  /**
+   * The three timings for the agent this message belongs to: the coalescing
+   * window, the typing-indicator delay, and the cap on cancel-and-restart
+   * cycles. They were three fixed numbers, taken once at construction from
+   * `MESSAGE_SOFT_DEBOUNCE_MS` / `MESSAGE_TYPING_DELAY_MS` /
+   * `MESSAGE_MAX_RESTARTS` — one answer for every agent on the installation,
+   * for a question a support agent and a booking agent answer differently.
+   *
+   * Resolved ONCE per burst, when the state is created, and held on it: a burst
+   * belongs to one conversation and therefore to one agent, so re-resolving per
+   * fragment would ask the same question of the same agent several times and
+   * could change the window mid-burst.
+   */
+  resolveTimings: (msg: IncomingMessage) => Promise<MessageTimingSettings>;
   /** The real message handler (pipeline). Invoked once per flush with the concatenated text. */
   handler: (msg: IncomingMessage, signal: AbortSignal) => Promise<OutgoingMessage>;
   /** Channel send callback used after a flush to deliver the response. */
@@ -58,6 +69,8 @@ export interface MessageCoordinatorOptions {
 }
 
 interface ConversationState {
+  /** The agent's timings, resolved when the burst started and stable for it. */
+  timings: MessageTimingSettings;
   /** Ordered list of fragment texts awaiting pipeline dispatch. */
   buffer: string[];
   /** The seed IncomingMessage of the current burst (preserves metadata). */
@@ -78,6 +91,12 @@ interface ConversationState {
   restartCount: number;
   /** Serialization chain for pipeline runs on the same conversation. */
   flushChain: Promise<unknown>;
+  /**
+   * Ends the burst's entry in the background-turn tracker. The adapter has
+   * already acknowledged these fragments, so shutdown waits for the burst —
+   * its debounce window, its pipeline runs and its reply — to finish.
+   */
+  settle: () => void;
 }
 
 function defaultKey(msg: IncomingMessage): string {
@@ -96,31 +115,48 @@ function isAbortError(err: unknown): boolean {
 
 export class MessageCoordinator {
   private readonly states = new Map<string, ConversationState>();
+  /**
+   * Bursts whose state is being installed right now, by key.
+   *
+   * `states` alone cannot answer "is a burst starting?": installing a state
+   * needs the agent's timings, which come from a DB read, so there is a window
+   * in which a conversation has a burst but no entry in `states` yet.
+   */
+  private readonly starting = new Map<string, Promise<void>>();
 
-  constructor(private readonly opts: MessageCoordinatorOptions) {
-    if (opts.softDebounceMs < 0) {
-      throw new Error("MessageCoordinator: softDebounceMs must be >= 0");
-    }
-    if (opts.typingDelayMs < 0) {
-      throw new Error("MessageCoordinator: typingDelayMs must be >= 0");
-    }
-    if (opts.maxRestarts < 0) {
-      throw new Error("MessageCoordinator: maxRestarts must be >= 0");
-    }
-  }
+  // No constructor validation of the timings any more: they no longer arrive
+  // here as numbers. Both sources that produce them are already constrained —
+  // Zod refuses a negative env var at boot, and the migration's CHECK refuses a
+  // negative column — so a guard here would only ever catch a test's own
+  // resolver.
+  constructor(private readonly opts: MessageCoordinatorOptions) {}
 
   /**
    * Entry point called on every inbound message. Returns synchronously with
    * `{ text: "" }` — the channel adapter must NOT treat the empty text as the
    * reply. The real response is delivered later via `sendOutbound`.
    */
-  onMessage(msg: IncomingMessage): Promise<OutgoingMessage> {
+  async onMessage(msg: IncomingMessage): Promise<OutgoingMessage> {
     const key = (this.opts.conversationKey ?? defaultKey)(msg);
+
+    // Wait out a start already in flight for this conversation. Two fragments
+    // arriving as two concurrent webhook requests both used to see no state,
+    // both awaited the timings read, and both installed one — the second
+    // `states.set` overwriting the first, whose fragment was then never
+    // delivered. A failed read is swallowed on purpose: the fragment that owns
+    // it reports the failure to its own adapter, and this one falls through and
+    // starts the burst itself rather than inheriting someone else's error.
+    const pending = this.starting.get(key);
+    if (pending) await pending.catch(() => {});
+
     const state = this.states.get(key);
 
     if (!state) {
-      this.startBurst(key, msg);
-      return Promise.resolve({ text: "" });
+      // Awaited, not fired and forgotten: the adapter is already awaiting this
+      // call, and resolving the timings before the first timer is armed is what
+      // keeps a burst from starting on one window and continuing on another.
+      await this.startBurst(key, msg);
+      return { text: "" };
     }
 
     // Append fragment to the burst
@@ -131,7 +167,7 @@ export class MessageCoordinator {
 
     if (state.currentAbort) {
       // Pipeline in flight — decide whether to abort and restart, or accumulate.
-      if (state.restartCount < this.opts.maxRestarts) {
+      if (state.restartCount < state.timings.maxRestarts) {
         state.currentAbort.abort();
         state.currentAbort = null;
         state.restartCount++;
@@ -147,7 +183,7 @@ export class MessageCoordinator {
       if (!state.typingSent) this.armTypingTimer(key);
     }
 
-    return Promise.resolve({ text: "" });
+    return { text: "" };
   }
 
   /** Shut down: clear all timers, abort in-flight pipelines, drop buffered state. */
@@ -156,14 +192,34 @@ export class MessageCoordinator {
       if (state.typingTimer) clearTimeout(state.typingTimer);
       if (state.pipelineTimer) clearTimeout(state.pipelineTimer);
       if (state.currentAbort) state.currentAbort.abort();
+      state.settle();
     }
     this.states.clear();
   }
 
   // -- internals -------------------------------------------------------------
 
-  private startBurst(key: string, msg: IncomingMessage): void {
+  /**
+   * Start a burst, atomically with respect to concurrent fragments.
+   *
+   * The pending promise is registered in the SAME synchronous tick that found
+   * no state — `installState` runs up to its first `await` and returns, and
+   * nothing between the `starting.get` in `onMessage` and the `starting.set`
+   * here yields — so a second fragment sees either the installed state or this
+   * promise, never neither.
+   */
+  private startBurst(key: string, msg: IncomingMessage): Promise<void> {
+    const pending = this.installState(key, msg);
+    this.starting.set(key, pending);
+    return pending.finally(() => this.starting.delete(key));
+  }
+
+  private async installState(key: string, msg: IncomingMessage): Promise<void> {
+    const timings = await this.opts.resolveTimings(msg);
+    let settle!: () => void;
+    trackBackgroundTurn(new Promise<void>((resolve) => (settle = resolve)));
     const state: ConversationState = {
+      timings,
       buffer: [msg.text],
       seed: msg,
       lastSid: extractMessageSid(msg),
@@ -174,6 +230,7 @@ export class MessageCoordinator {
       currentAbort: null,
       restartCount: 0,
       flushChain: Promise.resolve(),
+      settle,
     };
     this.states.set(key, state);
     this.armPipelineTimer(key);
@@ -184,14 +241,14 @@ export class MessageCoordinator {
     const state = this.states.get(key);
     if (!state) return;
     if (state.pipelineTimer) clearTimeout(state.pipelineTimer);
-    state.pipelineTimer = setTimeout(() => this.onPipelineTimer(key), this.opts.softDebounceMs);
+    state.pipelineTimer = setTimeout(() => this.onPipelineTimer(key), state.timings.softDebounceMs);
   }
 
   private armTypingTimer(key: string): void {
     const state = this.states.get(key);
     if (!state) return;
     if (state.typingTimer) clearTimeout(state.typingTimer);
-    state.typingTimer = setTimeout(() => this.onTypingTimer(key), this.opts.typingDelayMs);
+    state.typingTimer = setTimeout(() => this.onTypingTimer(key), state.timings.typingDelayMs);
   }
 
   private onTypingTimer(key: string): void {
@@ -209,7 +266,8 @@ export class MessageCoordinator {
       )
       .catch((err) =>
         console.error(
-          `[coordinator] sendTyping failed for ${state.seed.channelType}:${state.seed.channelId}:`,
+          "[coordinator] sendTyping failed for",
+          sanitizeForLog(`${state.seed.channelType}:${state.seed.channelId}`),
           err,
         ),
       );
@@ -220,28 +278,43 @@ export class MessageCoordinator {
     if (!state) return;
     state.pipelineTimer = null;
 
-    // Snapshot the fragments to process + clear the buffer. New fragments arriving
-    // during the run go to the fresh buffer; on abort, the snapshot is restored.
-    const fragments = [...state.buffer];
-    state.buffer = [];
-    const burstAttachments = state.attachments.length > 0 ? [...state.attachments] : undefined;
-    state.attachments = [];
-
+    // The controller exists from now, so a fragment arriving while this run
+    // waits for the previous one still supersedes it.
     const abortController = new AbortController();
     state.currentAbort = abortController;
     const signal = abortController.signal;
 
-    const combinedText = fragments.join("\n");
-    const combined: IncomingMessage = {
-      ...state.seed,
-      text: combinedText,
-      attachments: burstAttachments,
-    };
-
     state.flushChain = state.flushChain
-      .then(() => this.doFlush(key, state, combined, signal, fragments, burstAttachments))
+      .then(() => {
+        // Superseded before it started: its fragments are still in the buffer,
+        // for the run that replaced it.
+        if (signal.aborted) return;
+
+        // Snapshot the fragments to process + clear the buffer HERE, once the
+        // previous run has settled. An aborted run puts its fragments back only
+        // when it finishes unwinding, which can take longer than the debounce;
+        // a snapshot taken when the timer fired would miss them, this run would
+        // answer the new fragment alone and a third run the old ones. New
+        // fragments arriving during the run go to the fresh buffer; on abort,
+        // the snapshot is restored.
+        const fragments = [...state.buffer];
+        state.buffer = [];
+        const burstAttachments = state.attachments.length > 0 ? [...state.attachments] : undefined;
+        state.attachments = [];
+        if (fragments.length === 0) {
+          this.finalizePipeline(key, state, signal);
+          return;
+        }
+
+        const combined: IncomingMessage = {
+          ...state.seed,
+          text: fragments.join("\n"),
+          attachments: burstAttachments,
+        };
+        return this.doFlush(key, state, combined, signal, fragments, burstAttachments);
+      })
       .catch((err) => {
-        console.error(`[coordinator] flushChain unhandled error for ${key}:`, err);
+        console.error("[coordinator] flushChain unhandled error for", sanitizeForLog(key), err);
       });
   }
 
@@ -262,7 +335,8 @@ export class MessageCoordinator {
         return;
       }
       console.error(
-        `[coordinator] handler error for ${combined.channelType}:${combined.channelId}:`,
+        "[coordinator] handler error for",
+        sanitizeForLog(`${combined.channelType}:${combined.channelId}`),
         err,
       );
       this.finalizePipeline(key, state, signal);
@@ -284,10 +358,14 @@ export class MessageCoordinator {
           response.text,
         );
       } catch (err) {
+        // Adapter errors (e.g. grammY) can carry the reply text in their payload:
+        // the full object is debug only.
         console.error(
-          `[coordinator] sendOutbound failed for ${combined.channelType}:${combined.channelId}:`,
-          err,
+          "[coordinator] sendOutbound failed for",
+          sanitizeForLog(`${combined.channelType}:${combined.channelId}`),
+          err instanceof Error ? err.message : String(err),
         );
+        if (shouldLog("debug")) console.debug("[coordinator] sendOutbound error detail:", err);
       }
     }
 
@@ -321,11 +399,12 @@ export class MessageCoordinator {
 
     if (state.buffer.length > 0) {
       this.armPipelineTimer(key);
-      if (this.opts.typingDelayMs > 0) this.armTypingTimer(key);
+      if (state.timings.typingDelayMs > 0) this.armTypingTimer(key);
     } else {
       if (state.typingTimer) clearTimeout(state.typingTimer);
       if (state.pipelineTimer) clearTimeout(state.pipelineTimer);
       this.states.delete(key);
+      state.settle();
     }
   }
 }

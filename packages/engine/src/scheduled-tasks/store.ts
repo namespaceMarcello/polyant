@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { eq, and, lte, or, isNull, sql } from "drizzle-orm";
+import { eq, and, lte, lt, or, isNull, count, sql } from "drizzle-orm";
 import { db } from "../database/client.js";
 import { instances } from "../instances/schema.js";
 import { scheduledTasks, type ScheduledTask, type ScheduleConfig } from "./schema.js";
@@ -26,6 +26,8 @@ export interface CreateTaskInput {
    * which the cron can tick.
    */
   enabled?: boolean;
+  /** Per-run deadline in ms; null/undefined → the platform's default deadline. */
+  maxRunMs?: number | null;
 }
 
 export interface UpdateTaskInput {
@@ -39,6 +41,7 @@ export interface UpdateTaskInput {
   outboundChannel?: string | null;
   outboundTarget?: string | null;
   keepHistory?: boolean;
+  maxRunMs?: number | null;
 }
 
 /** Options for `listByInstance`. All fields optional — defaults preserve the
@@ -114,6 +117,7 @@ export async function create(input: CreateTaskInput): Promise<ScheduledTask> {
       outboundTarget: input.outboundTarget ?? null,
       keepHistory: input.keepHistory ?? false,
       enabled: input.enabled ?? true,
+      maxRunMs: input.maxRunMs ?? null,
       nextRunAt,
     })
     .returning();
@@ -134,6 +138,7 @@ export async function update(id: string, input: UpdateTaskInput): Promise<Schedu
   if (input.outboundChannel !== undefined) sets.outboundChannel = input.outboundChannel;
   if (input.outboundTarget !== undefined) sets.outboundTarget = input.outboundTarget;
   if (input.keepHistory !== undefined) sets.keepHistory = input.keepHistory;
+  if (input.maxRunMs !== undefined) sets.maxRunMs = input.maxRunMs;
 
   if (input.schedule !== undefined) {
     sets.schedule = input.schedule;
@@ -194,11 +199,41 @@ export async function getDueTasks(now: Date): Promise<ScheduledTask[]> {
   return rows.map((r) => r.task);
 }
 
-/** Atomically mark a task as running. Returns true if the update was applied (no race). */
-export async function markRunning(id: string): Promise<boolean> {
+/**
+ * The identity of one claim on a task: the `last_run_at` its `markRunning` wrote.
+ *
+ * `running` alone cannot tell two runs apart. After the reaper fails an overrunning
+ * run A, another replica can claim the task for run B; A's late completion would then
+ * match B's `running` row, clear B's claim and, with `deleteAfterRun`, delete the task
+ * under it. Every write that ends a run therefore names the claim it ends. `last_run_at`
+ * carries it because nothing else writes that column while a run is live (an API edit
+ * moves `updated_at`, which would make a live run lose its own completion).
+ *
+ * `null` is the claim of a row marked `running` by a process that did not stamp it,
+ * read back as-is by the reaper.
+ */
+export type RunClaim = Date | null;
+
+/** Millisecond precision on both sides: the claim is written from a JS Date. */
+function isClaim(claim: RunClaim) {
+  return claim === null
+    ? isNull(scheduledTasks.lastRunAt)
+    : sql`date_trunc('milliseconds', ${scheduledTasks.lastRunAt}) = ${claim.toISOString()}::timestamptz`;
+}
+
+/**
+ * Atomically mark a task as running. Returns the claim, or `null` when another run
+ * holds the task or (with `dueBy`) the task is no longer due.
+ *
+ * `dueBy` is for scheduled runs: the tick read the task as due, but by the time this
+ * write lands another replica may have run it and moved `next_run_at` forward, and
+ * claiming it anyway would run the same occurrence twice. A manual run omits it.
+ */
+export async function markRunning(id: string, opts: { dueBy?: Date } = {}): Promise<Date | null> {
+  const claim = new Date();
   const result = await db
     .update(scheduledTasks)
-    .set({ lastRunStatus: "running", updatedAt: new Date() })
+    .set({ lastRunStatus: "running", lastRunAt: claim, updatedAt: claim })
     .where(
       and(
         eq(scheduledTasks.id, id),
@@ -206,23 +241,27 @@ export async function markRunning(id: string): Promise<boolean> {
           isNull(scheduledTasks.lastRunStatus),
           sql`${scheduledTasks.lastRunStatus} != 'running'`,
         ),
+        opts.dueBy ? lte(scheduledTasks.nextRunAt, opts.dueBy) : undefined,
       ),
     )
     .returning({ id: scheduledTasks.id });
 
-  return result.length > 0;
+  return result.length > 0 ? claim : null;
 }
 
-/** Mark a task as successfully completed */
-export async function markCompleted(id: string, conversationId: string): Promise<void> {
+/**
+ * Mark the run holding `claim` as successfully completed. Returns the completion
+ * time, or `null` when that claim no longer holds the task (see `RunClaim`).
+ */
+export async function markCompleted(id: string, conversationId: string, claim: RunClaim): Promise<Date | null> {
   const task = await getById(id);
-  if (!task) return;
+  if (!task) return null;
 
   const schedule = task.schedule as ScheduleConfig;
   const now = new Date();
   const nextRunAt = computeNextRun(schedule, now);
 
-  await db
+  const rows = await db
     .update(scheduledTasks)
     .set({
       lastRunAt: now,
@@ -234,13 +273,35 @@ export async function markCompleted(id: string, conversationId: string): Promise
       nextRunAt,
       updatedAt: now,
     })
-    .where(eq(scheduledTasks.id, id));
+    .where(and(eq(scheduledTasks.id, id), eq(scheduledTasks.lastRunStatus, "running"), isClaim(claim)))
+    .returning({ id: scheduledTasks.id });
+  return rows.length > 0 ? now : null;
 }
 
-/** Mark a task as failed */
-export async function markFailed(id: string, error: string): Promise<void> {
+/**
+ * Delete a one-shot task after the run that completed at `completedAt`, and only if
+ * nothing has claimed or completed it since. Returns whether the row was deleted.
+ */
+export async function removeAfterRun(id: string, completedAt: Date): Promise<boolean> {
+  const rows = await db
+    .delete(scheduledTasks)
+    .where(and(eq(scheduledTasks.id, id), eq(scheduledTasks.lastRunStatus, "success"), isClaim(completedAt)))
+    .returning({ id: scheduledTasks.id });
+  return rows.length > 0;
+}
+
+/**
+ * Mark the run holding `claim` as failed. Returns whether the row was updated.
+ *
+ * The write is a compare-and-set on the claim it was read for (see `RunClaim`). The
+ * reaper passes the claim it saw: between that read and this write, the run it judged
+ * overdue may have completed and the task been claimed again by another replica (the
+ * in-process guard in the scheduler only sees its own process), and failing THAT run
+ * would overwrite a live claim and free it for a third execution.
+ */
+export async function markFailed(id: string, error: string, claim: RunClaim): Promise<boolean> {
   const task = await getById(id);
-  if (!task) return;
+  if (!task) return false;
 
   const newConsecutive = task.consecutiveErrors + 1;
   const shouldDisable = newConsecutive >= MAX_CONSECUTIVE_ERRORS;
@@ -260,7 +321,7 @@ export async function markFailed(id: string, error: string): Promise<void> {
     nextRunAt = computeNextRun(schedule, now);
   }
 
-  await db
+  const rows = await db
     .update(scheduledTasks)
     .set({
       lastRunAt: now,
@@ -272,7 +333,68 @@ export async function markFailed(id: string, error: string): Promise<void> {
       nextRunAt,
       updatedAt: now,
     })
-    .where(eq(scheduledTasks.id, id));
+    .where(and(
+      eq(scheduledTasks.id, id),
+      eq(scheduledTasks.lastRunStatus, "running"),
+      isClaim(claim),
+    ))
+    .returning({ id: scheduledTasks.id });
+  return rows.length > 0;
+}
+
+/**
+ * Tasks stuck in `running` since before `since`, oldest first.
+ *
+ * `updated_at` is the run's start time while the row is `running`: `markRunning` is the
+ * last write before the run, and `markCompleted`/`markFailed` are the next ones. A write
+ * from elsewhere mid-run (an API edit, say) only pushes the timestamp forward, which
+ * DELAYS recovery — the safe direction to be wrong in, since the opposite would recover a
+ * run that is still alive.
+ */
+export async function findStuckRunning(since: Date): Promise<ScheduledTask[]> {
+  return db
+    .select()
+    .from(scheduledTasks)
+    .where(and(eq(scheduledTasks.lastRunStatus, "running"), lt(scheduledTasks.updatedAt, since)))
+    .orderBy(scheduledTasks.updatedAt);
+}
+
+/** How many rows are currently stuck in `running` since before `since`. For metrics. */
+export async function countStuckRunning(since: Date): Promise<number> {
+  const rows = await db
+    .select({ n: count() })
+    .from(scheduledTasks)
+    .where(and(eq(scheduledTasks.lastRunStatus, "running"), lt(scheduledTasks.updatedAt, since)));
+  return rows[0]?.n ?? 0;
+}
+
+/**
+ * Clear the `running` marker so `getDueTasks` sees the task again, WITHOUT touching the
+ * error counters or `nextRunAt`.
+ *
+ * Used by the startup recovery: a run interrupted by a deploy is not the task's fault, so
+ * it must not consume a retry, count towards `MAX_CONSECUTIVE_ERRORS`, or push the next
+ * run into the future. The interrupted run itself is closed in the run log as an error —
+ * the audit says what happened, the schedule carries on as if the tick had not fired.
+ *
+ * Each row is matched on the claim the recovery READ, not on `running` alone: between the
+ * read and this write the interrupted run may have been closed and a new run B claimed
+ * the task, and clearing B's marker would let the next tick start the task a second time
+ * while B is still live. A row whose claim moved on is left alone.
+ */
+export async function clearRunningMarker(
+  observed: Array<{ id: string; claim: RunClaim }>,
+): Promise<string[]> {
+  if (observed.length === 0) return [];
+  const rows = await db
+    .update(scheduledTasks)
+    .set({ lastRunStatus: null, updatedAt: new Date() })
+    .where(and(
+      eq(scheduledTasks.lastRunStatus, "running"),
+      or(...observed.map(({ id, claim }) => and(eq(scheduledTasks.id, id), isClaim(claim)))),
+    ))
+    .returning({ id: scheduledTasks.id });
+  return rows.map((row) => row.id);
 }
 
 /** Disable a task */
@@ -281,29 +403,4 @@ export async function disableTask(id: string): Promise<void> {
     .update(scheduledTasks)
     .set({ enabled: false, updatedAt: new Date() })
     .where(eq(scheduledTasks.id, id));
-}
-
-/** Find an active task whose outbound matches the given channel + target for an instance.
- *  Used to detect if an incoming channel message is a reply to a scheduled task's output. */
-export async function findActiveTaskByOutbound(
-  instanceId: InstanceSlug,
-  channelType: string,
-  channelId: string,
-): Promise<ScheduledTask | undefined> {
-  const rows = await db
-    .select()
-    .from(scheduledTasks)
-    .where(
-      and(
-        eq(scheduledTasks.instanceId, instanceId),
-        eq(scheduledTasks.outboundChannel, channelType),
-        eq(scheduledTasks.outboundTarget, channelId),
-        eq(scheduledTasks.enabled, true),
-        eq(scheduledTasks.keepHistory, true),
-        sql`${scheduledTasks.lastConversationId} IS NOT NULL`,
-      ),
-    )
-    .orderBy(sql`${scheduledTasks.lastRunAt} DESC NULLS LAST`)
-    .limit(1);
-  return rows[0];
 }

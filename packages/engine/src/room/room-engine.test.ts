@@ -71,10 +71,16 @@ vi.mock("../webhooks/webhooks.schema.js", () => ({
     name: "name",
     interpretationPrompt: "interpretation_prompt",
     id: "id",
+    eventSourceId: "event_source_id",
+  },
+  eventSources: {
+    id: "id",
+    sourceType: "source_type",
   },
 }));
 vi.mock("drizzle-orm", () => ({
   inArray: vi.fn((...args: unknown[]) => ({ type: "inArray", args })),
+  eq: vi.fn((...args: unknown[]) => ({ type: "eq", args })),
 }));
 vi.mock("../config.js", () => ({
   config: {
@@ -137,6 +143,9 @@ const INSTANCE_CONFIG = {
   secrets: {},
   memoryEnabled: false,
   knowledgeEnabled: false,
+  // The agent's datetime formatting rides on the resolved config now, so the
+  // room engine reads it from here instead of from the environment.
+  datetime: { timezone: "UTC", locale: "en-US" },
 };
 
 function createChainMock(resolvedValue: unknown = []) {
@@ -275,6 +284,31 @@ describe("executeRoomCycle", () => {
     });
   });
 
+  describe("control returns this engine cannot honor", () => {
+    it("warns, naming the hook, when a hook asks to regenerate the turn", async () => {
+      // The hook is accepted, executed and logged successful; the room engine is
+      // supervise-direct, so the control return goes nowhere (#379).
+      mockRunHooks.mockResolvedValue([
+        {
+          hookId: "h", event: "response_generated", actionType: "function", toolName: "requireTool",
+          success: true, durationMs: 1, regenerate: { reason: "tool not called" },
+        },
+      ]);
+      mockListAndMarkPendingEvents.mockResolvedValue([
+        { id: "evt-1", eventDefinitionId: "def-1", rawPayload: {}, matchedAt: new Date(), createdAt: new Date() },
+      ]);
+      mockDb.select.mockReturnValue(createChainMock([]) as any);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      warn.mockClear();
+
+      await executeRoomCycle(makeRoom(), asInstanceSlug("test-slug"));
+
+      const warned = warn.mock.calls.map((c) => String(c[0]));
+      expect(warned.some((m) => m.includes("requireTool") && m.includes("regenerate") && m.includes("room"))).toBe(true);
+      warn.mockRestore();
+    });
+  });
+
   describe("early exit conditions", () => {
     it("should return early (no-op) when no pending events and no human message", async () => {
       mockListAndMarkPendingEvents.mockResolvedValue([]);
@@ -331,6 +365,46 @@ describe("executeRoomCycle", () => {
       expect(message).toContain('"orderId":456');
     });
 
+    it("renders a GitHub payload without its API URL templates", async () => {
+      // The synthetic message is the user turn, so it is re-sent on every step —
+      // whatever noise it carries is paid for 7-11 times per cycle (#381).
+      const rawPayload = {
+        action: "opened",
+        issue: { number: 7, title: "Broken link", html_url: "https://github.com/acme/app/issues/7" },
+        sender: { login: "octocat", node_id: "MDQ6", followers_url: "https://api.github.com/users/octocat/followers" },
+      };
+      mockListAndMarkPendingEvents.mockResolvedValue([
+        { id: "evt-1", eventDefinitionId: "def-1", rawPayload, matchedAt: new Date("2026-03-30"), createdAt: new Date("2026-03-30") },
+      ]);
+      mockDb.select.mockReturnValue(createChainMock([
+        { id: "def-1", name: "Issues", interpretationPrompt: "Triage it", sourceType: "github" },
+      ]) as any);
+
+      await executeRoomCycle(makeRoom(), asInstanceSlug("test-slug"));
+
+      const message = mockSupervise.mock.calls[0][0].message as string;
+      expect(message).toContain('"login":"octocat"');
+      expect(message).toContain('"title":"Broken link"');
+      expect(message).toContain("https://github.com/acme/app/issues/7");
+      expect(message).not.toContain("followers_url");
+      expect(message).not.toContain("node_id");
+    });
+
+    it("renders an unknown source type's payload unchanged", async () => {
+      const rawPayload = { objectId: 42, portal_url: "https://app.hubspot.com/x" };
+      mockListAndMarkPendingEvents.mockResolvedValue([
+        { id: "evt-1", eventDefinitionId: "def-1", rawPayload, matchedAt: new Date("2026-03-30"), createdAt: new Date("2026-03-30") },
+      ]);
+      mockDb.select.mockReturnValue(createChainMock([
+        { id: "def-1", name: "Deals", interpretationPrompt: "Handle it", sourceType: "hubspot" },
+      ]) as any);
+
+      await executeRoomCycle(makeRoom(), asInstanceSlug("test-slug"));
+
+      const message = mockSupervise.mock.calls[0][0].message as string;
+      expect(message).toContain("portal_url");
+    });
+
     it("should include event handling instructions from definitions", async () => {
       mockListAndMarkPendingEvents.mockResolvedValue([
         { id: "evt-1", eventDefinitionId: "def-1", rawPayload: {}, matchedAt: new Date(), createdAt: new Date() },
@@ -371,7 +445,8 @@ describe("executeRoomCycle", () => {
 
       const message = mockSupervise.mock.calls[0][0].message as string;
       expect(message).toContain("[Room context usage:");
-      expect(message).toContain("/ 128,000 tokens");
+      // The product formats with the process locale; build the expectation the same way.
+      expect(message).toContain(`/ ${(128_000).toLocaleString()} tokens`);
     });
   });
 
@@ -431,6 +506,36 @@ describe("executeRoomCycle", () => {
           memoryEnabled: false,
           includeHarness: new Set(["room"]),
         }),
+      );
+    });
+
+    it("delivers the room prompt to the supervisor as a system section", async () => {
+      // Regression: the room prompt reached only the token estimate, so an
+      // operator's saved mandate was never sent to the model (#380).
+      mockListAndMarkPendingEvents.mockResolvedValue([
+        { id: "evt-1", eventDefinitionId: "def-1", rawPayload: {}, matchedAt: new Date(), createdAt: new Date() },
+      ]);
+      const selChain = createChainMock([]);
+      mockDb.select.mockReturnValue(selChain as any);
+
+      await executeRoomCycle(makeRoom({ prompt: "Check for duplicates before acting." }), asInstanceSlug("test-slug"));
+
+      expect(mockSupervise).toHaveBeenCalledWith(
+        expect.objectContaining({ roomPrompt: "Check for duplicates before acting." }),
+      );
+    });
+
+    it("omits the room prompt when the room has none", async () => {
+      mockListAndMarkPendingEvents.mockResolvedValue([
+        { id: "evt-1", eventDefinitionId: "def-1", rawPayload: {}, matchedAt: new Date(), createdAt: new Date() },
+      ]);
+      const selChain = createChainMock([]);
+      mockDb.select.mockReturnValue(selChain as any);
+
+      await executeRoomCycle(makeRoom({ prompt: "" }), asInstanceSlug("test-slug"));
+
+      expect(mockSupervise).toHaveBeenCalledWith(
+        expect.objectContaining({ roomPrompt: undefined }),
       );
     });
 

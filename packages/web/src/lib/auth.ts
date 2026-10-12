@@ -22,21 +22,17 @@ import {
   primaryKey,
 } from "drizzle-orm/pg-core";
 import { authConfig } from "./auth.config";
+import { databaseSslFromEnv, databaseUrlFromEnv } from "./db-url";
 import {
   resolveSignInOrgId,
   type OrgProvisioningPort,
 } from "./org-provisioning";
-import { isEmailDomainAllowed, parseAllowedDomains } from "./auth-domain-allowlist";
-
-const connectionString = process.env.DATABASE_URL ??
-  `postgres://${process.env.POSTGRES_USER ?? "polyant"}:${process.env.POSTGRES_PASSWORD ?? ""}@${process.env.POSTGRES_HOST ?? "localhost"}:${process.env.POSTGRES_PORT ?? "5432"}/${process.env.POSTGRES_DB ?? "polyant"}`;
 
 // Aurora/managed Postgres rejects unencrypted connections (pg_hba "no
-// encryption"). Mirror the engine client: enable SSL when POSTGRES_SSL=true,
-// accepting the managed CA chain. Off by default for local dev.
-const queryClient = postgres(connectionString, {
-  ssl: process.env.POSTGRES_SSL === "true" ? { rejectUnauthorized: false } : false,
-});
+// encryption"), so TLS follows POSTGRES_SSL and accepts the managed CA chain.
+// Both rules live in db-url.ts — see the note there on why the panel keeps its
+// own copy of the engine's assembly.
+const queryClient = postgres(databaseUrlFromEnv(), { ssl: databaseSslFromEnv() });
 const db = drizzle(queryClient);
 
 /**
@@ -90,14 +86,12 @@ const verificationTokensTable = pgTable(
 );
 
 /**
- * RBAC tenancy tables (subset). The Node-side Auth.js callback resolves a
- * user's organization at sign-in. The sole write-capable exception is delegated
- * back to the engine over its authenticated internal endpoint for the exact
- * `PLATFORM_ADMIN_EMAIL`; the web process does not mirror role bindings.
- *
- * The `organizations`, `roles` and `role_bindings` mirrors are gone with the
- * auto-provisioning that needed them — sign-in no longer looks up the default
- * organization, the Owner role, or writes a binding.
+ * RBAC tenancy tables (subset). The Node-side Auth.js callback resolves a user's
+ * organization at sign-in and writes nothing at all: the `organizations`, `roles`
+ * and `role_bindings` mirrors went with the auto-provisioning that needed them,
+ * and the one remaining write — the configured platform admin's owner bootstrap,
+ * delegated to the engine over its internal channel — went with
+ * `PLATFORM_ADMIN_EMAIL`. Sign-in is a membership lookup, and nothing else.
  */
 const organizationMembershipsTable = pgTable("organization_memberships", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -107,12 +101,9 @@ const organizationMembershipsTable = pgTable("organization_memberships", {
 
 /**
  * Concrete {@link OrgProvisioningPort} backed by the postgres-js Drizzle client.
- * The pure orchestration lives in `org-provisioning.ts` (unit tested); this is
- * the thin SQL adapter.
- *
- * Membership is granted deliberately through the members API, not as a side
- * effect of authenticating. The configured platform-admin exception is executed
- * in the engine transaction so this adapter retains no arbitrary write access.
+ * The orchestration lives in `org-provisioning.ts` (unit tested); this is the
+ * thin SQL adapter, and it is read-only. Membership is granted deliberately
+ * through the members API, never as a side effect of authenticating.
  */
 const orgProvisioningPort: OrgProvisioningPort = {
   async findUserOrgId(userId) {
@@ -122,31 +113,6 @@ const orgProvisioningPort: OrgProvisioningPort = {
       .where(eq(organizationMembershipsTable.userId, userId))
       .limit(1);
     return row?.id ?? null;
-  },
-  async ensureConfiguredPlatformAdminOwner(email) {
-    const internalSecret = process.env.AUTH_INTERNAL_SECRET;
-    if (!internalSecret) return null;
-
-    try {
-      const response = await fetch(
-        `${process.env.INTERNAL_ENGINE_URL ?? "http://localhost:4000"}/api/auth/credentials/bootstrap-owner`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-internal-auth": internalSecret,
-          },
-          body: JSON.stringify({ email }),
-        },
-      );
-      if (!response.ok) return null;
-
-      const body = (await response.json()) as { organizationId?: unknown };
-      return typeof body.organizationId === "string" ? body.organizationId : null;
-    } catch (err) {
-      console.error("[auth] configured admin bootstrap failed", err);
-      return null;
-    }
   },
 };
 
@@ -172,13 +138,7 @@ async function jwtWithOrg(params: Parameters<NonNullable<typeof baseJwtCallback>
       ((user as { id?: string }).id ?? (token.id as string | undefined)) ?? undefined;
     if (userId) {
       try {
-        const orgId = await resolveSignInOrgId(orgProvisioningPort, {
-          userId,
-          email:
-            (user as { email?: string | null }).email ??
-            (typeof token.email === "string" ? token.email : undefined),
-          platformAdminEmail: process.env.PLATFORM_ADMIN_EMAIL,
-        });
+        const orgId = await resolveSignInOrgId(orgProvisioningPort, { userId });
         if (orgId) token.orgId = orgId;
       } catch (err) {
         // Never block sign-in on org resolution. A missing orgId is not an error
@@ -206,30 +166,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     ...authConfig.callbacks,
     jwt: jwtWithOrg,
-    /**
-     * Per-org sign-in domain allowlist (RBAC Stream 8 — OSS path).
-     *
-     * Runs in the Node runtime (this file is the full server-side config) so
-     * the allowlist env vars are read here, NOT in the Edge `auth.config.ts`.
-     * Restricts Google sign-in to the configured domain(s); credentials login
-     * (no `account.provider === "google"`) bypasses the check. There is no
-     * hardcoded domain — every tenant is configured via `AUTH_ALLOWED_DOMAIN`.
-     */
-    signIn(params) {
-      const { account, profile } = params;
-      if (account?.provider === "google") {
-        const allowList = parseAllowedDomains();
-        if (!isEmailDomainAllowed(profile?.email, allowList)) {
-          return false;
-        }
-      }
-      return true;
-    },
+    // No `signIn` callback, and nothing left for one to decide: this edition
+    // offers no federated provider (`auth-providers.ts`), so every sign-in is a
+    // password sign-in the engine has already verified. The callback used to
+    // refuse a federated sign-in whose email domain was outside
+    // `AUTH_ALLOWED_DOMAIN(S)` — one list for a whole installation, which cannot
+    // answer the question for a second tenant. Both the list and the provider it
+    // gated belong to the tier that manages organizations.
   },
   // No `events.createUser`. It used to provision the default-org membership and
   // the OWNER binding the moment the adapter created a user, so a first OAuth
   // sign-in made you an Owner of the organization — the highest role in the
-  // product, granted for having an address that passes the domain allowlist.
+  // product, granted for having an address that passed the domain allowlist.
   //
   // A new user is now created and left with no membership. Someone holding
   // `org.member:manage` adds them through

@@ -13,7 +13,14 @@ vi.mock("../langsmith.js", () => ({
 }));
 
 import type { ModelMessage } from "ai";
-import { buildSteps, aggregateReasoning, serializeTools, createProvider, normalizeStrictConversation } from "./base.js";
+import {
+  buildSteps,
+  aggregateReasoning,
+  serializeTools,
+  createProvider,
+  normalizeStrictConversation,
+  usageCompletedBeforeFailure,
+} from "./base.js";
 import { tracedGenerateText, tracedStreamText } from "../langsmith.js";
 
 // safeTokens and aggregateStepUsage are not exported, so we test them
@@ -198,6 +205,24 @@ describe("buildSteps", () => {
     expect(steps[1].toolResults).toBeUndefined();
   });
 
+  it("records each step's own cache reads and writes, so a step can be priced as one model call", () => {
+    const steps = buildSteps(
+      [
+        {
+          stepType: "initial",
+          text: "",
+          toolCalls: [],
+          finishReason: "tool-calls",
+          usage: { promptTokens: 1000, completionTokens: 10, cachedInputTokens: 800, cacheCreationInputTokens: 150, cacheCreation5mInputTokens: 50 },
+        },
+        { stepType: "tool-result", text: "ok", toolCalls: [], finishReason: "stop", usage: { promptTokens: 1200, completionTokens: 20 } },
+      ],
+      100,
+    );
+    expect(steps[0]).toMatchObject({ promptTokens: 1000, completionTokens: 10, cachedInputTokens: 800, cacheCreationInputTokens: 150, cacheCreation5mInputTokens: 50 });
+    expect(steps[1].cachedInputTokens).toBeUndefined();
+  });
+
   it("normalises reasoningDetails per step (text+signature, redacted, drops unknowns)", () => {
     const steps = buildSteps(
       [
@@ -339,6 +364,110 @@ const baseRequest: import("../types.js").ChatRequest = {
  * step happened to use. So the gateway must report the CUMULATIVE figure
  * whichever shape the installed SDK hands it.
  */
+/**
+ * A `chat()` is up to `maxSteps` model calls. When a later step throws, the
+ * earlier ones were billed, and the SDK result that carries usage never
+ * arrives — so the provider pins what the completed steps used to the error.
+ */
+describe("createProvider – usage of the model calls answered before a failure", () => {
+  type CallEndOptions = { onLanguageModelCallEnd: (event: { usage?: unknown }) => void };
+
+  it("chat: pins the answered model calls' usage to the error the call throws", async () => {
+    const failure = new Error("context length exceeded");
+    vi.mocked(tracedGenerateText).mockImplementationOnce((async (options: CallEndOptions) => {
+      options.onLanguageModelCallEnd({ usage: { inputTokens: 400, outputTokens: 30, inputTokenDetails: { cacheReadTokens: 100 } } });
+      options.onLanguageModelCallEnd({ usage: { inputTokens: 600, outputTokens: 50 } });
+      throw failure;
+    }) as never);
+
+    const adapter = createProvider("anthropic", (_modelId) => ({}) as any);
+    await expect(adapter.chat({ ...baseRequest }, "claude-sonnet-4-6")).rejects.toBe(failure);
+
+    expect(usageCompletedBeforeFailure(failure)).toEqual({
+      promptTokens: 1000,
+      completionTokens: 80,
+      cachedInputTokens: 100,
+      cacheCreationInputTokens: 0,
+      cacheCreation5mInputTokens: 0,
+      // Each model call stays a call of its own, for a model priced by prompt length.
+      calls: [
+        { promptTokens: 400, completionTokens: 30, cachedInputTokens: 100, cacheCreationInputTokens: 0, cacheCreation5mInputTokens: 0 },
+        { promptTokens: 600, completionTokens: 50, cachedInputTokens: 0, cacheCreationInputTokens: 0, cacheCreation5mInputTokens: 0 },
+      ],
+    });
+  });
+
+  it("chat: pins the answered model calls' 5m cache writes, so a failed turn is priced by TTL too", async () => {
+    const failure = new Error("overloaded");
+    vi.mocked(tracedGenerateText).mockImplementationOnce((async (options: CallEndOptions) => {
+      options.onLanguageModelCallEnd({
+        usage: {
+          inputTokens: 1000,
+          outputTokens: 10,
+          inputTokenDetails: { cacheWriteTokens: 300 },
+          raw: { cache_creation: { ephemeral_5m_input_tokens: 120, ephemeral_1h_input_tokens: 180 } },
+        },
+      });
+      throw failure;
+    }) as never);
+
+    const adapter = createProvider("anthropic", (_modelId) => ({}) as any);
+    await expect(adapter.chat({ ...baseRequest }, "claude-sonnet-5-5")).rejects.toBe(failure);
+
+    expect(usageCompletedBeforeFailure(failure)).toMatchObject({ cacheCreationInputTokens: 300, cacheCreation5mInputTokens: 120 });
+  });
+
+  it("chat: pins nothing when the call failed before any model call answered", async () => {
+    const failure = new Error("unauthorized");
+    vi.mocked(tracedGenerateText).mockRejectedValueOnce(failure);
+
+    const adapter = createProvider("anthropic", (_modelId) => ({}) as any);
+    await expect(adapter.chat({ ...baseRequest }, "claude-sonnet-4-6")).rejects.toBe(failure);
+
+    expect(usageCompletedBeforeFailure(failure)).toBeNull();
+  });
+
+  it("chatStream: pins the answered model calls' usage to the error the stream settles with", async () => {
+    const failure = new Error("stream broke");
+    vi.mocked(tracedStreamText).mockImplementationOnce((async (options: CallEndOptions) => {
+      options.onLanguageModelCallEnd({ usage: { inputTokens: 250, outputTokens: 20 } });
+      return {
+        ...fakeStreamTextResult,
+        text: Promise.reject(failure),
+        steps: Promise.resolve([]),
+        reasoning: Promise.resolve(undefined),
+      };
+    }) as never);
+
+    const adapter = createProvider("anthropic", (_modelId) => ({}) as any);
+    const stream = await adapter.chatStream!({ ...baseRequest }, "claude-sonnet-4-6");
+    await expect(stream.response).rejects.toBe(failure);
+
+    expect(usageCompletedBeforeFailure(failure)).toMatchObject({ promptTokens: 250, completionTokens: 20 });
+  });
+
+  it("chatStream: pins a model call that answered although its step never ended", async () => {
+    // The message coordinator aborts while the step's tool runs: the model call
+    // was billed, its step never reaches onStepEnd.
+    const aborted = new DOMException("This operation was aborted", "AbortError");
+    vi.mocked(tracedStreamText).mockImplementationOnce((async (options: CallEndOptions & { onStepEnd?: unknown }) => {
+      options.onLanguageModelCallEnd({ usage: { inputTokens: 88, outputTokens: 17 } });
+      return {
+        ...fakeStreamTextResult,
+        text: Promise.reject(aborted),
+        steps: Promise.resolve([]),
+        reasoning: Promise.resolve(undefined),
+      };
+    }) as never);
+
+    const adapter = createProvider("openai", (_modelId) => ({}) as any);
+    const stream = await adapter.chatStream!({ ...baseRequest }, "gpt-6-luna");
+    await expect(stream.response).rejects.toBe(aborted);
+
+    expect(usageCompletedBeforeFailure(aborted)).toMatchObject({ promptTokens: 88, completionTokens: 17 });
+  });
+});
+
 describe("createProvider – cumulative usage across SDK majors", () => {
   const V7_CUMULATIVE = {
     inputTokens: 900,
@@ -635,6 +764,67 @@ describe("createProvider – cache token usage", () => {
 
     expect(res.usage.cachedInputTokens).toBe(300);
     expect(res.usage.cacheCreationInputTokens).toBe(0);
+  });
+
+  // Anthropic splits its cache writes by TTL in the raw usage of each step; the
+  // SDK normalizes only the total, and its cumulative usage carries no `raw`.
+  const anthropicStep = (write: number, m5: number, h1: number) => ({
+    text: "",
+    usage: {
+      inputTokens: 1000,
+      outputTokens: 10,
+      inputTokenDetails: { cacheWriteTokens: write },
+      raw: { cache_creation_input_tokens: write, cache_creation: { ephemeral_5m_input_tokens: m5, ephemeral_1h_input_tokens: h1 } },
+    },
+  });
+
+  it("sums the 5m share of the cache writes across a turn's steps", async () => {
+    const generateTextSpy = vi.mocked(tracedGenerateText);
+    generateTextSpy.mockClear();
+    generateTextSpy.mockResolvedValueOnce({
+      text: "hello",
+      // Step 1 writes the 1h cross-turn prefix, step 2 the 5m step marker.
+      steps: [anthropicStep(2000, 0, 2000), anthropicStep(400, 400, 0)],
+      usage: { inputTokens: 2000, outputTokens: 20, inputTokenDetails: { cacheWriteTokens: 2400 } },
+    } as any);
+
+    const adapter = createProvider("anthropic", (_modelId) => ({}) as any);
+    const res = await adapter.chat({ ...baseRequest }, "claude-sonnet-5-5");
+
+    expect(res.usage.cacheCreationInputTokens).toBe(2400);
+    expect(res.usage.cacheCreation5mInputTokens).toBe(400);
+  });
+
+  it("reads the 5m share from a streamed turn's steps too", async () => {
+    vi.mocked(tracedStreamText).mockResolvedValueOnce({
+      ...fakeStreamTextResult,
+      text: Promise.resolve("hello"),
+      usage: Promise.resolve({ inputTokens: 1000, outputTokens: 10, inputTokenDetails: { cacheWriteTokens: 300 } }),
+      steps: Promise.resolve([anthropicStep(300, 100, 200)]),
+      reasoning: Promise.resolve(undefined),
+    } as any);
+
+    const adapter = createProvider("anthropic", (_modelId) => ({}) as any);
+    const stream = await adapter.chatStream!({ ...baseRequest }, "claude-sonnet-5-5");
+    const res = await stream.response;
+
+    expect(res.usage.cacheCreation5mInputTokens).toBe(100);
+  });
+
+  it("leaves the 5m share absent when no step reports a TTL split", async () => {
+    const generateTextSpy = vi.mocked(tracedGenerateText);
+    generateTextSpy.mockClear();
+    generateTextSpy.mockResolvedValueOnce({
+      text: "hello",
+      steps: [{ text: "", usage: { inputTokens: 1000, outputTokens: 10, inputTokenDetails: { cacheWriteTokens: 300 }, raw: { cache_write_tokens: 300 } } }],
+      usage: { inputTokens: 1000, outputTokens: 10, inputTokenDetails: { cacheWriteTokens: 300 } },
+    } as any);
+
+    const adapter = createProvider("openai", (_modelId) => ({}) as any);
+    const res = await adapter.chat({ ...baseRequest }, "gpt-6-luna");
+
+    expect(res.usage.cacheCreationInputTokens).toBe(300);
+    expect(res.usage).not.toHaveProperty("cacheCreation5mInputTokens");
   });
 
   it("defaults cache counts to 0 when the provider reports none", async () => {

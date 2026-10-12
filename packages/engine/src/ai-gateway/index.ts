@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { resolveModel, estimateCostBreakdown, isThinkingCapable, isReasoningAlwaysOn, reasoningControlFor, resolveReasoningLevel } from "./config.js";
+import { resolveModel, estimateTurnCostBreakdown, isReasoningAlwaysOn, isThinkingCapable, reasoningControlFor, reasoningOffFor, resolveReasoningLevel, wireDialectFor, type CallUsage } from "./config.js";
 import { sanitizeMessagesForModel } from "./vision.js";
-import { OpenAIProvider, buildOpenAIReasoningOptions } from "./providers/openai.js";
-import { AnthropicProvider, buildAnthropicThinkingOptions } from "./providers/anthropic.js";
-import { BedrockProvider, buildBedrockReasoningOptions } from "./providers/bedrock.js";
-import { NebiusProvider } from "./providers/nebius.js";
+import { buildOpenAIReasoningOffOptions, buildOpenAIReasoningOptions } from "./providers/openai.js";
+import { buildAnthropicThinkingOffOptions, buildAnthropicThinkingOptions } from "./providers/anthropic.js";
+import { buildBedrockReasoningOffOptions, buildBedrockReasoningOptions } from "./providers/bedrock.js";
+import { getProviderAdapter } from "./providers/registry.js";
+import { usageCompletedBeforeFailure } from "./providers/base.js";
+import { buildCompatibleReasoningOptions } from "./providers/openai-compatible-reasoning.js";
 import { aiLogger, classifyProviderError } from "./logger.js";
 import { buildLangSmithProviderOptions } from "./langsmith.js";
 import type { ChatRequest, ChatResponse, ChatStreamResult, ProviderAdapter } from "./types.js";
@@ -15,19 +17,10 @@ import {
   tapAndForwardFullStream,
   type BusContext,
 } from "../activity-stream/bus-emitter.js";
-import { findInstanceBySlug } from "../instances/store.js";
-import { buildInstanceIconUrl } from "../instances/icon-url.js";
+import { DEFAULT_PROVIDER } from "./model-catalog.js";
 import { type InstanceSlug } from "../instances/identifiers.js";
-import type { InstanceMeta } from "../activity-stream/activity-stream.types.js";
+import { resolveInstanceMeta } from "../instances/instance-meta.js";
 
-const DEFAULT_PROVIDER = "openai";
-
-const providers: Record<string, ProviderAdapter> = {
-  openai: OpenAIProvider,
-  anthropic: AnthropicProvider,
-  bedrock: BedrockProvider,
-  nebius: NebiusProvider,
-};
 
 let initialized = false;
 
@@ -56,7 +49,7 @@ function resolveCallConfig(
   options?: ChatCallOptions,
 ): CallConfig {
   const providerName = request.provider ?? DEFAULT_PROVIDER;
-  const provider = providers[providerName];
+  const provider = getProviderAdapter(providerName);
   if (!provider) {
     throw new Error(`Provider "${providerName}" not configured`);
   }
@@ -79,70 +72,73 @@ function resolveCallConfig(
     providerOptions = { ...providerOptions, langsmith: lsOptions as Record<string, unknown> };
   }
 
-  // Inject provider-specific thinking/reasoning configuration when requested.
-  // Gated on isThinkingCapable for ALL providers (defense-in-depth): config-
-  // resolver already clears a stale `thinking=true` for a non-capable model, but
-  // gating here too guarantees the ai-gateway boundary never sends thinking
-  // config to a model that would ignore it (OpenAI/Anthropic) or hard-reject it
-  // (Bedrock's ValidationException, like the cachePoint). Anthropic also needs
-  // the interleaved beta header, set unconditionally on the AnthropicProvider
-  // factory. Shape is mapped per family in the build* helpers via the catalog's
-  // reasoningControl (adaptive+effort / budget / effort).
+  // Inject the thinking/reasoning configuration when requested, keyed on the
+  // catalog's `wireDialect` and NOT on the provider name — so a new provider is a
+  // catalog row and costs no branch here. Gated on isThinkingCapable for ALL
+  // dialects (defense-in-depth): config-resolver already clears a stale
+  // `thinking=true` for a non-capable model, but gating here too guarantees the
+  // ai-gateway boundary never sends thinking config to a model that would ignore
+  // it (OpenAI/Anthropic) or hard-reject it (Bedrock's ValidationException, like
+  // the cachePoint). Anthropic also needs the interleaved beta header, set
+  // unconditionally on the AnthropicProvider factory. The 1P shapes are mapped per
+  // family in the build* helpers via the catalog's reasoningControl
+  // (adaptive+effort / budget / effort).
+  //
+  // The openai-compatible dialect is the one that also runs with thinking OFF:
+  // its hybrid models reason BY DEFAULT, so "off" is an explicit payload rather
+  // than an omission (see buildCompatibleReasoningOptions).
+  //
   // Clamp the requested level to what THIS model accepts (per the catalog's
   // live-verified reasoningLevels) — a stale/out-of-range effort (e.g. xhigh on o3,
   // max on gpt-oss) would otherwise 400. Falls back to "medium" (universally valid).
   const thinkingLevel = resolveReasoningLevel(providerName, modelId, request.thinkingLevel ?? "medium");
-  if (request.thinking && isThinkingCapable(providerName, modelId)) {
-    if (providerName === "anthropic") {
+  const dialect = wireDialectFor(providerName);
+  const thinkingCapable = isThinkingCapable(providerName, modelId);
+  // Whether thinking OFF is a payload rather than an omission. It used to be an
+  // omission on every 1P model, and stopped being one with gpt-6 (default effort
+  // `medium`) and Claude Opus 5 / Sonnet 5 / Sonnet 5.5 (adaptive when the
+  // parameter is omitted): those
+  // reason through a turn the operator switched thinking off for unless we say
+  // so. The openai-compatible dialect always enters, because its builder decides
+  // both directions from the same catalog data.
+  const reasoningOff = isReasoningAlwaysOn(providerName, modelId)
+    ? undefined
+    : reasoningOffFor(providerName, modelId);
+  if (thinkingCapable && (request.thinking || dialect === "openai-compatible" || reasoningOff)) {
+    const off = !request.thinking;
+    const options: Record<string, unknown> | undefined =
+      dialect === "anthropic"
+        ? off
+          ? buildAnthropicThinkingOffOptions(reasoningOff)
+          : buildAnthropicThinkingOptions(thinkingLevel, reasoningControlFor(providerName, modelId) === "adaptive")
+        : dialect === "openai"
+          ? off
+            ? buildOpenAIReasoningOffOptions()
+            : buildOpenAIReasoningOptions(thinkingLevel)
+          : dialect === "bedrock"
+            ? off
+              ? buildBedrockReasoningOffOptions(reasoningOff)
+              : buildBedrockReasoningOptions(thinkingLevel, reasoningControlFor(providerName, modelId) ?? "budget")
+            : dialect === "openai-compatible"
+              ? buildCompatibleReasoningOptions({
+                  provider: providerName,
+                  modelId,
+                  thinking: !!request.thinking,
+                  level: thinkingLevel,
+                })
+              : undefined;
+    // The compatible builder returns {} for a model with no off-switch; merging an
+    // empty object would still create the provider namespace, which is harmless but
+    // noisy in a captured debug payload.
+    if (options && Object.keys(options).length > 0) {
       providerOptions = {
         ...providerOptions,
-        anthropic: {
-          ...(providerOptions?.anthropic ?? {}),
-          ...buildAnthropicThinkingOptions(thinkingLevel, reasoningControlFor(providerName, modelId) === "adaptive"),
-        } as Record<string, unknown>,
-      };
-    } else if (providerName === "openai") {
-      providerOptions = {
-        ...providerOptions,
-        openai: {
-          ...(providerOptions?.openai ?? {}),
-          ...buildOpenAIReasoningOptions(thinkingLevel),
-        } as Record<string, unknown>,
-      };
-    } else if (providerName === "bedrock") {
-      providerOptions = {
-        ...providerOptions,
-        bedrock: {
-          ...(providerOptions?.bedrock ?? {}),
-          ...buildBedrockReasoningOptions(thinkingLevel, reasoningControlFor(providerName, modelId) ?? "budget"),
+        [providerName]: {
+          ...(providerOptions?.[providerName] ?? {}),
+          ...options,
         } as Record<string, unknown>,
       };
     }
-  }
-
-  // Nebius (OpenAI-compatible): reasoning models (Qwen3.5 hybrid & friends) think
-  // BY DEFAULT, and `reasoning_effort` only tunes intensity — it does NOT turn
-  // thinking off. The real off-switch is the vLLM chat-template kwarg
-  // `enable_thinking:false`, which @ai-sdk/openai-compatible forwards verbatim into
-  // the request body. Drive BOTH states so the admin `thinking` toggle actually
-  // controls the model (without it, "off" left the model reasoning by default).
-  // Gated on isThinkingCapable so the Qwen-specific kwarg never reaches a
-  // non-reasoning model. EXCEPTION: gpt-oss (isReasoningAlwaysOn) reasons on
-  // every call and IGNORES enable_thinking (that kwarg is Qwen-only), so its
-  // "off" must send nothing — it falls back to its own reasoning default. There
-  // is no off; the frontend disables the toggle for these models accordingly.
-  if (providerName === "nebius" && isThinkingCapable(providerName, modelId)) {
-    providerOptions = {
-      ...providerOptions,
-      nebius: {
-        ...(providerOptions?.nebius ?? {}),
-        ...(request.thinking
-          ? { reasoningEffort: resolveReasoningLevel(providerName, modelId, request.thinkingLevel ?? "medium") }
-          : isReasoningAlwaysOn(modelId)
-            ? {}
-            : { chat_template_kwargs: { enable_thinking: false } }),
-      } as Record<string, unknown>,
-    };
   }
 
   // v6: OpenAI's `strictJsonSchema` defaults to true; our tools use Zod
@@ -205,15 +201,11 @@ function logAndRecordUsage(
     response.steps?.reduce((acc, s) => acc + s.toolCalls.length, 0) ?? 0,
   );
 
-  const cost = estimateCostBreakdown(
+  const cost = estimateTurnCostBreakdown(
     config.providerName,
     config.modelId,
-    response.usage.promptTokens,
-    response.usage.completionTokens,
-    {
-      cachedInputTokens: response.usage.cachedInputTokens,
-      cacheCreationInputTokens: response.usage.cacheCreationInputTokens,
-    },
+    response.usage,
+    stepCalls(response.steps),
   );
   // Propagate the split up to the pipeline (persisted per-message on pipeline_traces).
   response.cost = cost;
@@ -244,22 +236,52 @@ function logAndRecordUsage(
   );
 }
 
+/** The provider's price of a usage, as the success path prices a response. */
+function costOfUsage(
+  config: { providerName: string; modelId: string },
+  usage: NonNullable<ReturnType<typeof usageCompletedBeforeFailure>>,
+): number {
+  return estimateTurnCostBreakdown(config.providerName, config.modelId, usage, usage.calls).total;
+}
+
+/**
+ * Each step's usage as one model call, for a model priced per call. Undefined
+ * unless every step reported its prompt: pricing the reported steps alone would
+ * drop the rest of the turn's cost, so the turn's total is used instead.
+ */
+function stepCalls(steps: ChatResponse["steps"]): CallUsage[] | undefined {
+  if (steps.length === 0 || steps.some((s) => s.promptTokens === undefined)) return undefined;
+  return steps.map((s) => ({
+    promptTokens: s.promptTokens ?? 0,
+    completionTokens: s.completionTokens ?? 0,
+    cachedInputTokens: s.cachedInputTokens,
+    cacheCreationInputTokens: s.cacheCreationInputTokens,
+    cacheCreation5mInputTokens: s.cacheCreation5mInputTokens,
+  }));
+}
+
 /**
  * A turn that dies at the provider used to leave no row at all — "this agent
- * is erroring" was not a question ai_logs could answer. Logged with zeroed
- * usage/cost (there is none, the call never returned) and the error's CLASS
- * only, never its message — the message can quote the request, and the
- * request is the prompt.
+ * is erroring" was not a question ai_logs could answer. Logged with the usage
+ * and cost of the steps the call completed before it failed — a multi-step
+ * call that dies at step N was billed for steps 1..N-1 — or zero when it
+ * completed none, and with the error's CLASS only, never its message — the
+ * message can quote the request, and the request is the prompt.
  *
- * Skips logging entirely when `request.abortSignal` is already aborted: that
+ * A turn whose `request.abortSignal` is already aborted is not a failure: that
  * abort is the message coordinator preempting an in-flight turn because a
- * follow-up message arrived (`message-coordinator.ts`'s cancel-and-restart),
- * not the provider failing. It is the routine path, not a fault — it happens
- * every time a user sends a second message before the first reply lands.
- * Counting every preempted turn as an error would make a later failure RATE
- * mostly measure how often people type quickly. An aborted turn writes nothing
- * at all here — it is not a success either, so no third `outcome` value is
- * invented for it.
+ * follow-up message arrived (`message-coordinator.ts`'s cancel-and-restart).
+ * It is the routine path — it happens every time a user sends a second message
+ * before the first reply lands — so it is never an `error`, which would make
+ * the failure rate measure how often people type quickly. But the model calls
+ * it had already made were billed, so when there are any, the turn is logged
+ * as `aborted` with their usage and cost: sums of cost and tokens count it,
+ * counts of answered and failed calls do not. A turn aborted before any model
+ * call answered cost nothing and writes nothing.
+ *
+ * A signal aborted by the caller's own deadline (`AbortSignal.timeout`, alone
+ * or inside `AbortSignal.any`) carries a `TimeoutError` reason. Nobody
+ * preempted that call: the provider was too slow, which is a failure.
  */
 function logFailedCall(
   config: { providerName: string; modelId: string },
@@ -268,28 +290,32 @@ function logFailedCall(
   options: ChatCallOptions | undefined,
   durationMs: number,
 ): void {
-  if (request.abortSignal?.aborted) return;
-
+  const usage = usageCompletedBeforeFailure(err);
+  const signal = request.abortSignal;
+  const timedOut = signal?.aborted === true && (signal.reason as { name?: unknown } | undefined)?.name === "TimeoutError";
+  const aborted = signal?.aborted === true && !timedOut;
+  if (aborted && !usage) return;
+  const cost = usage ? costOfUsage(config, usage) : 0;
   aiLogger.log(
     aiLogger.createEntry(
       config.providerName,
       config.modelId,
       request.tier,
       request.thinking ?? false,
-      0,
-      0,
-      0,
-      0,
+      usage?.promptTokens ?? 0,
+      usage?.completionTokens ?? 0,
+      (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0),
+      cost,
       durationMs,
       0,
       0,
       options?.conversationId,
       options?.instanceId,
       options?.callType,
-      0,
-      0,
-      "error",
-      classifyProviderError(err),
+      usage?.cachedInputTokens ?? 0,
+      usage?.cacheCreationInputTokens ?? 0,
+      aborted ? "aborted" : "error",
+      aborted ? null : timedOut ? "timeout" : classifyProviderError(err),
     ),
   );
 }
@@ -309,7 +335,7 @@ export async function chat(
   try {
     response = await config.provider.chat({
       ...request,
-      messages: sanitizeMessagesForModel(request.messages, config.modelId),
+      messages: sanitizeMessagesForModel(request.messages, config.providerName, config.modelId),
       providerOptions: config.providerOptions,
     }, config.modelId);
   } catch (err) {
@@ -356,7 +382,7 @@ export async function chatStream(
   try {
     stream = await config.provider.chatStream({
       ...request,
-      messages: sanitizeMessagesForModel(request.messages, config.modelId),
+      messages: sanitizeMessagesForModel(request.messages, config.providerName, config.modelId),
       providerOptions: config.providerOptions,
     }, config.modelId);
   } catch (err) {
@@ -381,8 +407,8 @@ export async function chatStream(
 
   // Tap the fullStream so live tool-call / reasoning / step-finish events
   // flow onto the ActivityBus while the original consumer still receives
-  // every chunk unchanged. The instance metadata is fetched once per call
-  // (small, cached upstream by ttl-cache via findInstanceBySlug).
+  // every chunk unchanged. The instance metadata comes from the agent's meta
+  // cache (instances/instance-meta.ts), invalidated with its config.
   //
   // Service-type calls bypass the tap entirely (same rationale as `chat()`):
   // an internal LLM invocation must not pollute the visible turn timeline.
@@ -404,25 +430,11 @@ async function buildBusContext(options?: ChatCallOptions): Promise<BusContext> {
   if (!options?.instanceId) {
     return { conversationId: options?.conversationId };
   }
-  // Fetch is cheap (it's a single index lookup) and we only do it once per
-  // chat() / chatStream() call. Failures degrade gracefully to a context
-  // without instance metadata — the event is still emitted.
-  try {
-    const instance = await findInstanceBySlug(options.instanceId);
-    if (!instance) {
-      return { conversationId: options.conversationId };
-    }
-    const meta: InstanceMeta = {
-      id: instance.id,
-      slug: instance.slug,
-      name: instance.name,
-      // Emit a URL, never the raw base64 data URI — see buildInstanceIconUrl.
-      icon: buildInstanceIconUrl(instance.slug, instance.icon, instance.updatedAt),
-    };
-    return { instance: meta, conversationId: options.conversationId };
-  } catch {
-    return { conversationId: options.conversationId };
-  }
+  // Cached and invalidated with the agent's config: this runs on every model
+  // call, and a turn makes several. Failures degrade to a context without
+  // instance metadata — the event is still emitted.
+  const instance = await resolveInstanceMeta(options.instanceId);
+  return instance ? { instance, conversationId: options.conversationId } : { conversationId: options.conversationId };
 }
 
 export async function shutdown() {

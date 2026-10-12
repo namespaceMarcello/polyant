@@ -1,0 +1,174 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+vi.mock("@/ai-gateway/index.js", () => ({
+  chat: vi.fn(),
+}));
+
+vi.mock("@/utils/pipeline-logger.js", () => ({
+  pipelineLog: {
+    toolCall: vi.fn(),
+    toolResult: vi.fn(),
+  },
+}));
+
+import { createTaskTool } from "./task.tool.js";
+import { chat } from "../../ai-gateway/index.js";
+
+const mockChat = vi.mocked(chat);
+
+describe("createTaskTool", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns a tool with description and parameters", () => {
+    const tool = createTaskTool({});
+    expect(tool.description).toBeDefined();
+    expect(tool.inputSchema).toBeDefined();
+  });
+
+  it("calls chat with standard tier and system prompt containing the task", async () => {
+    mockChat.mockResolvedValue({
+      text: "Task completed successfully",
+      steps: [
+        {
+          index: 0,
+          stepType: "tool-result",
+          text: "",
+          toolCalls: [{ toolCallId: "tc-1", toolName: "webSearch", args: { query: "test" } }],
+          toolResults: [{ toolCallId: "tc-1", result: {} }],
+          finishReason: "tool-calls",
+          durationMs: 100,
+        },
+      ],
+      usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      durationMs: 2000,
+      model: "gpt-4o",
+      provider: "openai",
+    });
+
+    const tool = createTaskTool({ someOtherTool: {} as any });
+    const result = await tool.execute!(
+      { task: "Research the latest AI trends", label: null },
+      { toolCallId: "tc-1", messages: [] } as any,
+    );
+
+    expect(mockChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tier: "standard",
+        system: expect.stringContaining("Research the latest AI trends"),
+        maxSteps: 10,
+      }),
+      expect.objectContaining({ callType: "service" }),
+    );
+    expect(result).toEqual({
+      success: true,
+      result: "Task completed successfully",
+      toolsUsed: ["webSearch"],
+    });
+  });
+
+  it("keeps the parent's provider for a delegated task", async () => {
+    mockChat.mockResolvedValue({ text: "ok", steps: [], durationMs: 1 } as never);
+    const tool = createTaskTool({}, { anthropic: "sk-test" }, undefined, undefined, "anthropic");
+
+    await tool.execute!({ task: "Research", label: null }, { toolCallId: "tc-1", messages: [] } as never);
+
+    expect(mockChat.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      provider: "anthropic",
+      apiKeys: { anthropic: "sk-test" },
+    }));
+  });
+
+  it("runs the sub-agent on the parent's pinned model", async () => {
+    mockChat.mockResolvedValue({ text: "ok", steps: [], durationMs: 1 } as never);
+    const tool = createTaskTool({}, undefined, undefined, undefined, "anthropic", "claude-pinned-model");
+
+    await tool.execute!({ task: "Research", label: null }, { toolCallId: "tc-1", messages: [] } as never);
+
+    expect(mockChat.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ model: "claude-pinned-model" }));
+  });
+
+  it("stops the sub-agent when the parent turn is aborted", async () => {
+    // A provider call that only ends when its signal fires; without a signal it
+    // would run to completion, which is what a cancelled parent must not allow.
+    mockChat.mockImplementation((request) => new Promise((resolve, reject) => {
+      const signal = request.abortSignal;
+      if (!signal) {
+        setTimeout(() => resolve({ text: "kept running", steps: [], durationMs: 1 } as never), 20);
+        return;
+      }
+      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }));
+    const parent = new AbortController();
+    const tool = createTaskTool({}, undefined, undefined, undefined, undefined, undefined, parent.signal);
+
+    const pending = tool.execute!({ task: "Long research", label: null }, { toolCallId: "tc-1", messages: [] } as never);
+    parent.abort();
+
+    expect(await pending).toEqual({ success: false, result: null, error: "aborted" });
+  });
+
+  it("returns error object on chat failure", async () => {
+    mockChat.mockRejectedValue(new Error("LLM timeout"));
+
+    const tool = createTaskTool({});
+    const result = await tool.execute!(
+      { task: "Do something", label: null },
+      { toolCallId: "tc-1", messages: [] } as any,
+    );
+
+    expect(result).toEqual({
+      success: false,
+      result: null,
+      error: "LLM timeout",
+    });
+  });
+
+  it("does NOT pass spawnTask to the sub-agent (prevents infinite recursion)", async () => {
+    mockChat.mockResolvedValue({
+      text: "ok",
+      steps: [],
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      durationMs: 1,
+      model: "gpt-4o",
+      provider: "openai",
+    });
+
+    const tool = createTaskTool({
+      webSearch: {} as any,
+      spawnTask: {} as any, // simulate the buggy case
+      ask_other_agent: {} as any,
+    });
+    await tool.execute!(
+      { task: "x", label: null },
+      { toolCallId: "tc-1", messages: [] } as any,
+    );
+
+    const passedTools = mockChat.mock.calls[0][0].tools as Record<string, unknown>;
+    expect(passedTools).not.toHaveProperty("spawnTask");
+    expect(passedTools).toHaveProperty("webSearch");
+    expect(passedTools).toHaveProperty("ask_other_agent");
+  });
+
+  it("returns empty toolsUsed when no tool calls made", async () => {
+    mockChat.mockResolvedValue({
+      text: "Simple answer",
+      steps: [],
+      usage: { promptTokens: 50, completionTokens: 25, totalTokens: 75 },
+      durationMs: 500,
+      model: "gpt-4o",
+      provider: "openai",
+    });
+
+    const tool = createTaskTool({});
+    const result = await tool.execute!(
+      { task: "Answer simply", label: null },
+      { toolCallId: "tc-1", messages: [] } as any,
+    );
+
+    expect((result as { toolsUsed: string[] }).toolsUsed).toEqual([]);
+  });
+});

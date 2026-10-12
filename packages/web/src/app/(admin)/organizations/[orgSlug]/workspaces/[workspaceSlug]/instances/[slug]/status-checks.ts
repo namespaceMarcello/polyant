@@ -11,6 +11,7 @@ import type {
   SkillState,
   ToolState,
 } from "@/lib/api";
+import { SECRET_KEYS } from "@/lib/provider-secrets";
 
 /**
  * What the agent page cannot see by looking at one section: configurations that
@@ -58,6 +59,8 @@ export interface AgentCheck {
 export interface StatusCheckInput {
   instance: Instance;
   tools: ToolState[];
+  /** `false` when the tool list could not be read (a role without that permission): the tool checks are skipped. */
+  toolsReadable?: boolean;
   skills: SkillState[];
   /** `null` when the caller could not read them (a viewer): the secret checks are skipped. */
   secrets: SecretStatus[] | null;
@@ -76,7 +79,7 @@ export interface StatusCheckInput {
 /** Channels whose adapter cannot start without these config keys. */
 const CHANNEL_REQUIRED_FIELDS: Record<string, string[]> = {
   telegram: ["botToken"],
-  slack: ["botToken", "appToken", "signingSecret"],
+  slack: ["botToken", "signingSecret"],
   whatsapp: ["accountSid", "authToken", "whatsappNumber"],
 };
 
@@ -95,10 +98,16 @@ const PROVIDER_REQUIRED_SECRET: Record<string, string> = {
   nebius: "nebius_api_key",
 };
 
+const STT_REQUIRED_SECRET: Record<string, string> = {
+  openai: "openai_api_key",
+  deepgram: "deepgram_api_key",
+};
+
 export function runStatusChecks(input: StatusCheckInput): AgentCheck[] {
   const {
     instance,
     tools,
+    toolsReadable = true,
     skills,
     secrets,
     channels,
@@ -114,9 +123,9 @@ export function runStatusChecks(input: StatusCheckInput): AgentCheck[] {
   const configuredSecrets = new Set(
     (secrets ?? []).filter((s) => s.configured).map((s) => s.key),
   );
-  // An agent's own keys are all there is here. Enterprise adds a second source —
-  // its organization's shared credentials, which the engine falls back to — and
-  // there this set is the union of the two, in that order.
+  // An agent's own keys are all there is here. A build with organization-shared
+  // credentials, which the engine falls back to, makes this set the union of the
+  // two, in that order.
   const effectiveSecrets = configuredSecrets;
 
   // ── Silently broken ──────────────────────────────────────────────────
@@ -142,8 +151,8 @@ export function runStatusChecks(input: StatusCheckInput): AgentCheck[] {
         titleKey: "status.check.toolsMissingSecrets.title",
         bodyKey: "status.check.toolsMissingSecrets.body",
         params: { count: starved.length, names: starved.map((t) => t.name).join(", ") },
-        section: "toolSecrets",
-        sectionKey: "instances.detail.tabToolSecrets",
+        section: "tools",
+        sectionKey: "instances.detail.tabTools",
       });
     }
 
@@ -168,26 +177,64 @@ export function runStatusChecks(input: StatusCheckInput): AgentCheck[] {
     the only defect on this page that stops the agent answering at all.
 
     AWS is deliberately absent from the required set: Bedrock falls back to the
-    host's AWS profile or IAM role (the Credenziali page says so), so "no key" is
+    host's AWS profile or IAM role (the Modello page says so), so "no key" is
     a normal, working configuration there and an alert would be a false alarm.
+    Its region has no such fallback and is checked on its own below.
   */
-  if (secrets !== null && instance.provider && PROVIDER_REQUIRED_SECRET[instance.provider]) {
-    const key = PROVIDER_REQUIRED_SECRET[instance.provider];
+  const effectiveProvider = instance.effectiveProvider ?? instance.provider;
+  if (secrets !== null && effectiveProvider && PROVIDER_REQUIRED_SECRET[effectiveProvider]) {
+    const key = PROVIDER_REQUIRED_SECRET[effectiveProvider];
     if (!effectiveSecrets.has(key)) {
       checks.push({
         id: "provider-no-credentials",
         severity: "broken",
         titleKey: "status.check.providerCredentials.title",
         bodyKey: "status.check.providerCredentials.body",
-        params: { provider: instance.provider },
-        section: "credentials",
-        sectionKey: "instances.detail.tabCredentials",
+        params: { provider: effectiveProvider },
+        section: "settings",
+        sectionKey: "instances.detail.tabSettings",
+      });
+    }
+  }
+
+  /*
+    Bedrock with no region: the key pair is optional, the region is not. The
+    provider refuses every turn without it (`providers/bedrock.ts`) and there is
+    no deployment-wide fallback, so the agent stops answering exactly like a
+    missing key.
+  */
+  if (
+    secrets !== null &&
+    effectiveProvider === "bedrock" &&
+    !effectiveSecrets.has(SECRET_KEYS.AWS_PROVIDER_REGION)
+  ) {
+    checks.push({
+      id: "provider-no-region",
+      severity: "broken",
+      titleKey: "status.check.providerRegion.title",
+      bodyKey: "status.check.providerRegion.body",
+      section: "settings",
+      sectionKey: "instances.detail.tabSettings",
+    });
+  }
+
+  if (secrets !== null && instance.sttProvider) {
+    const key = STT_REQUIRED_SECRET[instance.sttProvider];
+    if (key && !effectiveSecrets.has(key)) {
+      checks.push({
+        id: "stt-no-credentials",
+        severity: "broken",
+        titleKey: "status.check.sttCredentials.title",
+        bodyKey: "status.check.sttCredentials.body",
+        params: { provider: instance.sttProvider },
+        section: "settings",
+        sectionKey: "instances.detail.tabSettings",
       });
     }
   }
 
   // Retrieval and memory both embed, so both die the same way. The engine reports
-  // this on the instance — a client-side rule would not see the AWS_REGION fallback.
+  // this on the instance — a client-side rule cannot read the encrypted secrets.
   if (
     (instance.knowledgeEnabled && instance.embedder?.needsCredentials) ||
     (instance.memoryEnabled && instance.memory?.needsOpenAIKey)
@@ -197,8 +244,29 @@ export function runStatusChecks(input: StatusCheckInput): AgentCheck[] {
       severity: "broken",
       titleKey: "status.check.embedderCredentials.title",
       bodyKey: "status.check.embedderCredentials.body",
-      section: "credentials",
-      sectionKey: "instances.detail.tabCredentials",
+      section: "settings",
+      sectionKey: "instances.detail.tabSettings",
+    });
+  }
+
+  /*
+    Turning Knowledge on assigns the search tool, but the author can remove it
+    later, and agents that had Knowledge on before that behaviour never got it.
+    Without `searchKnowledge` the documents are indexed and never read. Skipped
+    when the tool list could not be read: an unreadable list is not a missing tool.
+  */
+  if (
+    instance.knowledgeEnabled &&
+    toolsReadable &&
+    !tools.some((tool) => tool.name === "searchKnowledge" && tool.enabled)
+  ) {
+    checks.push({
+      id: "knowledge-no-search-tool",
+      severity: "warning",
+      titleKey: "status.check.knowledgeNoSearchTool.title",
+      bodyKey: "status.check.knowledgeNoSearchTool.body",
+      section: "tools",
+      sectionKey: "instances.detail.tabTools",
     });
   }
 
@@ -392,10 +460,10 @@ export function runStatusChecks(input: StatusCheckInput): AgentCheck[] {
   // ── Exposed ──────────────────────────────────────────────────────────
 
   /*
-    Debug stores the full payload of every turn, PII included. Enterprise pairs
-    this with its retention policy — where "on, and nothing is ever deleted" is a
-    single, worse row — but retention is an Enterprise feature, so here the switch
-    stands on its own.
+    Debug stores the full payload of every turn, PII included. Paired with a
+    retention policy, "on, and nothing is ever deleted" would be a single, worse
+    row — but this build has no retention policy, so here the switch stands on
+    its own.
   */
   if (instance.debugEnabled) {
     checks.push({
@@ -408,33 +476,58 @@ export function runStatusChecks(input: StatusCheckInput): AgentCheck[] {
     });
   }
 
+  /*
+    "Open" means an endpoint that answers: the Web channel is on, or A2A is. With
+    Web off (where every new agent starts) the endpoints answer 404 whatever
+    authentication says, so an agent with authentication off and Web off is not
+    exposed. Skipped when the channel list could not be read: unknown is not on.
+  */
+  const webEnabled = channels?.some((c) => c.channelType === "web" && c.enabled) ?? false;
+
   if (!instance.authEnabled) {
-    // A2A raises the same missing auth from a warning to a break: the endpoint
-    // drives full turns, and `a2a.controller.ts` already logs this where nobody
-    // reads it.
-    checks.push(
-      instance.a2aEnabled
-        ? {
-            id: "a2a-open",
-            severity: "broken",
-            titleKey: "status.check.a2aOpen.title",
-            bodyKey: "status.check.a2aOpen.body",
-            section: "channels",
-            sectionKey: "instances.detail.tabChannels",
-          }
-        : {
-            id: "api-open",
-            // Broken, not a warning: an open endpoint that spends the budget and
-            // answers as the agent is not a thing to look at later.
-            severity: "broken",
-            titleKey: "status.check.apiOpen.title",
-            bodyKey: "status.check.apiOpen.body",
-            section: "channels",
-            sectionKey: "instances.detail.tabChannels",
-          },
-    );
+    // A2A drives full turns, and `a2a.controller.ts` already logs this where
+    // nobody reads it.
+    if (instance.a2aEnabled) {
+      checks.push({
+        id: "a2a-open",
+        severity: "broken",
+        titleKey: "status.check.a2aOpen.title",
+        bodyKey: "status.check.a2aOpen.body",
+        section: "channels",
+        sectionKey: "instances.detail.tabChannels",
+      });
+    }
+    if (webEnabled) {
+      checks.push({
+        id: "api-open",
+        // Broken, not a warning: an open endpoint that spends the budget and
+        // answers as the agent is not a thing to look at later.
+        severity: "broken",
+        titleKey: "status.check.apiOpen.title",
+        bodyKey: "status.check.apiOpen.body",
+        section: "channels",
+        sectionKey: "instances.detail.tabChannels",
+      });
+    }
   }
 
+  // Auth on, an endpoint on and no key: every caller gets 401. Safe, but the
+  // agent cannot be reached either. With Web (and A2A) off nobody is trying to.
+  if (
+    instance.authEnabled &&
+    (webEnabled || instance.a2aEnabled) &&
+    secrets !== null &&
+    !configuredSecrets.has(SECRET_KEYS.AUTH)
+  ) {
+    checks.push({
+      id: "api-key-missing",
+      severity: "warning",
+      titleKey: "status.check.apiKeyMissing.title",
+      bodyKey: "status.check.apiKeyMissing.body",
+      section: "channels",
+      sectionKey: "instances.detail.tabChannels",
+    });
+  }
 
   /*
     The opt-out switch is not a preference: `evaluateOptout` returns `pass`

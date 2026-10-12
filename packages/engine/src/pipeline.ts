@@ -8,7 +8,6 @@
 // ---------------------------------------------------------------------------
 
 import type { ModelMessage } from "ai";
-import { config, DEFAULT_INSTANCE_ID } from "./config.js";
 import type { InstanceSlug } from "./instances/identifiers.js";
 import { chat } from "./ai-gateway/index.js";
 import type { CostBreakdown } from "./ai-gateway/types.js";
@@ -21,9 +20,9 @@ import { pipelineLog } from "./utils/pipeline-logger.js";
 import { generateConversationTitle } from "./utils/title-generator.js";
 import { resolveInstanceConfig, type InstanceConfig } from "./instances/config-resolver.js";
 import { traceStore } from "./analytics/trace.store.js";
-import { uploadAttachment, isPlatformStorageConfigured } from "./attachments/platform-storage.js";
+import { uploadAttachment } from "./attachments/agent-storage.js";
 import type { AttachmentMeta, StepDetail, ReasoningDetail, LlmDebugPayload } from "./conversations/schema.js";
-import type { AgentCallMetadata, Attachment, IncomingMessage } from "./channels/types.js";
+import type { AgentCallMetadata, Attachment, IncomingMessage, OutgoingMessage, StreamOutgoingMessage } from "./channels/types.js";
 import type { ToolCallTrace } from "./analytics/traces.schema.js";
 import { emitInbound } from "./activity-stream/emitters/emit-inbound.js";
 import { emitConversation } from "./activity-stream/emitters/emit-conversation.js";
@@ -33,6 +32,7 @@ import type { HookEventPayload, HookExecutionSummary, HookRunContext } from "./h
 import { getEnabledHooks } from "./hooks/hooks.store.js";
 import { getHookRegistry } from "./hooks/hook-registry.js";
 import type { ResponseGeneratedOutcome } from "./hooks/response-replay.js";
+import { resolveDatetimeSettings, UNSET_AGENT_SETTINGS } from "./instances/agent-settings.js";
 
 /**
  * Channel types that should NOT produce `category: "inbound"` events:
@@ -81,8 +81,23 @@ export function isMissingApiKeyError(err: unknown): boolean {
 /** Friendly message returned when the AI provider key is not set for the instance. */
 export const MISSING_KEY_RESPONSE =
   "⚠️ This AI assistant instance does not have an API key configured for its AI provider. " +
-  "Please go to the admin panel → Instance → Settings tab and set the appropriate API key " +
-  "(OpenAI or Anthropic) to enable this assistant.";
+  "Please open this agent in the admin panel, go to its Model section and set the API key " +
+  "of its AI provider to enable this assistant.";
+
+/** The turn's outcome when the agent has no provider key: the warning, marked as a failure. */
+export function missingKeyOutgoing(): OutgoingMessage {
+  return { text: MISSING_KEY_RESPONSE, failure: "missing_provider_key" };
+}
+
+/** Streaming form of {@link missingKeyOutgoing}: one text chunk, marked as a failure up front. */
+export function missingKeyStream(): StreamOutgoingMessage {
+  return {
+    failure: "missing_provider_key",
+    textStream: (async function* () { yield MISSING_KEY_RESPONSE; })(),
+    fullStream: (async function* () { yield { type: "text-delta", text: MISSING_KEY_RESPONSE }; })(),
+    completed: Promise.resolve({ text: MISSING_KEY_RESPONSE }),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // PipelineContext — everything preparePipeline returns
@@ -129,7 +144,7 @@ export async function preparePipeline(
   conversationIdOverride?: string | null,
 ): Promise<PipelineContext> {
   const pipelineStart = Date.now();
-  const instanceId: InstanceSlug = msg.instanceId || DEFAULT_INSTANCE_ID;
+  const instanceId: InstanceSlug = msg.instanceId;
   pipelineLog.request(msg.channelType, instanceId, msg.text);
 
   const conversationId = conversationIdOverride
@@ -396,6 +411,8 @@ export interface AfterResponseOptions {
   /** Messages that fell outside the retained window (to be summarized). */
   droppedMessages?: ModelMessage[];
   memoryEnabled?: boolean;
+  /** The agent's resolved datetime formatting, for the summary's "as of" stamp. */
+  datetime?: InstanceConfig["datetime"];
   provider?: string;
   apiKeys?: InstanceConfig["apiKeys"];
   langsmith?: { apiKey: string; project: string };
@@ -440,9 +457,17 @@ export function afterResponse(opts: AfterResponseOptions): void {
       }
     }
 
+    // No pre-check: `uploadAttachment` answers `null` for an agent with no
+    // storage configured, which is the ordinary case. Asking first would read
+    // the same secrets twice and give the two reads a chance to disagree.
+    // A failed upload (denied bucket policy, wrong region, revoked credentials,
+    // a transient S3 error) costs that attachment its stored copy, not the
+    // turn: the reply has been produced and tools may have written, so the
+    // turn is persisted without it. Only the error's name is logged — an S3
+    // message carries the object key, and the key carries the conversation id.
     let attachmentMetas: AttachmentMeta[] | undefined;
-    if (opts.userAttachments?.length && isPlatformStorageConfigured()) {
-      const results = await Promise.all(
+    if (opts.userAttachments?.length) {
+      const results: (AttachmentMeta | null)[] = await Promise.all(
         opts.userAttachments.map((att) =>
           att.data
             ? uploadAttachment(att.data, {
@@ -451,11 +476,22 @@ export function afterResponse(opts: AfterResponseOptions): void {
                 fileName: att.fileName,
                 instanceId: opts.instanceId,
                 conversationId: opts.conversationId,
+              }).catch((err: unknown) => {
+                console.warn(
+                  'Attachment upload failed for agent "%s" (%s); the turn is saved without it',
+                  opts.instanceId,
+                  err instanceof Error ? err.name : "unknown error",
+                );
+                return null;
               })
             : Promise.resolve(null),
         ),
       );
-      attachmentMetas = results.filter((r): r is AttachmentMeta => r != null);
+      const stored = results.filter((r): r is AttachmentMeta => r != null);
+      // Undefined rather than an empty array when nothing was stored: the column
+      // is nullable and an empty array would read as "there were attachments,
+      // and none of them are here".
+      attachmentMetas = stored.length > 0 ? stored : undefined;
     }
     await conversationStore.appendMessages(opts.conversationId, [
       {
@@ -506,8 +542,9 @@ export function afterResponse(opts: AfterResponseOptions): void {
         })
         .join("\n");
       try {
-        const now = new Date().toLocaleString(config.datetime.locale, {
-          timeZone: config.datetime.timezone,
+        const datetime = opts.datetime ?? resolveDatetimeSettings(UNSET_AGENT_SETTINGS);
+        const now = new Date().toLocaleString(datetime.locale, {
+          timeZone: datetime.timezone,
           dateStyle: "full",
           timeStyle: "short",
         });
@@ -626,6 +663,8 @@ export interface PipelinePostOptions {
     completionTokens: number;
     cachedInputTokens?: number;
     cacheCreationInputTokens?: number;
+    /** The 5-minute-TTL share of `cacheCreationInputTokens`, when the provider reports a TTL split. */
+    cacheCreation5mInputTokens?: number;
   };
   /** Model id used for this turn — persisted per-message on the trace. */
   model?: string;
@@ -701,6 +740,12 @@ export async function runPipelinePost(opts: PipelinePostOptions): Promise<Pipeli
   }
   const provenance = hookProvenance(hookExecutions) ?? opts.provenance;
 
+  // The coordinator can abort while the hooks above were awaited (a new fragment
+  // arrived). Re-check before any write: an aborted run persists nothing.
+  if (opts.abortSignal?.aborted) {
+    return { finalText, hookExecutions };
+  }
+
   const totalMs = Date.now() - ctx.pipelineStart;
   pipelineLog.response(ctx.instanceId, totalMs);
 
@@ -722,6 +767,7 @@ export async function runPipelinePost(opts: PipelinePostOptions): Promise<Pipeli
       completionTokens: opts.usage.completionTokens,
       cachedInputTokens: opts.usage.cachedInputTokens,
       cacheCreationInputTokens: opts.usage.cacheCreationInputTokens,
+      cacheCreation5mInputTokens: opts.usage.cacheCreation5mInputTokens,
       model: opts.model,
       provider: opts.provider,
       cost: opts.cost,
@@ -736,7 +782,7 @@ export async function runPipelinePost(opts: PipelinePostOptions): Promise<Pipeli
   }
 
   // Persist conversation state (commit-on-success): reached only when not aborted
-  // (the abort gate above already returned). Awaited — a single fast upsert — so a
+  // (the abort gates above already returned). Awaited — a single fast upsert — so a
   // tool's derived value is durable before the next turn reads it.
   if (persist && ctx.stateBuffer) {
     try {
@@ -744,6 +790,12 @@ export async function runPipelinePost(opts: PipelinePostOptions): Promise<Pipeli
     } catch (err) {
       console.error(`Failed to flush conversation state for ${ctx.conversationId}:`, err);
     }
+  }
+
+  // The flush is awaited, so the coordinator may have aborted meanwhile. The state
+  // upsert is idempotent for the restarted run; the messages must not be written.
+  if (opts.abortSignal?.aborted) {
+    return { finalText, hookExecutions };
   }
 
   if (persist) {
@@ -760,10 +812,13 @@ export async function runPipelinePost(opts: PipelinePostOptions): Promise<Pipeli
       needsSummaryUpdate: ctx.hasOverflow,
       droppedMessages: ctx.droppedMessages,
       memoryEnabled: ctx.instanceConfig.memoryEnabled,
+      datetime: ctx.instanceConfig.datetime,
       provider: ctx.instanceConfig.provider,
       apiKeys: ctx.instanceConfig.apiKeys,
       langsmith: ctx.langsmith,
-      userAttachments: ctx.userAttachments,
+      // Copied to the agent's bucket only when the agent opted in. The model
+      // already had them inline; this decides whether they are kept.
+      userAttachments: ctx.instanceConfig.attachmentStorageEnabled ? ctx.userAttachments : undefined,
       incomingSystemMessages: ctx.incomingSystemMessages,
       inboundMetadata: ctx.inboundMetadata,
       provenance,

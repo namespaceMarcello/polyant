@@ -25,23 +25,50 @@ import { scheduledTasks } from "../scheduled-tasks/schema.js";
 import { instanceMcpServers } from "./mcp-servers.schema.js";
 import { recomputeInstanceTools } from "./instance-tools.store.js";
 import { invalidatePromptsCache } from "./prompts.store.js";
-import { asInstanceSlug, asInstanceUuid } from "./identifiers.js";
+import { asInstanceSlug, asInstanceUuid, type InstanceUuid } from "./identifiers.js";
 import { invalidateInstanceConfigCache } from "./config-resolver.js";
-import { instanceBundleSchema } from "./export.schema.js";
+import { isKnownEmbeddingProvider, knownEmbeddingProviders } from "../embeddings-gateway/config.js";
+import { instanceBundleSchema, type ExportInstanceData } from "./export.schema.js";
+import { normalizeFieldMapping } from "../conversations/field-mapping.js";
 import { importPrompts } from "./prompts.import.js";
 import { importSkillAssignments } from "./skill-assignments.import.js";
 import { importManualTools } from "./manual-tools.import.js";
 import { importChannels } from "./channels.import.js";
+import { WEB_CHANNEL_TYPE } from "./channels.store.js";
 import { importSkillEnv, importSkillEnvOverwrite } from "./skill-env.import.js";
 import { importHooks } from "./hooks.import.js";
 import { importRoom } from "./room.import.js";
 import { importEventSources } from "./event-sources.import.js";
 import { importScheduledTasks } from "./scheduled-tasks.import.js";
 import { importMcpServers } from "./mcp-servers.import.js";
+import { importSecrets } from "./secrets.import.js";
 import type { ImportWarning, ImportResult } from "./import.types.js";
 
 export type { ImportWarning, ImportResult } from "./import.types.js";
 export { importChannels, importMcpServers };
+
+/**
+ * Parse a bundle and hold its operator-written values to the rules the panel
+ * holds them to. A bundle is operator input like a PATCH body; a context field
+ * mapping the PATCH would refuse must not reach the column through an import.
+ * An invalid mapping fails the whole import, before anything is written.
+ */
+function parseBundle(rawBundle: unknown): ExportInstanceData {
+  const bundle = instanceBundleSchema.parse(rawBundle);
+  const data = bundle.instance;
+  // Before 1.3 Web was not a channel: every agent's HTTP endpoint was online,
+  // so a bundle without the `web` row restores it switched on, as it was.
+  // From 1.3 on the row is always present and says what it means.
+  const channels =
+    bundle.version !== "1.3" && !data.channels.some((c) => c.channelType === WEB_CHANNEL_TYPE)
+      ? [...data.channels, { channelType: WEB_CHANNEL_TYPE, enabled: true, config: {} }]
+      : data.channels;
+  return {
+    ...data,
+    channels,
+    webContextFieldMapping: normalizeFieldMapping(data.webContextFieldMapping, "webContextFieldMapping"),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Import as new instance
@@ -59,9 +86,22 @@ export async function importNewInstance(
   rawBundle: unknown,
   orgId?: string,
 ): Promise<ImportResult> {
-  const bundle = instanceBundleSchema.parse(rawBundle);
-  const data = bundle.instance;
+  const data = parseBundle(rawBundle);
   const warnings: ImportWarning[] = [];
+
+  // The embedder is the ONE scalar this import writes that the deployment may not
+  // be able to honour, and the only one whose failure is silent: an unknown name
+  // used to reach `resolveEmbeddingContext`, miss every branch and fall through
+  // to OpenAI, so a snapshot taken on a deployment serving another embedder
+  // would quietly send its memories and its knowledge base to a provider the
+  // agent was never configured for. The chat provider needs no check here: an
+  // unserved one fails loudly on the first turn.
+  if (!isKnownEmbeddingProvider(data.embeddingProvider)) {
+    throw new Error(
+      `Embedding provider "${data.embeddingProvider}" is not available in this deployment. ` +
+        `Available embedders: ${knownEmbeddingProviders().join(", ")}.`,
+    );
+  }
 
   // Resolve unique slug
   const slug = await resolveUniqueSlug(data.slug);
@@ -85,14 +125,25 @@ export async function importNewInstance(
         langsmithProject: data.langsmithProject,
         authEnabled: data.authEnabled,
         thinkingEnabled: data.thinkingEnabled,
+        thinkingLevel: data.thinkingLevel,
         temperature: data.temperature,
         stateInPromptEnabled: data.stateInPromptEnabled,
         datetimeInjectionEnabled: data.datetimeInjectionEnabled,
+        datetimeTimezone: data.datetimeTimezone,
+        datetimeLocale: data.datetimeLocale,
+        dedupSimilarityThreshold: data.dedupSimilarityThreshold,
+        messageSoftDebounceMs: data.messageSoftDebounceMs,
+        messageTypingDelayMs: data.messageTypingDelayMs,
+        messageMaxRestarts: data.messageMaxRestarts,
         cacheEnabled: data.cacheEnabled,
         cacheTtl: data.cacheTtl,
         a2aEnabled: data.a2aEnabled,
         toolResultsInHistoryEnabled: data.toolResultsInHistoryEnabled,
         debugEnabled: data.debugEnabled,
+        // Absent from an older bundle: undefined leaves the column out of the
+        // statement, so a new agent gets the default and an overwrite keeps
+        // the target's own value.
+        attachmentStorageEnabled: data.attachmentStorageEnabled,
         sttProvider: data.sttProvider,
         // Embedding provider/dim only set here (fresh instance — no vectors to
         // lose). Overwrite import intentionally never touches them.
@@ -104,6 +155,7 @@ export async function importNewInstance(
         optoutClosingMessage: data.optoutClosingMessage,
         optoutResumeMessage: data.optoutResumeMessage,
         optoutInjectPromptHint: data.optoutInjectPromptHint,
+        webContextFieldMapping: data.webContextFieldMapping,
         icon: data.icon ?? null,
         workspaceId,
       })
@@ -154,21 +206,13 @@ export async function importNewInstance(
     const mcpWarnings = await importMcpServers(tx, id, data.mcpServers);
     warnings.push(...mcpWarnings);
 
-    // 12. Secrets — only generate warnings
-    for (const secret of data.secrets) {
-      warnings.push({
-        type: "secret_required",
-        message: `Secret "${secret.key}" needs to be configured`,
-      });
-    }
+    // 12. Secrets — readable parameters are written, credentials are asked for
+    warnings.push(...(await importSecrets(tx, id, data.secrets)));
 
     return id;
   });
 
-  // Recompute tools outside transaction (uses its own transaction internally)
-  await recomputeInstanceTools(instanceId);
-  invalidatePromptsCache(instanceId);
-  invalidateHooksCache(asInstanceSlug(slug));
+  await finishCommittedImport(instanceId, slug, warnings);
 
   return { slug, instanceId, warnings };
 }
@@ -181,8 +225,7 @@ export async function importOverwriteInstance(
   targetSlug: string,
   rawBundle: unknown,
 ): Promise<ImportResult> {
-  const bundle = instanceBundleSchema.parse(rawBundle);
-  const data = bundle.instance;
+  const data = parseBundle(rawBundle);
   const warnings: ImportWarning[] = [];
 
   // Verify target exists
@@ -211,14 +254,22 @@ export async function importOverwriteInstance(
         langsmithProject: data.langsmithProject,
         authEnabled: data.authEnabled,
         thinkingEnabled: data.thinkingEnabled,
+        thinkingLevel: data.thinkingLevel,
         temperature: data.temperature,
         stateInPromptEnabled: data.stateInPromptEnabled,
         datetimeInjectionEnabled: data.datetimeInjectionEnabled,
+        datetimeTimezone: data.datetimeTimezone,
+        datetimeLocale: data.datetimeLocale,
+        dedupSimilarityThreshold: data.dedupSimilarityThreshold,
+        messageSoftDebounceMs: data.messageSoftDebounceMs,
+        messageTypingDelayMs: data.messageTypingDelayMs,
+        messageMaxRestarts: data.messageMaxRestarts,
         cacheEnabled: data.cacheEnabled,
         cacheTtl: data.cacheTtl,
         a2aEnabled: data.a2aEnabled,
         toolResultsInHistoryEnabled: data.toolResultsInHistoryEnabled,
         debugEnabled: data.debugEnabled,
+        attachmentStorageEnabled: data.attachmentStorageEnabled,
         sttProvider: data.sttProvider,
         optoutEnabled: data.optoutEnabled,
         optoutStopKeywords: data.optoutStopKeywords,
@@ -226,6 +277,7 @@ export async function importOverwriteInstance(
         optoutClosingMessage: data.optoutClosingMessage,
         optoutResumeMessage: data.optoutResumeMessage,
         optoutInjectPromptHint: data.optoutInjectPromptHint,
+        webContextFieldMapping: data.webContextFieldMapping,
         icon: data.icon ?? null,
         // NB: embeddingProvider/embeddingDim are deliberately NOT updated here —
         // switching an existing instance's embedder wipes all vectors (memories +
@@ -299,21 +351,38 @@ export async function importOverwriteInstance(
     const mcpWarnings = await importMcpServers(tx, instanceId, data.mcpServers);
     warnings.push(...mcpWarnings);
 
-    // 12. Secrets warnings
-    for (const secret of data.secrets) {
-      warnings.push({
-        type: "secret_required",
-        message: `Secret "${secret.key}" needs to be configured`,
-      });
-    }
+    // 12. Secrets — readable parameters are written, credentials are asked for
+    warnings.push(...(await importSecrets(tx, instanceId, data.secrets)));
   });
 
-  await recomputeInstanceTools(instanceId);
-  invalidatePromptsCache(instanceId);
-  invalidateInstanceConfigCache(asInstanceSlug(targetSlug));
-  invalidateHooksCache(asInstanceSlug(targetSlug));
+  await finishCommittedImport(instanceId, targetSlug, warnings);
 
   return { slug: targetSlug, instanceId, warnings };
+}
+
+/**
+ * The work after an import has committed: recompute tool access, then drop the caches
+ * that hold the agent's previous configuration.
+ *
+ * The import is already durable here, so a failing recompute must neither skip the
+ * cache invalidation (the agent would keep running on its old prompts and hooks) nor
+ * fail the request for data that was written. It is reported as a warning instead.
+ */
+async function finishCommittedImport(instanceId: InstanceUuid, slug: string, warnings: ImportWarning[]): Promise<void> {
+  try {
+    // Outside the import transaction: it opens its own.
+    await recomputeInstanceTools(instanceId);
+  } catch (err) {
+    console.error("[import] tool recompute failed for agent %s after a committed import:", instanceId, err);
+    warnings.push({
+      type: "tool_recompute_failed",
+      message: "The agent was imported, but its tool access could not be recomputed; save its tools again to apply it.",
+    });
+  } finally {
+    invalidatePromptsCache(instanceId);
+    invalidateInstanceConfigCache(asInstanceSlug(slug));
+    invalidateHooksCache(asInstanceSlug(slug));
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -25,7 +25,11 @@ import {
   resolvePrincipalOrgId,
   type Instance,
 } from "../../instances/store.js";
-import { invalidateInstanceConfigCache } from "../../instances/config-resolver.js";
+import {
+  invalidateInstanceConfigCache,
+  resolveEffectiveModelSelection,
+} from "../../instances/config-resolver.js";
+import { normalizeFieldMapping } from "../../conversations/field-mapping.js";
 import { invalidateEmbeddingContext } from "../../embeddings-gateway/provider-resolver.js";
 import {
   embeddingProviderChanged,
@@ -35,17 +39,21 @@ import {
 import { countMemories } from "../../memory/index.js";
 import { countDocuments } from "../../knowledge/index.js";
 import { computeMemoryStatusFromInstance, computeEmbedderStatus } from "../memories/memory-status.js";
-import { providerConfigs, isThinkingCapable, isReasoningAlwaysOn, clampTemperature, temperatureSupported, cacheSupported, reasoningLevelsFor } from "../../ai-gateway/config.js";
+import { providerConfigs, DEFAULT_PROVIDER, isThinkingCapable, isReasoningAlwaysOn, clampTemperature, temperatureSupported, cacheSupported, reasoningLevelsFor } from "../../ai-gateway/config.js";
 import type { ReasoningLevel } from "../../ai-gateway/model-catalog.js";
+import { isKnownEmbeddingProvider, knownEmbeddingProviders, supportedDimsFor } from "../../embeddings-gateway/config.js";
 import { validateIconDataUri } from "../../instances/icon-validator.js";
 import { buildInstanceIconUrl } from "../../instances/icon-url.js";
 import { isUniqueViolation } from "../../utils/db-errors.js";
 import { channelManager } from "../../channels/channel-manager.js";
+import { prepareAttachmentCleanup } from "../../attachments/attachment-cleanup.js";
+import { invalidateAgentS3 } from "../../attachments/agent-storage.js";
 import { asInstanceSlug } from "../../instances/identifiers.js";
 import { sanitizeForLog } from "../../utils/create-logger.js";
 import { CurrentUser } from "../../auth/decorators/current-user.decorator.js";
 import { WorkspaceSlug } from "../../auth/decorators/workspace-slug.decorator.js";
 import type { AuthenticatedUser } from "../../auth/auth.types.js";
+import { NO_TRANSACTION } from "../../database/client.js";
 import {
   createManagementAuditLogger,
   ManagementAuditAction,
@@ -62,6 +70,7 @@ import {
  * `v=<updatedAt>` query param ensures the browser reloads after an icon change.
  */
 function toInstanceDto(instance: Instance) {
+  const effective = resolveEffectiveModelSelection(instance.provider, instance.model);
   return {
     id: instance.id,
     slug: instance.slug,
@@ -70,6 +79,8 @@ function toInstanceDto(instance: Instance) {
     status: instance.status,
     provider: instance.provider,
     model: instance.model,
+    effectiveProvider: effective.provider,
+    effectiveModel: effective.model,
     memoryEnabled: instance.memoryEnabled,
     knowledgeEnabled: instance.knowledgeEnabled,
     langsmithEnabled: instance.langsmithEnabled,
@@ -80,17 +91,25 @@ function toInstanceDto(instance: Instance) {
     temperature: instance.temperature,
     stateInPromptEnabled: instance.stateInPromptEnabled,
     datetimeInjectionEnabled: instance.datetimeInjectionEnabled,
+    datetimeTimezone: instance.datetimeTimezone,
+    datetimeLocale: instance.datetimeLocale,
+    dedupSimilarityThreshold: instance.dedupSimilarityThreshold,
+    messageSoftDebounceMs: instance.messageSoftDebounceMs,
+    messageTypingDelayMs: instance.messageTypingDelayMs,
+    messageMaxRestarts: instance.messageMaxRestarts,
     cacheEnabled: instance.cacheEnabled,
     cacheTtl: instance.cacheTtl,
     a2aEnabled: instance.a2aEnabled,
     toolResultsInHistoryEnabled: instance.toolResultsInHistoryEnabled,
     debugEnabled: instance.debugEnabled,
+    attachmentStorageEnabled: instance.attachmentStorageEnabled,
     optoutEnabled: instance.optoutEnabled,
     optoutStopKeywords: instance.optoutStopKeywords,
     optoutResumeKeywords: instance.optoutResumeKeywords,
     optoutClosingMessage: instance.optoutClosingMessage,
     optoutResumeMessage: instance.optoutResumeMessage,
     optoutInjectPromptHint: instance.optoutInjectPromptHint,
+    webContextFieldMapping: instance.webContextFieldMapping,
     sttProvider: instance.sttProvider,
     embeddingDim: instance.embeddingDim,
     embeddingProvider: instance.embeddingProvider,
@@ -111,6 +130,16 @@ function parseDataUri(dataUri: string): { contentType: string; body: Buffer } | 
   }
 }
 
+/** A model's rates for a single call whose prompt exceeds `above` tokens (USD per 1M). */
+interface LongPromptCost {
+  above: number;
+  costInput: number;
+  costOutput: number;
+  costCacheRead: number;
+  costCacheWrite: number;
+  costCacheWrite5m?: number;
+}
+
 @Controller("api/instances")
 export class InstancesController {
   private readonly auditLogger = createManagementAuditLogger();
@@ -125,7 +154,7 @@ export class InstancesController {
     // Agents are org-owned, and this route carries no `:slug` for the guard to
     // scope on — so the org filter is applied here. An unresolvable organization
     // yields an empty list (fail closed), never the whole deployment.
-    const orgId = await resolvePrincipalOrgId(user?.orgId);
+    const orgId = await resolvePrincipalOrgId(user?.orgId, NO_TRANSACTION);
     if (!orgId) return { instances: [] };
     // Narrowed to the addressed workspace when the caller is inside one. Without
     // this, `/workspaces/sandbox/instances` listed every agent in the ORG,
@@ -140,7 +169,7 @@ export class InstancesController {
   @RequirePermission(Permission.AGENT_READ)
   @Get("models")
   getModels() {
-    const providers: Record<string, { models: { id: string; tier: string | null; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number; supportsCache: boolean; supportsThinking: boolean; reasoningAlwaysOn: boolean; reasoningLevels: readonly ReasoningLevel[]; supportsTemperature: boolean; supportsTemperatureWithThinking: boolean }[] }> = {};
+    const providers: Record<string, { models: { id: string; tier: string | null; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number; costCacheWrite5m?: number; costLongPrompt?: LongPromptCost; supportsCache: boolean; supportsThinking: boolean; reasoningAlwaysOn: boolean; reasoningLevels: readonly ReasoningLevel[]; supportsTemperature: boolean; supportsTemperatureWithThinking: boolean }[] }> = {};
     for (const [name, cfg] of Object.entries(providerConfigs)) {
       const tierByModel = new Map(Object.entries(cfg.tiers).map(([tier, modelId]) => [modelId, tier]));
       const models = Object.entries(cfg.models).map(([modelId, cost]) => ({
@@ -154,6 +183,24 @@ export class InstancesController {
         // caches with no write premium (OpenAI pre-5.6).
         costCacheRead: cost.cacheRead ?? cost.input,
         costCacheWrite: cost.cacheWrite ?? cost.input,
+        // Only on models with two write tiers (Anthropic 1P): the rate of the
+        // writes a message reports as 5m (`cacheCreation5mInputTokens`); every
+        // other write stays at costCacheWrite. Absent → one rate for all writes.
+        ...(cost.cacheWrite5m !== undefined ? { costCacheWrite5m: cost.cacheWrite5m } : {}),
+        // Only on models priced by prompt length: the rates of a single model call
+        // whose prompt exceeds `above` tokens, with the same fallbacks as above.
+        ...(cost.longPrompt
+          ? {
+              costLongPrompt: {
+                above: cost.longPrompt.above,
+                costInput: cost.longPrompt.input,
+                costOutput: cost.longPrompt.output,
+                costCacheRead: cost.longPrompt.cacheRead ?? cost.longPrompt.input,
+                costCacheWrite: cost.longPrompt.cacheWrite ?? cost.longPrompt.input,
+                ...(cost.longPrompt.cacheWrite5m !== undefined ? { costCacheWrite5m: cost.longPrompt.cacheWrite5m } : {}),
+              },
+            }
+          : {}),
         // Whether the provider+model has real prompt caching — a UI hint; single
         // source of truth shared with the runtime marker gate (bedrock.ts).
         supportsCache: cacheSupported(name, modelId),
@@ -162,7 +209,7 @@ export class InstancesController {
         supportsThinking: isThinkingCapable(name, modelId),
         // gpt-oss & co. reason on every call (no off) — the UI locks the toggle
         // ON and shows a hint rather than pretending it can be disabled.
-        reasoningAlwaysOn: isReasoningAlwaysOn(modelId),
+        reasoningAlwaysOn: isReasoningAlwaysOn(name, modelId),
         // The effort levels this model accepts (live-verified). The FE renders the
         // level picker from this exact set — empty for non-reasoning models.
         reasoningLevels: reasoningLevelsFor(name, modelId),
@@ -175,7 +222,18 @@ export class InstancesController {
       }));
       providers[name] = { models };
     }
-    return { providers };
+    // The embedders this deployment can use, served from the same endpoint for
+    // the same reason the provider list is: the panel must not keep a second
+    // list. It kept one, hardcoded to the two built-ins, so a registered
+    // embedder was reachable only by a direct PATCH — and an agent chatting on a
+    // provider that does not embed had no way to stop embedding with OpenAI.
+    // `supportedDims` rides along because a switch is only legal to a provider
+    // that can emit the agent's stored dimension.
+    const embedders = knownEmbeddingProviders().map((id) => ({
+      id,
+      supportedDims: supportedDimsFor(id),
+    }));
+    return { providers, embedders };
   }
 
   // GET /api/instances/:slug — get by slug
@@ -228,7 +286,7 @@ export class InstancesController {
     // unresolvable one, and that is a caller-side condition (a principal with no
     // org claim on a multi-org deployment), not a server fault — surface it as a
     // 400 rather than letting the throw escape as a 500.
-    const orgId = await resolvePrincipalOrgId(user?.orgId);
+    const orgId = await resolvePrincipalOrgId(user?.orgId, NO_TRANSACTION);
     if (!orgId) {
       throw new BadRequestException(
         "Cannot resolve the caller's organization — the agent has no workspace to be created in.",
@@ -288,8 +346,10 @@ export class InstancesController {
       status?: string;
       provider?: string | null;
       model?: string | null;
-      /** Embedder provider (openai|bedrock), independent of the chat provider. Changing it wipes data. */
-      embeddingProvider?: "openai" | "bedrock";
+      /** Embedder provider, independent of the chat provider. Changing it wipes data. */
+      // Validated against the embedder registry (validateEmbeddingProvider), not
+      // a closed union: an embedder can be registered at boot.
+      embeddingProvider?: string;
       memoryEnabled?: boolean;
       knowledgeEnabled?: boolean;
       langsmithEnabled?: boolean;
@@ -300,11 +360,24 @@ export class InstancesController {
       temperature?: number | null;
       stateInPromptEnabled?: boolean;
       datetimeInjectionEnabled?: boolean;
+      /**
+       * The six behaviours that used to be deployment configuration. `null`
+       * CLEARS one back to the deployment default, which is why they are
+       * nullable rather than merely optional: omitting a field leaves it alone,
+       * and sending null is a decision.
+       */
+      datetimeTimezone?: string | null;
+      datetimeLocale?: string | null;
+      dedupSimilarityThreshold?: number | null;
+      messageSoftDebounceMs?: number | null;
+      messageTypingDelayMs?: number | null;
+      messageMaxRestarts?: number | null;
       cacheEnabled?: boolean;
       cacheTtl?: string;
       a2aEnabled?: boolean;
       toolResultsInHistoryEnabled?: boolean;
       debugEnabled?: boolean;
+      attachmentStorageEnabled?: boolean;
       sttProvider?: "openai" | "aws" | "deepgram" | "disabled";
       optoutEnabled?: boolean;
       optoutStopKeywords?: string[];
@@ -312,6 +385,7 @@ export class InstancesController {
       optoutClosingMessage?: string | null;
       optoutResumeMessage?: string | null;
       optoutInjectPromptHint?: boolean;
+      webContextFieldMapping?: Record<string, string>;
       /**
        * Explicit acknowledgement that changing the embedding provider will
        * permanently delete this instance's memories and knowledge base. Required
@@ -322,13 +396,25 @@ export class InstancesController {
     },
   ) {
     this.validateSlug(slug);
-    this.validateModelConfig(body.provider, body.model);
     this.validateEmbeddingProvider(body.embeddingProvider);
     body.optoutStopKeywords = this.normalizeKeywords(body.optoutStopKeywords, "optoutStopKeywords");
     body.optoutResumeKeywords = this.normalizeKeywords(body.optoutResumeKeywords, "optoutResumeKeywords");
+    if (body.webContextFieldMapping !== undefined) {
+      try {
+        body.webContextFieldMapping = normalizeFieldMapping(body.webContextFieldMapping, "webContextFieldMapping");
+      } catch (err) {
+        throw new BadRequestException((err as Error).message);
+      }
+    }
     if (body.temperature !== undefined) {
       body.temperature = clampTemperature(body.temperature);
     }
+    // A string "false" would reach the column as true: the switch that decides
+    // whether end users' files are kept must be a boolean or nothing.
+    if (body.attachmentStorageEnabled !== undefined && typeof body.attachmentStorageEnabled !== "boolean") {
+      throw new BadRequestException("attachmentStorageEnabled must be a boolean");
+    }
+    this.validateAgentSettings(body);
     // Accept the full effort union; the ai-gateway clamps to the chosen model's
     // catalog reasoningLevels at call time (so xhigh/max never reach a model that
     // rejects them), and the FE only offers the model's actual subset.
@@ -338,6 +424,22 @@ export class InstancesController {
     // Capture the pre-update state to detect an embedding-provider switch.
     const before = await findInstanceBySlug(asInstanceSlug(slug));
     if (!before) throw new NotFoundException(`Instance "${slug}" not found`);
+
+    // The pair the agent will run on after this PATCH is what gets checked:
+    // each field from the body when it carries one, otherwise the stored one.
+    // A PATCH that changes only the model carries no provider; one that changes
+    // only the provider keeps the stored model. Reading the body alone checked a
+    // model against a provider the caller never mentioned, and let a provider
+    // switch keep a model of the old provider — both then failed at the first
+    // message, far from this edit. `null` is a deliberate clear, so it falls
+    // through to the gateway's default. A PATCH that touches neither is left
+    // alone, so an older mismatched row still accepts unrelated edits.
+    if (body.provider !== undefined || body.model !== undefined) {
+      this.validateModelConfig(
+        body.provider !== undefined ? body.provider : before.provider,
+        body.model !== undefined ? body.model : before.model,
+      );
+    }
 
     // Changing the embedding provider abandons the old embedding space (vectors
     // become uninterpretable) — existing memories + knowledge are wiped, never
@@ -393,15 +495,22 @@ export class InstancesController {
     // `handleMessage(slug, …)` against a missing instance forever, generating
     // an error loop until the engine restarts.
     try {
-      await channelManager.stopAllForInstance(slug);
+      await channelManager.stopAllForInstance(slug, { deregister: true });
     } catch (err) {
       // Best-effort: a stuck adapter must not block the delete.
       // Pass the user-controlled slug as a separate argument so it is never
       // treated as part of the format string (CodeQL js/tainted-format-string).
       console.error("[instances] failed to stop channels for instance:", sanitizeForLog(slug), err);
     }
+    // Before the delete: the bucket credentials are agent secrets and the keys
+    // live on the messages, and both go with the agent.
+    const cleanupAttachments = await prepareAttachmentCleanup(asInstanceSlug(slug), { allConversations: true });
     const deleted = await deleteInstance(asInstanceSlug(slug));
     if (!deleted) throw new NotFoundException(`Instance "${slug}" not found`);
+    // Slugs are reusable: a cached client would point a new agent of the same
+    // name at this one's bucket.
+    invalidateAgentS3(asInstanceSlug(slug));
+    void cleanupAttachments();
     this.auditLogger.log({
       action: ManagementAuditAction.AgentDelete,
       actor: toManagementAuditActor(user),
@@ -471,11 +580,84 @@ export class InstancesController {
     return out;
   }
 
-  /** Validate the embedder provider. Only OpenAI and Bedrock embed (Anthropic has no embeddings API). */
+  /**
+   * The six per-agent settings, refused at the edge rather than by the database.
+   * The migration's CHECK constraints say the same thing, but a 400 naming the
+   * field is a better answer than a driver error, and the panel shows it.
+   *
+   * A timezone or a locale is validated by ASKING Intl, not by a regex: the
+   * accepted set is the runtime's, and a value it rejects would throw on every
+   * turn that formats a date — far from here, and only for that agent.
+   *
+   * `null` is the CLEAR: it drops the column and hands the agent back to the
+   * deployment default. Everything else is checked for its TYPE first, because
+   * the body is JSON and nothing upstream narrows it — a truthiness test let
+   * `""` reach Intl, and two numeric comparisons are both false when the
+   * operand is a string, so `"abc"` passed as a threshold.
+   */
+  private validateAgentSettings(body: {
+    datetimeTimezone?: string | null;
+    datetimeLocale?: string | null;
+    dedupSimilarityThreshold?: number | null;
+    messageSoftDebounceMs?: number | null;
+    messageTypingDelayMs?: number | null;
+    messageMaxRestarts?: number | null;
+  }): void {
+    const timezone = body.datetimeTimezone;
+    if (timezone !== undefined && timezone !== null) {
+      if (typeof timezone !== "string" || timezone.trim() === "") {
+        throw new BadRequestException(
+          "datetimeTimezone must be a non-empty IANA time zone name, or null to use the deployment default",
+        );
+      }
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+      } catch {
+        throw new BadRequestException(`datetimeTimezone "${timezone}" is not a known IANA time zone`);
+      }
+    }
+    const locale = body.datetimeLocale;
+    if (locale !== undefined && locale !== null) {
+      if (typeof locale !== "string" || locale.trim() === "") {
+        throw new BadRequestException(
+          "datetimeLocale must be a non-empty BCP 47 locale, or null to use the deployment default",
+        );
+      }
+      try {
+        new Intl.DateTimeFormat(locale);
+      } catch {
+        throw new BadRequestException(`datetimeLocale "${locale}" is not a valid BCP 47 locale`);
+      }
+    }
+    const threshold = body.dedupSimilarityThreshold;
+    if (threshold !== undefined && threshold !== null) {
+      if (typeof threshold !== "number" || !Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+        throw new BadRequestException("dedupSimilarityThreshold must be a number between 0 and 1");
+      }
+    }
+    // Zero is legitimate for all three — no debounce, no typing delay, no
+    // restart — so the floor is non-negative rather than positive.
+    for (const [field, value] of [
+      ["messageSoftDebounceMs", body.messageSoftDebounceMs],
+      ["messageTypingDelayMs", body.messageTypingDelayMs],
+      ["messageMaxRestarts", body.messageMaxRestarts],
+    ] as const) {
+      if (value !== undefined && value !== null && (!Number.isInteger(value) || value < 0)) {
+        throw new BadRequestException(`${field} must be a non-negative integer`);
+      }
+    }
+  }
+
+  /**
+   * Validate the embedder provider against the embedders this deployment can
+   * actually use — the two built in plus anything registered at boot. Not a
+   * hardcoded pair: an unlisted name would be stored, then fail every embedding
+   * call at runtime instead of failing this request.
+   */
   private validateEmbeddingProvider(embeddingProvider?: string) {
-    if (embeddingProvider !== undefined && embeddingProvider !== "openai" && embeddingProvider !== "bedrock") {
+    if (embeddingProvider !== undefined && !isKnownEmbeddingProvider(embeddingProvider)) {
       throw new BadRequestException(
-        `Invalid embeddingProvider "${embeddingProvider}". Valid embedding providers: openai, bedrock.`,
+        `Invalid embeddingProvider "${embeddingProvider}". Valid embedding providers: ${knownEmbeddingProviders().join(", ")}.`,
       );
     }
   }
@@ -487,7 +669,7 @@ export class InstancesController {
       throw new BadRequestException(`Invalid provider "${provider}". Valid providers: ${validProviders.join(", ")}`);
     }
     if (model) {
-      const effectiveProvider = provider || "openai";
+      const effectiveProvider = provider || DEFAULT_PROVIDER;
       const cfg = providerConfigs[effectiveProvider];
       const validModels = cfg ? [
         ...Object.values(cfg.tiers),

@@ -11,6 +11,9 @@ const { mockGetChannelConfig, mockResolveInstanceId, mockChannelManager } = vi.h
   mockResolveInstanceId: vi.fn(),
   mockChannelManager: {
     adapters: new Map(),
+    getAdapter(slug: string, type: string) {
+      return (this.adapters as Map<string, Map<string, unknown>>).get(slug)?.get(type);
+    },
   },
 }));
 
@@ -34,6 +37,7 @@ vi.mock("../../channels/channel-manager.js", () => ({
   channelManager: mockChannelManager,
 }));
 
+import { resetInboundDedupe } from "../../channels/inbound-dedupe.js";
 import {
   TwilioWebhookController,
   WHATSAPP_WEBHOOK_UNAVAILABLE_MESSAGE,
@@ -77,6 +81,7 @@ describe("TwilioWebhookController (signature route)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetInboundDedupe();
     controller = new TwilioWebhookController();
 
     // Set up adapter in channel manager

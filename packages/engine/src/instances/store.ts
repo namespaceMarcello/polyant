@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { and, asc, desc, eq, sql, inArray } from "drizzle-orm";
-import { db, type DbExecutor } from "../database/client.js";
+import { NO_TRANSACTION, db, type DbExecutor } from "../database/client.js";
 import { seedInstancePrompts } from "./prompts.store.js";
-import { seedInstanceTools } from "./instance-tools.store.js";
+import { enableToolsByName, seedInstanceTools } from "./instance-tools.store.js";
+import { KNOWLEDGE_DEFAULT_TOOL_NAMES } from "./defaults.js";
 import { seedInstanceSkills } from "./instance-skills.store.js";
 import { DEFAULT_EMBEDDING_DIM, embeddingProviderFor } from "../embeddings-gateway/config.js";
 import type { EmbeddingProvider } from "../embeddings-gateway/types.js";
@@ -15,7 +16,11 @@ import { knowledgeDocuments } from "../knowledge/schema.js";
 import { scheduledTasks } from "../scheduled-tasks/schema.js";
 import { organizations, workspaces } from "../organizations/organization.schema.js";
 import { findDefaultWorkspaceId } from "../organizations/organizations.store.js";
-import { buildOrgScopedAgentFilter } from "../authz/scope-filter.js";
+import {
+  buildOrgScopedAgentFilter,
+  tenantScopedAgentCondition,
+  type TenantScope,
+} from "../authz/scope-filter.js";
 import { asInstanceSlug, asInstanceUuid, type InstanceSlug, type InstanceUuid } from "./identifiers.js";
 
 // Every agent belongs to exactly one workspace, and a workspace to exactly one
@@ -39,7 +44,7 @@ type Executor = Pick<typeof db, "select">;
  */
 export async function resolvePrincipalOrgId(
   orgId: string | undefined,
-  executor: Executor = db,
+  executor: Executor,
 ): Promise<string | null> {
   if (orgId) return orgId;
   // limit(2) — we only need to know whether the deployment is single-org.
@@ -57,7 +62,7 @@ export async function resolvePrincipalOrgId(
  */
 export async function resolveWorkspaceIdForPrincipal(
   orgId: string | undefined,
-  executor: Executor = db,
+  executor: Executor,
   workspaceSlug?: string,
 ): Promise<string> {
   const organizationId = await resolvePrincipalOrgId(orgId, executor);
@@ -130,6 +135,17 @@ export interface Instance {
   stateInPromptEnabled: boolean;
   /** When true, inject the current date/time into every turn (volatile tail). */
   datetimeInjectionEnabled: boolean;
+  /**
+   * The six behaviours that used to be deployment configuration. NULL on any of
+   * them means "not set here" and falls back to the environment default;
+   * `instances/agent-settings.ts` is the only place that fallback is applied.
+   */
+  datetimeTimezone: string | null;
+  datetimeLocale: string | null;
+  dedupSimilarityThreshold: number | null;
+  messageSoftDebounceMs: number | null;
+  messageTypingDelayMs: number | null;
+  messageMaxRestarts: number | null;
   /** Per-instance prompt-cache switch (off = skip all cache markers, no cache write). */
   cacheEnabled: boolean;
   /** Cross-turn Anthropic cache TTL ("5m" | "1h"). */
@@ -140,6 +156,8 @@ export interface Instance {
   toolResultsInHistoryEnabled: boolean;
   /** When true, the exact LLM request payload (system + messages + tools) is persisted per turn for debug. */
   debugEnabled: boolean;
+  /** When true, inbound attachments are copied to the agent's bucket. */
+  attachmentStorageEnabled: boolean;
   /** GDPR opt-out feature toggle. */
   optoutEnabled: boolean;
   optoutStopKeywords: string[];
@@ -147,10 +165,11 @@ export interface Instance {
   optoutClosingMessage: string | null;
   optoutResumeMessage: string | null;
   optoutInjectPromptHint: boolean;
+  webContextFieldMapping: Record<string, string>;
   icon: string | null;
   sttProvider: string;
   embeddingDim: number;
-  /** Embedding provider, independent of the chat `provider`: "openai" | "bedrock". */
+  /** Embedding provider, independent of the chat `provider`. */
   embeddingProvider: EmbeddingProvider;
   /** Owning workspace UUID (RBAC tenancy). Every instance belongs to one. */
   workspaceId: string;
@@ -163,21 +182,20 @@ function toInstance(row: typeof instances.$inferSelect): Instance {
 }
 
 /**
- * Return all active instances. Pass the caller's resolved `orgId` to restrict
- * the list to that organization's agents (reuses the RBAC org-scoping predicate
- * so "which agents belong to org X" stays defined in exactly one place).
- * Omitting it returns every agent — reserved for system paths with no principal.
+ * Return the active agents of one tenant. The `scope` is REQUIRED and reuses the
+ * shared tenancy predicate, so "which agents belong to this tenant" stays
+ * defined in exactly one place.
+ *
+ * It used to be `orgId?: string`, where omitting it returned every agent in the
+ * deployment — "reserved for system paths with no principal", except nothing
+ * reserved it: the absent argument and the system path were spelled the same
+ * way. A system path now writes `allTenantsScope(reason)`.
  */
-export async function listActiveInstances(orgId?: string): Promise<Instance[]> {
+export async function listActiveInstances(scope: TenantScope): Promise<Instance[]> {
   return db
     .select()
     .from(instances)
-    .where(
-      and(
-        eq(instances.status, "active"),
-        orgId ? buildOrgScopedAgentFilter(orgId, "slug") : undefined,
-      ),
-    )
+    .where(and(eq(instances.status, "active"), tenantScopedAgentCondition(scope, "slug")))
     .then((rows) => rows.map(toInstance));
 }
 
@@ -241,7 +259,7 @@ export async function ensureInstance(data: {
       name: data.name,
       description: data.description ?? null,
       embeddingDim: DEFAULT_EMBEDDING_DIM,
-      workspaceId: await findDefaultWorkspaceId(),
+      workspaceId: await findDefaultWorkspaceId(NO_TRANSACTION),
     })
     .onConflictDoNothing({ target: instances.slug });
 }
@@ -306,6 +324,20 @@ export async function listAllInstances(
     .then((rows) => rows.map(toInstance));
 }
 
+/**
+ * Agent slug -> owning workspace slug for every agent the scope reaches. Lets a
+ * caller that only holds an agent slug (the live activity stream) address the
+ * agent's own workspace.
+ */
+export async function listAgentWorkspaceSlugs(scope: TenantScope): Promise<Map<string, string>> {
+  const rows = await db
+    .select({ slug: instances.slug, workspaceSlug: workspaces.slug })
+    .from(instances)
+    .innerJoin(workspaces, eq(instances.workspaceId, workspaces.id))
+    .where(tenantScopedAgentCondition(scope, "instances.slug"));
+  return new Map(rows.map((r) => [r.slug, r.workspaceSlug]));
+}
+
 /** Create a new instance and return it. */
 export async function createInstance(data: {
   slug: InstanceSlug;
@@ -321,7 +353,7 @@ export async function createInstance(data: {
    * agent under another tenant. Omitted → the organization's default workspace.
    */
   workspaceSlug?: string;
-}, executor: DbExecutor = db): Promise<Instance> {
+}, executor: DbExecutor): Promise<Instance> {
   const rows = await executor
     .insert(instances)
     .values({
@@ -332,6 +364,10 @@ export async function createInstance(data: {
       model: data.model ?? null,
       // New instances default to 1024d; the DB default (1536) stays for legacy rows.
       embeddingDim: DEFAULT_EMBEDDING_DIM,
+      // A new agent needs its API key to be reached; turning that off is a
+      // deliberate, confirmed act in the panel. Channels need no seeding: none
+      // exists until someone configures it, so a new agent starts with all off, Web included (no `web` row means off).
+      authEnabled: true,
       // Default the embedder to match the chat provider (bedrock chat → bedrock
       // embeddings, else openai). It is independently changeable afterwards.
       embeddingProvider: embeddingProviderFor(data.provider),
@@ -393,9 +429,10 @@ type UpdatableInstanceFields = {
   a2aEnabled?: boolean;
   toolResultsInHistoryEnabled?: boolean;
   debugEnabled?: boolean;
+  attachmentStorageEnabled?: boolean;
   icon?: string | null;
   sttProvider?: string;
-  /** Embedder choice (openai|bedrock). Changing it triggers a destructive wipe in the controller. */
+  /** Embedder choice. Changing it triggers a destructive wipe in the controller. */
   embeddingProvider?: EmbeddingProvider;
   optoutEnabled?: boolean;
   optoutStopKeywords?: string[];
@@ -403,9 +440,25 @@ type UpdatableInstanceFields = {
   optoutClosingMessage?: string | null;
   optoutResumeMessage?: string | null;
   optoutInjectPromptHint?: boolean;
+  webContextFieldMapping?: Record<string, string>;
+  /**
+   * The six per-agent settings that replaced `DATETIME_*`, `MESSAGE_*` and
+   * `DEDUP_SIMILARITY_THRESHOLD`. `null` is a real value here — it clears the
+   * column and hands the agent back to the deployment default, which is what
+   * `resolveDatetimeSettings` and friends read.
+   */
+  datetimeTimezone?: string | null;
+  datetimeLocale?: string | null;
+  dedupSimilarityThreshold?: number | null;
+  messageSoftDebounceMs?: number | null;
+  messageTypingDelayMs?: number | null;
+  messageMaxRestarts?: number | null;
 };
 
-const UPDATABLE_INSTANCE_KEYS: readonly (keyof UpdatableInstanceFields)[] = [
+// `as const satisfies` rather than a `keyof` annotation: the annotation widened
+// every element to `keyof UpdatableInstanceFields`, which would make the
+// exhaustiveness check below compare a type against itself and always pass.
+const UPDATABLE_INSTANCE_KEYS = [
   "name",
   "description",
   "status",
@@ -426,6 +479,7 @@ const UPDATABLE_INSTANCE_KEYS: readonly (keyof UpdatableInstanceFields)[] = [
   "a2aEnabled",
   "toolResultsInHistoryEnabled",
   "debugEnabled",
+  "attachmentStorageEnabled",
   "icon",
   "sttProvider",
   "embeddingProvider",
@@ -435,7 +489,32 @@ const UPDATABLE_INSTANCE_KEYS: readonly (keyof UpdatableInstanceFields)[] = [
   "optoutClosingMessage",
   "optoutResumeMessage",
   "optoutInjectPromptHint",
-];
+  "webContextFieldMapping",
+  "datetimeTimezone",
+  "datetimeLocale",
+  "dedupSimilarityThreshold",
+  "messageSoftDebounceMs",
+  "messageTypingDelayMs",
+  "messageMaxRestarts",
+] as const satisfies readonly (keyof UpdatableInstanceFields)[];
+
+/**
+ * The type and the runtime list must name the same fields, and nothing used to
+ * make them: the six per-agent settings above were added to the controller, to
+ * the DTO and to the schema, and to NEITHER of these — so every PATCH of them
+ * wrote `updatedAt` and nothing else, and the panel reported a save that never
+ * happened.
+ *
+ * A key present in the type but absent from the list now fails the build; a name
+ * in the list that is not a field fails on the `satisfies`. Both directions are
+ * checked, and neither needs a test to run.
+ */
+type MissingFromUpdatableKeys = Exclude<
+  keyof UpdatableInstanceFields,
+  (typeof UPDATABLE_INSTANCE_KEYS)[number]
+>;
+const _everyUpdatableFieldIsListed: MissingFromUpdatableKeys extends never ? true : never = true;
+void _everyUpdatableFieldIsListed;
 
 /** Update an instance by slug. Touches updatedAt. Returns the updated instance or undefined if not found. */
 export async function updateInstance(
@@ -450,12 +529,36 @@ export async function updateInstance(
       (patch as Record<string, unknown>)[key] = data[key];
     }
   }
-  const rows = await db
-    .update(instances)
-    .set({ ...patch, updatedAt: sql`now()` })
-    .where(eq(instances.slug, slug))
-    .returning();
-  return rows[0] ? toInstance(rows[0]) : undefined;
+  if (patch.knowledgeEnabled !== true) {
+    const rows = await db
+      .update(instances)
+      .set({ ...patch, updatedAt: sql`now()` })
+      .where(eq(instances.slug, slug))
+      .returning();
+    return rows[0] ? toInstance(rows[0]) : undefined;
+  }
+
+  // Knowledge is being turned on. Only the off -> on transition assigns the
+  // knowledge tools: re-saving an agent that already has Knowledge on must not
+  // bring back a tool its author removed. Turning Knowledge off deletes
+  // nothing; the supervisor hides the tools while it is off.
+  return db.transaction(async (tx) => {
+    const [before] = await tx
+      .select({ knowledgeEnabled: instances.knowledgeEnabled })
+      .from(instances)
+      .where(eq(instances.slug, slug))
+      .for("update");
+    const rows = await tx
+      .update(instances)
+      .set({ ...patch, updatedAt: sql`now()` })
+      .where(eq(instances.slug, slug))
+      .returning();
+    if (!rows[0]) return undefined;
+    if (before && !before.knowledgeEnabled) {
+      await enableToolsByName(asInstanceUuid(rows[0].id), KNOWLEDGE_DEFAULT_TOOL_NAMES, tx);
+    }
+    return toInstance(rows[0]);
+  });
 }
 
 /**

@@ -31,6 +31,113 @@ import { sql, type SQL } from "drizzle-orm";
  */
 
 /**
+ * Marker for the one scope that spans every tenant. It is a `Symbol` for the
+ * same reason `SYSTEM_SCOPE` was: a symbol can never be produced by JSON body
+ * or query-string parsing, so no HTTP input can widen a tenancy filter. A plain
+ * `{ allTenants: true }` would have been forgeable by any request that guessed
+ * the field name.
+ */
+export const ALL_TENANTS = Symbol("tenant-scope:all-tenants");
+
+/**
+ * Which tenant a store call acts in. Every variant has to be WRITTEN: there is
+ * no absent member and no `undefined`, so "every tenant in the deployment" can
+ * only be asked for on purpose, and a caller that has no scope in hand cannot
+ * satisfy the type by passing nothing.
+ *
+ * The predicate that consumes this fails CLOSED by construction: the only
+ * variant that emits no constraint is `allTenants`, which carries the reason it
+ * is allowed to. `reason` is not decoration — it is what separates "this job
+ * really does run across tenants" (boot, the retention sweep, a platform-admin
+ * total) from "the caller had nothing to pass", which is the ambiguity a bare
+ * `undefined` left behind at every call site.
+ *
+ * `workspaceId` / `workspaceIds` are declared here, in the shared file, even
+ * though this build has a single workspace and produces neither: an overlay
+ * build that scopes by workspace would otherwise have to widen an
+ * organization-only union, reconciling the same declaration at every merge on
+ * the one file where a silent revert changes who can read whose rows.
+ */
+declare const tenantScopeBrand: unique symbol;
+
+/**
+ * The brand. It makes a `TenantScope` unforgeable by shape: an object literal
+ * with the right fields no longer satisfies the type, so a scope can only come
+ * from one of the constructors below.
+ *
+ * Without it the union was structural, and `{ organizationId: someString }`
+ * written anywhere — a controller in a hurry, a test double, a body that
+ * happened to carry the field — was a scope. The constructors are where the
+ * tenancy decision is meant to be visible; the brand is what makes going around
+ * them a compile error rather than a habit.
+ */
+type TenantScopeBrand = { readonly [tenantScopeBrand]: true };
+
+export type TenantScope = (
+  | { readonly organizationId: string }
+  | { readonly organizationId: string; readonly workspaceIds: ReadonlySet<string> }
+  | { readonly workspaceId: string }
+  | { readonly workspaceIds: ReadonlySet<string> }
+  | { readonly allTenants: typeof ALL_TENANTS; readonly reason: string }
+) &
+  TenantScopeBrand;
+
+/**
+ * The scope of one organization. This is the constructor a request path uses,
+ * after the caller's organization has been resolved — never with a raw id read
+ * off a body, a query param or a token claim.
+ *
+ * INTERNAL USE: producing a `TenantScope` is a tenancy decision, so the call
+ * belongs to whoever resolved the tenant, not to a store or a controller
+ * helper reaching for it late.
+ */
+export function orgScope(organizationId: string): TenantScope {
+  return { organizationId } as TenantScope;
+}
+
+/**
+ * One organization, narrowed to the workspaces the caller can actually reach.
+ *
+ * This is the shape an aggregated dashboard needs, and it is ONE scope rather
+ * than two arguments: the organization is the tenancy gate and the workspace set
+ * is the narrowing inside it, but both are boundaries — a workspace binding
+ * revokes as well as grants — so a query that applied the first and dropped the
+ * second would answer with rows from workspaces the caller cannot open.
+ *
+ * An EMPTY set stays fail-closed here too: a caller who reaches no workspace
+ * reads no row, whatever their organization.
+ */
+export function orgWorkspacesScope(
+  organizationId: string,
+  workspaceIds: ReadonlySet<string>,
+): TenantScope {
+  return { organizationId, workspaceIds } as TenantScope;
+}
+
+/** The scope of one workspace. Produced only where a workspace is authoritative. */
+export function workspaceScope(workspaceId: string): TenantScope {
+  return { workspaceId } as TenantScope;
+}
+
+/**
+ * The scope of a set of workspaces. An EMPTY set is a caller who can reach no
+ * workspace, and it stays fail-closed: it is not a shortcut for "all".
+ */
+export function workspaceSetScope(workspaceIds: ReadonlySet<string>): TenantScope {
+  return { workspaceIds } as TenantScope;
+}
+
+/**
+ * The scope that spans every tenant, for a caller that genuinely has none: boot
+ * registering the channel adapters, the retention sweep over due policies, a
+ * platform-admin total. `reason` is recorded in the call, so review can tell an
+ * intended cross-tenant read from a missing argument.
+ */
+export function allTenantsScope(reason: string): TenantScope {
+  return { allTenants: ALL_TENANTS, reason } as TenantScope;
+}
+
+/**
  * Slug columns the filter is allowed to constrain. Restricting the column name
  * to a literal allowlist keeps `sql.raw()` (used to qualify the column) free of
  * any caller-controlled text. Mirrors `utils/query-helpers.ts` `instanceFilter`.
@@ -42,6 +149,9 @@ export const ORG_SCOPED_AGENT_COLUMNS = [
   // The agents table itself (`instances.slug`), so the agent LIST endpoints scope
   // with the same membership definition instead of a second hand-rolled join.
   "slug",
+  // The same column, qualified, for a query that joins another table with its own
+  // `slug` (`workspaces`): the bare name is ambiguous there and Postgres rejects it.
+  "instances.slug",
 ] as const;
 
 export type OrgScopedAgentColumn = (typeof ORG_SCOPED_AGENT_COLUMNS)[number];
@@ -87,28 +197,96 @@ export function buildOrgScopedAgentFilter(
 }
 
 /**
- * Raw-SQL convenience: the same predicate prefixed with `AND`. Mirrors
+ * The predicate a `TenantScope` narrows to, or `null` for the one variant that
+ * narrows to nothing. `null` is reachable ONLY from `allTenants`: every other
+ * variant produces a constraint, and an empty workspace set produces `false`
+ * rather than "no constraint", because a caller who can reach no workspace can
+ * read no row.
+ */
+function scopedAgentPredicate(scope: TenantScope, columnName: OrgScopedAgentColumn): SQL | null {
+  const column = columnFragment(columnName);
+  if ("allTenants" in scope) return null;
+  if ("organizationId" in scope) {
+    const org = buildOrgScopedAgentFilter(scope.organizationId, columnName);
+    // The composite is checked before the organization-only case, and both
+    // halves are ANDed: dropping the workspace half would widen the answer to
+    // the whole organization, which is the narrowing this variant exists for.
+    if ("workspaceIds" in scope) {
+      const workspaces = workspaceSetPredicate(scope.workspaceIds, column);
+      return sql`${org} and ${workspaces}`;
+    }
+    return org;
+  }
+  if ("workspaceId" in scope) {
+    return sql`${column} in (
+      select i.slug
+      from instances i
+      where i.workspace_id = ${scope.workspaceId}
+    )`;
+  }
+  return workspaceSetPredicate(scope.workspaceIds, column);
+}
+
+/**
+ * `<column> IN (agents of these workspaces)`, or `false` for an empty set.
+ *
+ * Shared by the bare workspace-set scope and the composite one, so the two can
+ * never disagree about what an empty set means.
+ */
+function workspaceSetPredicate(workspaceIds: ReadonlySet<string>, column: SQL): SQL {
+  if (workspaceIds.size === 0) return sql`false`;
+  const ids = sql.join(
+    [...workspaceIds].map((id) => sql`${id}`),
+    sql`, `,
+  );
+  return sql`${column} in (
+    select i.slug
+    from instances i
+    where i.workspace_id in (${ids})
+  )`;
+}
+
+/**
+ * Raw-SQL convenience: the scope's predicate prefixed with `AND`. Mirrors
  * `instanceFilter` so the raw-SQL stores (conversations, analytics, audit) can
  * append it next to their other `AND ...` fragments without branching.
  *
- * FAILS CLOSED when `orgId` is absent. This used to return an EMPTY fragment —
- * i.e. no constraint at all — justified as "in single-org OSS that degrades to
- * no extra constraint, preserving today's behavior". The problem with a
- * fail-open default in a tenancy filter is not what it does today, it is what it
- * does the day something reaches it: a principal with no `orgId` claim (a legacy
- * JWT, or any gateway-forwarded identity, which never carries one) would read
+ * The scope is REQUIRED and cannot be empty. It used to be `orgId: string |
+ * undefined`, and before that the absent branch returned an EMPTY fragment —
+ * no constraint at all — justified as "in single-org OSS that degrades to no
+ * extra constraint, preserving today's behavior". The problem with a fail-open
+ * default in a tenancy filter is not what it does today, it is what it does the
+ * day something reaches it: a principal with no organization (a legacy JWT, or
+ * any gateway-forwarded identity, which never carries one) would read
  * analytics, conversations, audit logs and memories across every organization.
  * Only `PermissionGuard` denying an unresolved scope stood between that and a
  * request — one `@AuthenticatedOnly()` away from mattering.
  *
- * `and false` is the honest translation of "this caller has no organization, so
- * no agent belongs to it". Callers that must serve an org-less principal have to
- * say so explicitly rather than inheriting it from a missing argument.
+ * Then the absent branch became `and false`, which was honest but still let a
+ * caller reach the wrong answer by forgetting an argument. Now there is no
+ * absent branch to reach: a caller with no tenant in hand has to say
+ * `allTenantsScope("why")`, which is a sentence someone can disagree with in
+ * review.
  */
 export function buildOrgScopedAgentFilterFragment(
-  orgId: string | undefined,
+  scope: TenantScope,
   columnName: OrgScopedAgentColumn = "instance_id",
 ): SQL {
-  if (!orgId) return sql`and false`;
-  return sql`and ${buildOrgScopedAgentFilter(orgId, columnName)}`;
+  const predicate = scopedAgentPredicate(scope, columnName);
+  if (predicate === null) return sql``;
+  return sql`and ${predicate}`;
+}
+
+/**
+ * The same predicate as a Drizzle condition, for the query-builder paths
+ * (`and(..., cond)`). Always returns a condition — never `undefined` — so it
+ * cannot be dropped by a `.filter(Boolean)` on the way into the query.
+ */
+export function tenantScopedAgentCondition(
+  scope: TenantScope,
+  columnName: OrgScopedAgentColumn = "instance_id",
+): SQL {
+  const predicate = scopedAgentPredicate(scope, columnName);
+  if (predicate === null) return sql`true`;
+  return predicate;
 }

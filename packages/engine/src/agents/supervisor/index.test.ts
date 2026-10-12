@@ -49,7 +49,7 @@ vi.mock("../../ai-gateway/index.js", () => ({
   chatStream: mockChatStream,
 }));
 
-vi.mock("../tools/registry.js", () => ({
+vi.mock("../tools/registry.js", async (importOriginal) => ({
   getToolRegistry: mockGetToolRegistry,
   buildTool: mockBuildTool,
   // Pass-through: tests pass `string[]` which represents required (non-optional) keys.
@@ -57,6 +57,12 @@ vi.mock("../tools/registry.js", () => ({
     (input ?? []).map((e) =>
       typeof e === "string" ? { key: e, type: "text" as const } : e,
     ),
+  // NOT stubbed: the availability rule is the thing these tests assert on, and a
+  // re-implementation here would agree with itself while disagreeing with the
+  // supervisor. `required-secrets-availability.guardrail.test.ts` covers it over
+  // the live registry; this keeps the two from drifting apart.
+  missingRequiredSecrets: (await importOriginal<typeof import("../tools/registry.js")>())
+    .missingRequiredSecrets,
   // Pass-through: scoping is unit-tested in registry.test.ts; here it must not
   // strip secrets so the buildTools assertions see the bag they expect.
   scopeSecrets: (secrets: unknown) => secrets,
@@ -64,7 +70,7 @@ vi.mock("../tools/registry.js", () => ({
   toModelToolName: (name: string) => name.replace(/:/g, "__"),
 }));
 
-vi.mock("../tools/task-tool.js", () => ({
+vi.mock("../tools/task.tool.js", () => ({
   createTaskTool: mockCreateTaskTool,
 }));
 
@@ -89,6 +95,15 @@ vi.mock("../../database/client.js", () => ({ db: {}, queryClient: {} }));
 
 vi.mock("../../instances/instance-tools.store.js", () => ({
   getEnabledToolNames: mockGetEnabledToolNames,
+}));
+
+// The meta cache is exercised in instance-meta.test.ts. Here it always misses,
+// so the supervisor's own lookup (and every assertion on it) stays covered.
+vi.mock("../../instances/instance-meta.js", () => ({
+  resolveInstanceUuid: vi.fn(async () => undefined),
+  resolveInstanceMeta: vi.fn(async () => undefined),
+  invalidateInstanceMeta: vi.fn(),
+  invalidateAllInstanceMeta: vi.fn(),
 }));
 
 vi.mock("../../instances/store.js", () => ({
@@ -134,6 +149,14 @@ import { buildUserContent, supervise, superviseStream } from "./index.js";
 import type { SupervisorInput } from "./index.js";
 import type { Attachment } from "../../channels/types.js";
 import { channelManager } from "../../channels/channel-manager.js";
+
+// The platform policies are a row; this suite has no database. The values are
+// the shipped defaults, so the assertions read the same as before they moved.
+vi.mock("../../platform/platform-settings.store.js", () => ({
+  resolvePlatformSettings: async () => ({ agentCallTimeoutMs: 60_000 }),
+}));
+
+const TEST_INSTANCE = asInstanceSlug("default");
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -239,12 +262,6 @@ describe("supervise", () => {
     expect(mockFindInstanceBySlug).toHaveBeenCalledWith("my-instance");
   });
 
-  it("falls back to DEFAULT_INSTANCE_ID when instanceId is not provided", async () => {
-    await supervise({ message: "hi" });
-
-    expect(mockFindInstanceBySlug).toHaveBeenCalledWith("default");
-  });
-
   it("calls chat with tier standard, system prompt, messages, and tools", async () => {
     await supervise({ message: "hi", instanceId: asInstanceSlug("inst-1") });
 
@@ -266,7 +283,7 @@ describe("supervise", () => {
   });
 
   it("returns SupervisorOutput with text, usage, durationMs", async () => {
-    const result = await supervise({ message: "hi" });
+    const result = await supervise({ instanceId: TEST_INSTANCE, message: "hi" });
 
     expect(result).toEqual(expect.objectContaining({
       text: "Hello from supervisor",
@@ -278,7 +295,7 @@ describe("supervise", () => {
   });
 
   it("returns toolBuildingMs in output", async () => {
-    const result = await supervise({ message: "hi" });
+    const result = await supervise({ instanceId: TEST_INSTANCE, message: "hi" });
 
     expect(result.toolBuildingMs).toEqual(expect.any(Number));
     expect(result.toolBuildingMs).toBeGreaterThanOrEqual(0);
@@ -288,6 +305,7 @@ describe("supervise", () => {
 
   it("passes provider, model, apiKeys, langsmith from input to chat", async () => {
     const input: SupervisorInput = {
+      instanceId: TEST_INSTANCE,
       message: "hi",
       provider: "anthropic",
       model: "claude-3-opus",
@@ -309,7 +327,7 @@ describe("supervise", () => {
   });
 
   it("forwards temperature to the gateway when provided", async () => {
-    await supervise({ message: "hi", temperature: 0.2 });
+    await supervise({ instanceId: TEST_INSTANCE, message: "hi", temperature: 0.2 });
     expect(mockChat).toHaveBeenCalledWith(
       expect.objectContaining({ temperature: 0.2 }),
       expect.anything(),
@@ -317,7 +335,7 @@ describe("supervise", () => {
   });
 
   it("omits temperature when not provided", async () => {
-    await supervise({ message: "hi" });
+    await supervise({ instanceId: TEST_INSTANCE, message: "hi" });
     expect(mockChat).toHaveBeenCalledWith(
       expect.not.objectContaining({ temperature: expect.anything() }),
       expect.anything(),
@@ -325,7 +343,7 @@ describe("supervise", () => {
   });
 
   it("passes conversationId in metadata", async () => {
-    await supervise({ message: "hi", conversationId: "conv-42" });
+    await supervise({ instanceId: TEST_INSTANCE, message: "hi", conversationId: "conv-42" });
 
     expect(mockChat).toHaveBeenCalledWith(
       expect.anything(),
@@ -334,7 +352,7 @@ describe("supervise", () => {
   });
 
   it("calls pipelineLog.supervisorStart and supervisorDone", async () => {
-    await supervise({ message: "hi" });
+    await supervise({ instanceId: TEST_INSTANCE, message: "hi" });
 
     expect(mockPipelineLog.supervisorStart).toHaveBeenCalledWith(expect.any(String), expect.any(Number));
     expect(mockPipelineLog.supervisorDone).toHaveBeenCalledWith(expect.any(String), 1234, "Hello from supervisor");
@@ -350,7 +368,7 @@ describe("supervise", () => {
         { role: "user" as const, content: "first" },
         { role: "assistant" as const, content: "reply" },
       ];
-      await supervise({ message: "second", conversationHistory: history });
+      await supervise({ instanceId: TEST_INSTANCE, message: "second", conversationHistory: history });
 
       const callArgs = mockChat.mock.calls[0][0];
       expect(callArgs.messages).toEqual([
@@ -366,6 +384,7 @@ describe("supervise", () => {
         { role: "assistant" as const, content: "latest reply" },
       ];
       await supervise({
+        instanceId: TEST_INSTANCE,
         message: "new question",
         conversationHistory: history,
         conversationSummary: "The user asked about weather",
@@ -389,6 +408,7 @@ describe("supervise", () => {
 
     it("with summary but no history: does not inject summary pair", async () => {
       await supervise({
+        instanceId: TEST_INSTANCE,
         message: "hello",
         conversationSummary: "old summary",
         conversationHistory: [],
@@ -402,7 +422,7 @@ describe("supervise", () => {
     });
 
     it("without history: just the current message", async () => {
-      await supervise({ message: "standalone" });
+      await supervise({ instanceId: TEST_INSTANCE, message: "standalone" });
 
       const callArgs = mockChat.mock.calls[0][0];
       expect(callArgs.messages).toEqual([
@@ -417,6 +437,7 @@ describe("supervise", () => {
       });
 
       await supervise({
+        instanceId: TEST_INSTANCE,
         message: "what time is it?",
         conversationHistory: [{ role: "user" as const, content: "earlier" }],
       });
@@ -448,7 +469,7 @@ describe("supervise", () => {
       // DB returns saveMemory as enabled
       mockGetEnabledToolNames.mockResolvedValue(new Set(["read", "write", "saveMemory"]));
 
-      await supervise({ message: "hi", memoryEnabled: false });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi", memoryEnabled: false });
 
       // buildTool should be called for read and write, but not saveMemory
       const builtToolNames = mockBuildTool.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
@@ -460,7 +481,7 @@ describe("supervise", () => {
     it("includes memory tools when memoryEnabled is true", async () => {
       mockGetEnabledToolNames.mockResolvedValue(new Set(["read", "saveMemory"]));
 
-      await supervise({ message: "hi", memoryEnabled: true });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi", memoryEnabled: true });
 
       const builtToolNames = mockBuildTool.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
       expect(builtToolNames).toContain("saveMemory");
@@ -476,7 +497,7 @@ describe("supervise", () => {
       mockGetEnabledToolNames.mockResolvedValue(new Set(["read", "tavily"]));
 
       // No secrets provided
-      await supervise({ message: "hi", secrets: {} });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi", secrets: {} });
 
       const builtToolNames = mockBuildTool.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
       expect(builtToolNames).toContain("read");
@@ -491,7 +512,7 @@ describe("supervise", () => {
       );
       mockGetEnabledToolNames.mockResolvedValue(new Set(["tavily"]));
 
-      await supervise({ message: "hi", secrets: { tavily_api_key: "key123" } });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi", secrets: { tavily_api_key: "key123" } });
 
       const builtToolNames = mockBuildTool.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
       expect(builtToolNames).toContain("tavily");
@@ -500,7 +521,7 @@ describe("supervise", () => {
     it("includes spawnTask when in enabled tool names", async () => {
       mockGetEnabledToolNames.mockResolvedValue(new Set(["read", "spawnTask"]));
 
-      await supervise({ message: "hi" });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi" });
 
       expect(mockCreateTaskTool).toHaveBeenCalled();
       // The tools passed to chat should include spawnTask
@@ -516,7 +537,7 @@ describe("supervise", () => {
       );
       mockGetEnabledToolNames.mockResolvedValue(new Set(["acme:updateContactCrm"]));
 
-      await supervise({ message: "hi" });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi" });
 
       // Bedrock/OpenAI/Anthropic reject ':' in a tool name; the model must see '__'.
       const toolsArg = mockChat.mock.calls[0][0].tools;
@@ -531,7 +552,7 @@ describe("supervise", () => {
     it("does not include spawnTask when not in enabled tool names", async () => {
       mockGetEnabledToolNames.mockResolvedValue(new Set(["read"]));
 
-      await supervise({ message: "hi" });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi" });
 
       expect(mockCreateTaskTool).not.toHaveBeenCalled();
     });
@@ -539,7 +560,7 @@ describe("supervise", () => {
     it("empty enabled names (size=0) grants no tools at all, not every tool", async () => {
       mockGetEnabledToolNames.mockResolvedValue(new Set());
 
-      await supervise({ message: "hi" });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi" });
 
       // An empty set used to mean "enable everything", which made the least
       // privileged configuration produce the most privileged agent: disabling
@@ -558,7 +579,7 @@ describe("supervise", () => {
       );
       mockGetEnabledToolNames.mockResolvedValue(new Set(["read", "roomNotify"]));
 
-      await supervise({ message: "hi" });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi" });
 
       const builtToolNames = mockBuildTool.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
       expect(builtToolNames).toContain("read");
@@ -574,7 +595,7 @@ describe("supervise", () => {
       );
       mockGetEnabledToolNames.mockResolvedValue(new Set(["read", "roomNotify"]));
 
-      await supervise({ message: "hi", includeHarness: new Set(["room"]) });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi", includeHarness: new Set(["room"]) });
 
       const builtToolNames = mockBuildTool.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
       expect(builtToolNames).toContain("read");
@@ -589,23 +610,27 @@ describe("supervise", () => {
       );
       mockGetEnabledToolNames.mockResolvedValue(new Set(["roomNotify"]));
 
-      await supervise({ message: "hi", includeHarness: new Set(["other"]) });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi", includeHarness: new Set(["other"]) });
 
       const builtToolNames = mockBuildTool.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
       expect(builtToolNames).not.toContain("roomNotify");
     });
 
-    it("passes apiKeys, instanceId, and conversationId to createTaskTool", async () => {
+    it("passes the parent's provider, pinned model and abort signal to createTaskTool", async () => {
       mockGetEnabledToolNames.mockResolvedValue(new Set(["spawnTask"]));
 
-      const apiKeys = { openai: "sk-test" };
-      await supervise({ message: "hi", apiKeys, instanceId: asInstanceSlug("my-instance"), conversationId: "conv-1" });
+      const apiKeys = { anthropic: "sk-test" };
+      const abortSignal = new AbortController().signal;
+      await supervise({ message: "hi", apiKeys, provider: "anthropic", model: "claude-pinned-model", abortSignal, instanceId: asInstanceSlug("my-instance"), conversationId: "conv-1" });
 
       expect(mockCreateTaskTool).toHaveBeenCalledWith(
         expect.any(Object),
         apiKeys,
         "my-instance",
         "conv-1",
+        "anthropic",
+        "claude-pinned-model",
+        abortSignal,
       );
     });
   });
@@ -644,13 +669,13 @@ describe("superviseStream", () => {
   });
 
   it("falls back to DEFAULT_INSTANCE_ID when instanceId is not provided", async () => {
-    await superviseStream({ message: "hi" });
+    await superviseStream({ instanceId: TEST_INSTANCE, message: "hi" });
 
     expect(mockFindInstanceBySlug).toHaveBeenCalledWith("default");
   });
 
   it("returns textStream, fullStream, and completed promise", async () => {
-    const result = await superviseStream({ message: "hi" });
+    const result = await superviseStream({ instanceId: TEST_INSTANCE, message: "hi" });
 
     expect(result.textStream).toBeDefined();
     expect(result.fullStream).toBeDefined();
@@ -658,7 +683,7 @@ describe("superviseStream", () => {
   });
 
   it("completed resolves with SupervisorOutput", async () => {
-    const result = await superviseStream({ message: "hi" });
+    const result = await superviseStream({ instanceId: TEST_INSTANCE, message: "hi" });
     const output = await result.completed;
 
     expect(output).toEqual(expect.objectContaining({
@@ -690,7 +715,7 @@ describe("superviseStream", () => {
       response: deferredResponse,
     });
 
-    const result = await superviseStream({ message: "hi" });
+    const result = await superviseStream({ instanceId: TEST_INSTANCE, message: "hi" });
 
     // Consume textStream to trigger TTFB capture
     for await (const _chunk of result.textStream) { void _chunk; }
@@ -721,6 +746,7 @@ describe("superviseStream", () => {
 
   it("passes provider, model, apiKeys, langsmith to chatStream", async () => {
     await superviseStream({
+      instanceId: TEST_INSTANCE,
       message: "hi",
       provider: "openai",
       model: "gpt-4o",
@@ -740,7 +766,7 @@ describe("superviseStream", () => {
   });
 
   it("calls pipelineLog on stream completion", async () => {
-    const result = await superviseStream({ message: "hi" });
+    const result = await superviseStream({ instanceId: TEST_INSTANCE, message: "hi" });
     await result.completed;
 
     expect(mockPipelineLog.supervisorDone).toHaveBeenCalledWith(expect.any(String), 1234, "Hello from supervisor");
@@ -750,6 +776,7 @@ describe("superviseStream", () => {
     const history = [{ role: "user" as const, content: "prev" }];
 
     await superviseStream({
+      instanceId: TEST_INSTANCE,
       message: "next",
       conversationHistory: history,
       conversationSummary: "summary of current conversation",

@@ -16,19 +16,30 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const { mockListAllInstances, mockResolvePrincipalOrgId } = vi.hoisted(() => ({
-  mockListAllInstances: vi.fn(),
+const { mockListAgentWorkspaceSlugs, mockResolvePrincipalOrgId, mockGetConversation } = vi.hoisted(() => ({
+  mockListAgentWorkspaceSlugs: vi.fn(),
   mockResolvePrincipalOrgId: vi.fn(),
+  mockGetConversation: vi.fn(),
+}));
+
+vi.mock("../conversations/store.js", () => ({
+  conversationStore: { getConversation: mockGetConversation },
+}));
+
+vi.mock("../server/utils/caller-tenant-scope.js", () => ({
+  callerTenantScope: async (user?: { orgId?: string }) => ({ kind: "org", orgId: user?.orgId }),
 }));
 
 vi.mock("../instances/store.js", () => ({
-  listAllInstances: mockListAllInstances,
+  listAgentWorkspaceSlugs: mockListAgentWorkspaceSlugs,
   resolvePrincipalOrgId: mockResolvePrincipalOrgId,
 }));
 
-import { ActivityStreamController } from "./activity-stream.controller.js";
+import { ActivityStreamController, closeActivityStreams } from "./activity-stream.controller.js";
+import { orgScope } from "../authz/scope-filter.js";
 import { activityBus } from "./activity-bus.js";
 import type { FeedEvent } from "./activity-stream.types.js";
+import { notifyConversationChanged } from "../conversations/live-updates.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import type { Request, Response } from "express";
 
@@ -86,6 +97,13 @@ function dataEvents(written: string[]): string[] {
   return written.filter((w) => w.startsWith("data: "));
 }
 
+// The per-user cap is the installation's policy now, read from
+// `platform_settings`. Mocked so this suite stays about the guard's arithmetic
+// rather than standing up a database to learn one number.
+vi.mock("../platform/platform-settings.store.js", () => ({
+  resolvePlatformSettings: async () => ({ analyticsRetentionDays: 90, sseMaxConnectionsPerUser: 5 }),
+}));
+
 describe("GET /api/activity-stream/live — organization scoping", () => {
   let controller: ActivityStreamController;
   const openConnections: Array<() => void> = [];
@@ -95,7 +113,12 @@ describe("GET /api/activity-stream/live — organization scoping", () => {
     controller = new ActivityStreamController();
     activityBus.__clearBuffer();
     mockResolvePrincipalOrgId.mockResolvedValue(ORG_A);
-    mockListAllInstances.mockResolvedValue([{ slug: "agent-a" }, { slug: "agent-a2" }]);
+    mockListAgentWorkspaceSlugs.mockResolvedValue(
+      new Map([
+        ["agent-a", "ws-1"],
+        ["agent-a2", "ws-2"],
+      ]),
+    );
   });
 
   afterEach(() => {
@@ -119,6 +142,17 @@ describe("GET /api/activity-stream/live — organization scoping", () => {
 
     expect(dataEvents(written)).toHaveLength(1);
     expect(dataEvents(written)[0]).toContain("agent-a");
+  });
+
+  it("stamps each forwarded event with its agent's own workspace slug", async () => {
+    const { written } = await connect(callerOfOrgA);
+
+    activityBus.emitEvent(eventFor("agent-a"));
+    activityBus.emitEvent(eventFor("agent-a2"));
+
+    const [first, second] = dataEvents(written).map((d) => JSON.parse(d.replace(/^data: /, "")));
+    expect(first.instance.workspaceSlug).toBe("ws-1");
+    expect(second.instance.workspaceSlug).toBe("ws-2");
   });
 
   it("does NOT forward an event for an agent of another organization", async () => {
@@ -158,7 +192,7 @@ describe("GET /api/activity-stream/live — organization scoping", () => {
 
     // Fail closed: ownership is unprovable, so nothing is provably visible.
     expect(dataEvents(written)).toHaveLength(0);
-    expect(mockListAllInstances).not.toHaveBeenCalled();
+    expect(mockListAgentWorkspaceSlugs).not.toHaveBeenCalled();
   });
 
   it("drops an event that names no agent, since it cannot be attributed", async () => {
@@ -172,7 +206,7 @@ describe("GET /api/activity-stream/live — organization scoping", () => {
   it("scopes the agent lookup to the resolved organization", async () => {
     await connect(callerOfOrgA);
 
-    expect(mockListAllInstances).toHaveBeenCalledWith(ORG_A);
+    expect(mockListAgentWorkspaceSlugs).toHaveBeenCalledWith(orgScope(ORG_A));
   });
 });
 
@@ -192,7 +226,7 @@ describe("GET /api/activity-stream/live — teardown releases resources", () => 
     controller = new ActivityStreamController();
     activityBus.__clearBuffer();
     mockResolvePrincipalOrgId.mockResolvedValue(ORG_A);
-    mockListAllInstances.mockResolvedValue([{ slug: "agent-a" }]);
+    mockListAgentWorkspaceSlugs.mockResolvedValue(new Map([["agent-a", "ws-1"]]));
   });
 
   afterEach(() => {
@@ -235,5 +269,137 @@ describe("GET /api/activity-stream/live — teardown releases resources", () => 
     expect(vi.getTimerCount()).toBe(0);
     // `res.end()` only on the first (still-open) teardown.
     expect(res.end).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("closeActivityStreams — shutdown ends every open stream", () => {
+  let controller: ActivityStreamController;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    controller = new ActivityStreamController();
+    activityBus.__clearBuffer();
+    mockResolvePrincipalOrgId.mockResolvedValue(ORG_A);
+    mockListAgentWorkspaceSlugs.mockResolvedValue(new Map([["agent-a", "ws-1"]]));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("ends each open response and releases its timer and subscription", async () => {
+    const listenersBefore = activityBus.listenerCount();
+    const first = makeRes();
+    const second = makeRes();
+    await controller.live(makeReq().req, first.res, callerOfOrgA, undefined);
+    await controller.live(makeReq().req, second.res, callerOfOrgA, undefined);
+
+    expect(closeActivityStreams()).toBe(2);
+
+    expect(first.res.end).toHaveBeenCalledTimes(1);
+    expect(second.res.end).toHaveBeenCalledTimes(1);
+    expect(activityBus.listenerCount()).toBe(listenersBefore);
+    expect(vi.getTimerCount()).toBe(0);
+    activityBus.emitEvent(eventFor("agent-a"));
+    expect(dataEvents(first.written)).toHaveLength(0);
+  });
+
+  it("does not count or end a stream the client already closed", async () => {
+    const { res } = makeRes();
+    const { req, handlers } = makeReq();
+    await controller.live(req, res, callerOfOrgA, undefined);
+    handlers.close?.();
+
+    expect(closeActivityStreams()).toBe(0);
+    expect(res.end).toHaveBeenCalledTimes(1);
+  });
+
+  it("frees the connection slots, so the per-user cap admits the caller again", async () => {
+    for (let i = 0; i < 5; i++) await controller.live(makeReq().req, makeRes().res, callerOfOrgA, undefined);
+    const rejected = makeRes();
+    await controller.live(makeReq().req, rejected.res, callerOfOrgA, undefined);
+    expect(rejected.res.status).toHaveBeenCalledWith(503);
+
+    closeActivityStreams();
+
+    const admitted = makeRes();
+    await controller.live(makeReq().req, admitted.res, callerOfOrgA, undefined);
+    expect(admitted.res.status).not.toHaveBeenCalled();
+    closeActivityStreams();
+  });
+});
+
+describe("GET /api/activity-stream/conversation — one conversation, live", () => {
+  const CONVERSATION = "agent-a:whatsapp:39333";
+  let controller: ActivityStreamController;
+  const openConnections: Array<() => void> = [];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    controller = new ActivityStreamController();
+    activityBus.__clearBuffer();
+    mockGetConversation.mockResolvedValue({ conversationId: CONVERSATION, instanceId: "agent-a" });
+  });
+
+  afterEach(() => {
+    for (const close of openConnections.splice(0)) close();
+  });
+
+  async function connect(conversationId: string | undefined, instanceId: string | undefined) {
+    const { res, written } = makeRes();
+    const { req, handlers } = makeReq();
+    await controller.conversation(req, res, callerOfOrgA, conversationId, instanceId);
+    openConnections.push(() => handlers.close?.());
+    return { res, written };
+  }
+
+  function eventIn(conversationId: string): FeedEvent {
+    return { ...eventFor("agent-a"), id: `evt-${conversationId}`, conversationId };
+  }
+
+  it("forwards only the events of the requested conversation", async () => {
+    const { written } = await connect(CONVERSATION, "agent-a");
+
+    activityBus.emitEvent(eventIn("agent-a:whatsapp:other"));
+    activityBus.emitEvent(eventIn(CONVERSATION));
+
+    expect(dataEvents(written)).toHaveLength(1);
+    expect(dataEvents(written)[0]).toContain(CONVERSATION);
+  });
+
+  it("sends a persisted signal after a stored write to the conversation, and only to it", async () => {
+    const { written } = await connect(CONVERSATION, "agent-a");
+
+    notifyConversationChanged("agent-a:whatsapp:other");
+    notifyConversationChanged(CONVERSATION);
+
+    expect(written.filter((w) => w.startsWith("event: persisted"))).toHaveLength(1);
+  });
+
+  it("answers 404 without opening a stream for a conversation outside the caller's organization", async () => {
+    mockGetConversation.mockResolvedValue(null);
+    const { res, written } = await connect(CONVERSATION, "agent-a");
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.flushHeaders).not.toHaveBeenCalled();
+    expect(mockGetConversation).toHaveBeenCalledWith(CONVERSATION, { kind: "org", orgId: ORG_A });
+
+    activityBus.emitEvent(eventIn(CONVERSATION));
+    expect(dataEvents(written)).toHaveLength(0);
+  });
+
+  it("answers 404 when the conversation belongs to a different agent than the one named", async () => {
+    const { res } = await connect(CONVERSATION, "agent-a2");
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.flushHeaders).not.toHaveBeenCalled();
+  });
+
+  it("answers 400 when the conversation or the agent is missing", async () => {
+    const { res } = await connect(CONVERSATION, undefined);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockGetConversation).not.toHaveBeenCalled();
   });
 });

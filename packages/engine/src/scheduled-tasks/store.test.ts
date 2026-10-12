@@ -4,8 +4,8 @@
  * Unit tests for packages/engine/src/scheduled-tasks/store.ts
  *
  * Covers the critical mutation invariants:
- * - markRunning(id) is an atomic guard: returns true when the row was not
- *   already "running", false on race (no rows updated).
+ * - markRunning(id) is an atomic guard: returns the claim when the row was not
+ *   already "running", null on race (no rows updated).
  * - markFailed increments consecutiveErrors and writes the error message.
  * - markFailed disables the task (enabled = false, nextRunAt = null) when
  *   consecutiveErrors reaches MAX_CONSECUTIVE_ERRORS.
@@ -84,8 +84,11 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((...args: unknown[]) => ({ type: "eq", args })),
   and: vi.fn((...args: unknown[]) => ({ type: "and", args })),
   lte: vi.fn((...args: unknown[]) => ({ type: "lte", args })),
+  lt: vi.fn((...args: unknown[]) => ({ type: "lt", args })),
   or: vi.fn((...args: unknown[]) => ({ type: "or", args })),
   isNull: vi.fn((...args: unknown[]) => ({ type: "isNull", args })),
+  inArray: vi.fn((...args: unknown[]) => ({ type: "inArray", args })),
+  count: vi.fn(() => ({ type: "count" })),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...values: unknown[]) => ({
       type: "sql",
@@ -101,7 +104,7 @@ vi.mock("drizzle-orm", () => ({
 // ---------------------------------------------------------------------------
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
-import { markRunning, markFailed, create } from "./store.js";
+import { markRunning, markCompleted, markFailed, create, clearRunningMarker } from "./store.js";
 import type { InstanceSlug } from "../instances/identifiers.js";
 
 // ---------------------------------------------------------------------------
@@ -177,24 +180,34 @@ describe("scheduled-tasks/store", () => {
   // markRunning — atomic guard
   // -----------------------------------------------------------------------
   describe("markRunning", () => {
-    it("returns true when the row was successfully marked running (not previously running)", async () => {
+    it("returns the claim when the row was successfully marked running (not previously running)", async () => {
       // returning() resolves to [{ id }] when one row was updated
       mockDb.update.mockReturnValue(createChainMock([{ id: TASK_ID }]) as never);
 
       const result = await markRunning(TASK_ID);
 
-      expect(result).toBe(true);
+      expect(result).toBeInstanceOf(Date);
       expect(mockDb.update).toHaveBeenCalledTimes(1);
     });
 
-    it("returns false when the row was already 'running' (race lost, zero rows updated)", async () => {
+    it("returns null when the row was already 'running' (race lost, zero rows updated)", async () => {
       // returning() resolves to [] when WHERE clause filtered out the row
       mockDb.update.mockReturnValue(createChainMock([]) as never);
 
       const result = await markRunning(TASK_ID);
 
-      expect(result).toBe(false);
+      expect(result).toBeNull();
     });
+  });
+
+  it("does not overwrite a task that completed while the scheduler was resolving its outcome", async () => {
+    mockDb.select.mockReturnValue(createChainMock([BASE_TASK]) as never);
+    const updateChain = createChainMock([]);
+    mockDb.update.mockReturnValue(updateChain as never);
+
+    await markCompleted(TASK_ID, "conversation-1", new Date());
+
+    expect(JSON.stringify(updateChain.where.mock.calls[0][0])).toContain("running");
   });
 
   // -----------------------------------------------------------------------
@@ -208,25 +221,26 @@ describe("scheduled-tasks/store", () => {
 
     it("increments consecutiveErrors and stores the error message", async () => {
       wireGetById({ ...BASE_TASK, consecutiveErrors: 0 });
-      const updateChain = createChainMock(undefined);
+      const updateChain = createChainMock([{ id: TASK_ID }]);
       mockDb.update.mockReturnValue(updateChain as never);
 
-      await markFailed(TASK_ID, "boom");
+      await markFailed(TASK_ID, "boom", new Date());
 
       const setArgs = updateChain.set.mock.calls[0][0] as Record<string, unknown>;
       expect(setArgs.consecutiveErrors).toBe(1);
       expect(setArgs.lastError).toBe("boom");
       expect(setArgs.lastRunStatus).toBe("error");
       expect(setArgs.enabled).toBeUndefined(); // not yet at limit
+      expect(JSON.stringify(updateChain.where.mock.calls[0][0])).toContain("running");
     });
 
     it("uses computeRetryDelay backoff when within maxRetries", async () => {
       wireGetById({ ...BASE_TASK, consecutiveErrors: 0, maxRetries: 3 });
-      const updateChain = createChainMock(undefined);
+      const updateChain = createChainMock([{ id: TASK_ID }]);
       mockDb.update.mockReturnValue(updateChain as never);
 
       const beforeMs = Date.now();
-      await markFailed(TASK_ID, "transient");
+      await markFailed(TASK_ID, "transient", new Date());
       const afterMs = Date.now();
 
       // consecutive becomes 1 → computeRetryDelay called with (1 - 1) = 0
@@ -242,10 +256,10 @@ describe("scheduled-tasks/store", () => {
     it("advances to the normal next schedule when consecutive exceeds maxRetries (but under MAX_CONSECUTIVE_ERRORS)", async () => {
       // maxRetries=2, currently at 3 → next consecutive=4 (>2, <5)
       wireGetById({ ...BASE_TASK, consecutiveErrors: 3, maxRetries: 2 });
-      const updateChain = createChainMock(undefined);
+      const updateChain = createChainMock([{ id: TASK_ID }]);
       mockDb.update.mockReturnValue(updateChain as never);
 
-      await markFailed(TASK_ID, "still failing");
+      await markFailed(TASK_ID, "still failing", new Date());
 
       expect(mockComputeRetryDelay).not.toHaveBeenCalled();
       expect(mockComputeNextRun).toHaveBeenCalled();
@@ -257,10 +271,10 @@ describe("scheduled-tasks/store", () => {
     it("disables the task (enabled=false, nextRunAt=null) when consecutiveErrors reaches MAX_CONSECUTIVE_ERRORS", async () => {
       // 4 → next will be 5 = MAX_CONSECUTIVE_ERRORS
       wireGetById({ ...BASE_TASK, consecutiveErrors: 4 });
-      const updateChain = createChainMock(undefined);
+      const updateChain = createChainMock([{ id: TASK_ID }]);
       mockDb.update.mockReturnValue(updateChain as never);
 
-      await markFailed(TASK_ID, "give up");
+      await markFailed(TASK_ID, "give up", new Date());
 
       const setArgs = updateChain.set.mock.calls[0][0] as Record<string, unknown>;
       expect(setArgs.consecutiveErrors).toBe(5);
@@ -272,9 +286,44 @@ describe("scheduled-tasks/store", () => {
     it("is a no-op (no update) when the task does not exist", async () => {
       wireGetById(undefined);
 
-      await markFailed(TASK_ID, "ghost");
+      await markFailed(TASK_ID, "ghost", new Date());
 
       expect(mockDb.update).not.toHaveBeenCalled();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Crash-safety helpers
+// ---------------------------------------------------------------------------
+describe("clearRunningMarker", () => {
+  it("is a no-op on an empty id list, without touching the database", async () => {
+    // The startup path calls it unconditionally; an empty IN () would be both pointless
+    // and, depending on the dialect, a syntax error.
+    const cleared = await clearRunningMarker([]);
+    expect(cleared).toEqual([]);
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it("clears ONLY rows still marked running under the claim it read, and leaves the error counters untouched", async () => {
+    const chain = createChainMock([{ id: "a" }, { id: "b" }]);
+    mockDb.update.mockReturnValue(chain);
+    const claimA = new Date("2026-06-01T06:00:00.000Z");
+
+    const cleared = await clearRunningMarker([{ id: "a", claim: claimA }, { id: "b", claim: null }]);
+
+    expect(cleared).toEqual(["a", "b"]);
+    // The `running` guard plus the observed claim is what makes this race-free: a row a
+    // live process completed or re-claimed in the meantime must not be reopened.
+    const whereArg = JSON.stringify((chain as unknown as { where: ReturnType<typeof vi.fn> }).where.mock.calls[0]![0]);
+    expect(whereArg).toContain("running");
+    expect(whereArg).toContain(claimA.toISOString());
+    expect(whereArg).toContain("isNull");
+    // No retry accounting: an interrupted run is not the task's failure.
+    const setArg = (chain as unknown as { set: ReturnType<typeof vi.fn> }).set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg).toHaveProperty("lastRunStatus", null);
+    expect(setArg).not.toHaveProperty("consecutiveErrors");
+    expect(setArg).not.toHaveProperty("nextRunAt");
+    expect(setArg).not.toHaveProperty("enabled");
   });
 });

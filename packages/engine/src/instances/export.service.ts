@@ -15,8 +15,10 @@ import { tools } from "../agents/tools/tools.schema.js";
 import { instanceSecrets } from "./secrets.schema.js";
 import { instanceChannels } from "./channels.schema.js";
 import { stripSensitiveKeys } from "./channel-config-sanitize.js";
+import { WEB_CHANNEL_TYPE } from "./channels.store.js";
 import { instanceSkillEnv } from "./skill-env.schema.js";
 import { decrypt } from "../crypto/index.js";
+import { readableSecretKeys } from "./readable-secret-keys.js";
 import { getRoomByInstanceId } from "../room/room.store.js";
 import { listEventSourcesWithDefinitions } from "../webhooks/webhook-sources.store.js";
 import { listByInstance as listScheduledTasks } from "../scheduled-tasks/store.js";
@@ -53,7 +55,7 @@ async function assembleInstanceData(instance: Instance): Promise<ExportInstanceD
     prompts,
     skillAssignments,
     manualToolNames,
-    secretKeys,
+    secrets,
     channels,
     skillEnvRows,
     hooks,
@@ -65,7 +67,7 @@ async function assembleInstanceData(instance: Instance): Promise<ExportInstanceD
     exportPrompts(instance.id),
     exportSkillAssignments(instance.id),
     exportManualTools(instance.id),
-    exportSecretKeys(instance.id),
+    exportSecrets(instance.id),
     exportChannels(instance.id),
     exportSkillEnv(instance.id),
     exportHooks(instance.id),
@@ -93,14 +95,22 @@ async function assembleInstanceData(instance: Instance): Promise<ExportInstanceD
     icon: instance.icon,
     langsmithProject: instance.langsmithProject,
     thinkingEnabled: instance.thinkingEnabled,
+    thinkingLevel: instance.thinkingLevel,
     temperature: instance.temperature,
     stateInPromptEnabled: instance.stateInPromptEnabled,
     datetimeInjectionEnabled: instance.datetimeInjectionEnabled,
+    datetimeTimezone: instance.datetimeTimezone,
+    datetimeLocale: instance.datetimeLocale,
+    dedupSimilarityThreshold: instance.dedupSimilarityThreshold,
+    messageSoftDebounceMs: instance.messageSoftDebounceMs,
+    messageTypingDelayMs: instance.messageTypingDelayMs,
+    messageMaxRestarts: instance.messageMaxRestarts,
     cacheEnabled: instance.cacheEnabled,
     cacheTtl: instance.cacheTtl === "5m" ? "5m" : "1h",
     a2aEnabled: instance.a2aEnabled,
     toolResultsInHistoryEnabled: instance.toolResultsInHistoryEnabled,
     debugEnabled: instance.debugEnabled,
+    attachmentStorageEnabled: instance.attachmentStorageEnabled,
     sttProvider: instance.sttProvider,
     embeddingProvider: instance.embeddingProvider,
     embeddingDim: instance.embeddingDim,
@@ -110,10 +120,11 @@ async function assembleInstanceData(instance: Instance): Promise<ExportInstanceD
     optoutClosingMessage: instance.optoutClosingMessage,
     optoutResumeMessage: instance.optoutResumeMessage,
     optoutInjectPromptHint: instance.optoutInjectPromptHint,
+    webContextFieldMapping: instance.webContextFieldMapping,
     prompts,
     skills: skillAssignments,
     manualTools: manualToolNames,
-    secrets: secretKeys,
+    secrets,
     channels,
     skillEnv: skillEnvRows,
     hooks,
@@ -152,6 +163,7 @@ async function assembleInstanceData(instance: Instance): Promise<ExportInstanceD
       keepHistory: t.keepHistory,
       deleteAfterRun: t.deleteAfterRun,
       maxRetries: t.maxRetries,
+      maxRunMs: t.maxRunMs,
       createdBy: t.createdBy ?? null,
     })),
     mcpServers,
@@ -191,12 +203,23 @@ async function exportManualTools(instanceId: string): Promise<string[]> {
   return rows.map((r) => r.name);
 }
 
-async function exportSecretKeys(instanceId: string) {
+/**
+ * Every key, and the value of the readable ones. A parameter such as a base URL
+ * is agent configuration, and exporting only its name had the clone ask for it
+ * as if it were a password. Credentials stay behind: see `readableSecretKeys`
+ * for what decides which is which.
+ */
+async function exportSecrets(instanceId: string) {
+  const readable = readableSecretKeys();
   const rows = await db
-    .select({ key: instanceSecrets.key })
+    .select({ key: instanceSecrets.key, value: instanceSecrets.value })
     .from(instanceSecrets)
     .where(eq(instanceSecrets.instanceId, instanceId));
-  return rows.map((r) => ({ key: r.key, configured: true }));
+  return rows.map((r) =>
+    readable.has(r.key)
+      ? { key: r.key, configured: true, value: decrypt(r.value) }
+      : { key: r.key, configured: true },
+  );
 }
 
 async function exportChannels(instanceId: string) {
@@ -208,7 +231,7 @@ async function exportChannels(instanceId: string) {
     })
     .from(instanceChannels)
     .where(eq(instanceChannels.instanceId, instanceId));
-  return rows.map((r) => ({
+  const exported = rows.map((r) => ({
     channelType: r.channelType,
     enabled: r.enabled,
     // Decrypt the stored config and strip credential-like keys — the bundle
@@ -216,6 +239,13 @@ async function exportChannels(instanceId: string) {
     // and the credential-less `agent` channel's passthrough config).
     config: stripSensitiveKeys(safeDecryptChannelConfig(r.config)),
   }));
+  // Web has no row until someone switches it on, and no row means off. The
+  // bundle says so explicitly: an importer reads a missing row as "older bundle,
+  // endpoint was online".
+  if (!exported.some((c) => c.channelType === WEB_CHANNEL_TYPE)) {
+    exported.push({ channelType: WEB_CHANNEL_TYPE, enabled: false, config: {} });
+  }
+  return exported;
 }
 
 /** Decrypt a channel config blob, tolerating empty/legacy/invalid values. */

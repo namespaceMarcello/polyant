@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { eq, and, desc, sql, count } from "drizzle-orm";
+import { eq, and, desc, inArray, sql, count } from "drizzle-orm";
 import { db } from "../database/client.js";
 import {
   scheduledTaskRuns,
@@ -78,6 +78,43 @@ export async function failRun(runId: string, error: string): Promise<void> {
       error,
     })
     .where(eq(scheduledTaskRuns.id, runId));
+}
+
+/**
+ * The runs of these tasks that are still `running`, as observed now.
+ *
+ * A process killed mid-run leaves BOTH a `scheduled_tasks` row marked `running` and a
+ * `scheduled_task_runs` row in the same state. Recovering only the task row would leave
+ * the run log claiming, forever, that a run is in progress — and the run log is what an
+ * operator reads to find out what happened.
+ *
+ * Read this while the task row is still marked `running`: no new run can be claimed
+ * until the marker is cleared, so every run returned belongs to the claim being recovered.
+ */
+export async function findDanglingRuns(taskIds: string[]): Promise<string[]> {
+  if (taskIds.length === 0) return [];
+  const rows = await db
+    .select({ id: scheduledTaskRuns.id })
+    .from(scheduledTaskRuns)
+    .where(and(inArray(scheduledTaskRuns.taskId, taskIds), eq(scheduledTaskRuns.status, "running")));
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Close the given runs, observed by `findDanglingRuns`, as an error.
+ *
+ * Only the observed runs: closing every `running` run of the task would also close a run
+ * claimed after the recovery cleared the marker, one that is still live. Returns the
+ * number of rows closed.
+ */
+export async function failDanglingRuns(runIds: string[], error: string): Promise<number> {
+  if (runIds.length === 0) return 0;
+  const rows = await db
+    .update(scheduledTaskRuns)
+    .set({ ...completionSet("error"), error })
+    .where(and(inArray(scheduledTaskRuns.id, runIds), eq(scheduledTaskRuns.status, "running")))
+    .returning({ id: scheduledTaskRuns.id });
+  return rows.length;
 }
 
 /** List runs for an instance, with optional filters. Returns paginated results + total count. */

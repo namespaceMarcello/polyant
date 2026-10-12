@@ -19,10 +19,16 @@ const {
   mockListEventSourcesWithDefinitions,
   mockGetEventSourceWebhookToken,
   mockResolveInstanceId,
+  mockUpdateEventSource,
+  mockDeleteEventSource,
+  mockRotateWebhookToken,
 } = vi.hoisted(() => ({
   mockListEventSourcesWithDefinitions: vi.fn(),
   mockGetEventSourceWebhookToken: vi.fn(),
   mockResolveInstanceId: vi.fn(),
+  mockUpdateEventSource: vi.fn(),
+  mockDeleteEventSource: vi.fn(),
+  mockRotateWebhookToken: vi.fn(),
 }));
 
 vi.mock("../../webhooks/webhook-sources.store.js", async () => {
@@ -33,6 +39,9 @@ vi.mock("../../webhooks/webhook-sources.store.js", async () => {
     ...actual,
     listEventSourcesWithDefinitions: mockListEventSourcesWithDefinitions,
     getEventSourceWebhookToken: mockGetEventSourceWebhookToken,
+    updateEventSource: mockUpdateEventSource,
+    deleteEventSource: mockDeleteEventSource,
+    rotateWebhookToken: mockRotateWebhookToken,
   };
 });
 
@@ -41,6 +50,12 @@ vi.mock("../../instances/resolve-instance-id.js", () => ({
 }));
 
 import { EventSourcesController } from "./webhook-sources.controller.js";
+
+// The platform policies are a row; this suite has no database. The values are
+// the shipped defaults, so the assertions read the same as before they moved.
+vi.mock("../../platform/platform-settings.store.js", () => ({
+  resolvePlatformSettings: async () => ({ baseUrl: "http://localhost:4000" }),
+}));
 
 function metadataOf(key: string, handler: keyof EventSourcesController): unknown {
   const proto = EventSourcesController.prototype as unknown as Record<string, unknown>;
@@ -128,5 +143,19 @@ describe("EventSourcesController", () => {
 
       await expect(controller.webhookUrl("unknown", "src-1")).rejects.toBeInstanceOf(NotFoundException);
     });
+  });
+
+  it("returns 404 instead of claiming a missing source was updated or deleted", async () => {
+    mockUpdateEventSource.mockResolvedValue(false);
+    mockDeleteEventSource.mockResolvedValue(false);
+
+    await expect(controller.update("acme", "missing", { name: "changed" })).rejects.toBeInstanceOf(NotFoundException);
+    await expect(controller.remove("acme", "missing")).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("returns 404 instead of revealing a token for a missing source", async () => {
+    mockRotateWebhookToken.mockResolvedValue(null);
+
+    await expect(controller.rotate("acme", "missing")).rejects.toBeInstanceOf(NotFoundException);
   });
 });

@@ -2,8 +2,9 @@
 
 import type { Instance } from "../../instances/store.js";
 import { findInstanceByIdOrSlug } from "../../instances/resolve-instance-id.js";
-import { getAllSecretsById, SECRET_KEYS } from "../../instances/secrets.store.js";
-import { SUPPORTED_DIMS } from "../../embeddings-gateway/config.js";
+import { getAllSecretsById } from "../../instances/secrets.store.js";
+import { supportedDimsFor } from "../../embeddings-gateway/config.js";
+import { requiredSecretKeysFor } from "../../embeddings-gateway/provider-resolver.js";
 import type { EmbeddingDim, EmbeddingProvider } from "../../embeddings-gateway/types.js";
 
 /**
@@ -45,18 +46,15 @@ export async function computeEmbedderReadiness(instance: Instance): Promise<Embe
   // The instance is only usable if the embedding provider can emit its stored
   // dimension. A provider switch that left embedding_dim incompatible (e.g.
   // bedrock + 1536) makes every embed throw — never report that as healthy.
-  const dimCompatible = SUPPORTED_DIMS[embeddingProvider].includes(
-    instance.embeddingDim as EmbeddingDim,
-  );
+  const dimCompatible = supportedDimsFor(embeddingProvider).includes(instance.embeddingDim as EmbeddingDim);
 
-  if (embeddingProvider === "bedrock") {
-    // CONVENTION-EXCEPTION: process.env.AWS_REGION read directly to mirror the
-    // engine-level fallback in resolveEmbeddingContext — otherwise the UI reports
-    // "AWS credentials needed" while embeddings actually work via the engine region.
-    const hasRegion = !!secrets[SECRET_KEYS.AWS_PROVIDER_REGION] || !!process.env.AWS_REGION;
-    return { hasCredentials: hasRegion, dimCompatible };
-  }
-  return { hasCredentials: !!secrets[SECRET_KEYS.OPENAI_API_KEY], dimCompatible };
+  // Which secrets the embedder needs is asked, never restated here: this branch
+  // used to name `openai_api_key` for anything that was not bedrock, which
+  // reported a registered embedder as missing credentials while its own key was
+  // set and its embeddings worked.
+  const required = requiredSecretKeysFor(embeddingProvider);
+  const hasCredentials = required.every((key) => !!secrets[key]);
+  return { hasCredentials, dimCompatible };
 }
 
 /**
@@ -65,9 +63,9 @@ export async function computeEmbedderReadiness(instance: Instance): Promise<Embe
  * agent that has memory switched off.
  *
  * Reported from the ENGINE rather than recomputed in the browser on purpose: the
- * client cannot see the `AWS_REGION` env fallback, so a client-side copy of this
- * rule shows a false "AWS credentials needed" on a bedrock instance that embeds
- * perfectly well through the engine's region.
+ * inputs are the agent's ENCRYPTED secrets, which never reach the client, so a
+ * client-side copy of this rule can only guess — and guesses "AWS credentials
+ * needed" for a bedrock agent that embeds perfectly well.
  */
 export interface EmbedderStatus {
   readonly needsCredentials: boolean;

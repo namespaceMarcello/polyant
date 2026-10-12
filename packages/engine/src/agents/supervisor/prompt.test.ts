@@ -84,6 +84,7 @@ function buildPrompt(overrides?: {
   memoryEnabled?: boolean;
   conversationSummary?: string;
   contextPrompt?: string;
+  roomPrompt?: string;
   datetimeInjectionEnabled?: boolean;
   optoutHint?: { stopKeywords: string[]; resumeKeywords: string[] };
   conversationState?: Record<string, unknown>;
@@ -308,6 +309,29 @@ describe("buildSupervisorSystemPrompt", () => {
     expect(turnContext).toContain("L1");
   });
 
+  it("should_leave_the_private_key_out_of_the_rendered_state", async () => {
+    const { turnContext } = await buildPrompt({
+      conversationState: { leadId: "L1", _private: { sttKeyterms: ["Rossi"] } },
+    });
+    expect(turnContext).toContain('<conversation_state>{"leadId":"L1"}</conversation_state>');
+    expect(turnContext).not.toContain("_private");
+    expect(turnContext).not.toContain("Rossi");
+  });
+
+  it("should_render_no_state_section_when_only_the_private_key_is_set", async () => {
+    const { turnContext } = await buildPrompt({
+      conversationState: { _private: { sttKeyterms: ["Rossi"] } },
+    });
+    expect(turnContext).not.toContain("<conversation_state>");
+    expect(turnContext).not.toContain("Rossi");
+  });
+
+  it("should_render_state_without_the_private_key_unchanged", async () => {
+    const state = { leadId: "L1", stage: "qualified" };
+    const { turnContext } = await buildPrompt({ conversationState: state });
+    expect(turnContext).toContain(`<conversation_state>${JSON.stringify(state)}</conversation_state>`);
+  });
+
   it("keeps the persisted webhook contextPrompt in the cacheable system prefix", async () => {
     const { system, turnContext } = await buildPrompt({
       contextPrompt: "Triggered by webhook: order #42 shipped.",
@@ -315,6 +339,20 @@ describe("buildSupervisorSystemPrompt", () => {
     expect(system).toContain("## Conversation Context");
     expect(system).toContain("order #42 shipped");
     expect(turnContext).not.toContain("Conversation Context");
+  });
+
+  it("puts the room mandate in the cacheable system prefix", async () => {
+    const { system, turnContext } = await buildPrompt({
+      roomPrompt: "Check the backlog for a duplicate before opening anything.",
+    });
+    expect(system).toContain("## Room Mandate");
+    expect(system).toContain("Check the backlog for a duplicate before opening anything.");
+    expect(turnContext).not.toContain("Room Mandate");
+  });
+
+  it("omits the room mandate section when no room prompt is configured", async () => {
+    const { system } = await buildPrompt();
+    expect(system).not.toContain("Room Mandate");
   });
 
   it("keeps the right separator count when a section is missing from DB", async () => {
@@ -341,6 +379,37 @@ describe("buildSupervisorSystemPrompt", () => {
   it("excludes memory section when memoryEnabled is false", async () => {
     const { system } = await buildPrompt({ memoryEnabled: false });
     expect(system).not.toContain("# Memoria");
+  });
+
+  // A skill names its tools canonically ("crm:contact"); the tools the model is
+  // given are keyed by the identifier the providers accept ("crm__contact").
+  // Comparing the two spellings dropped every skill that needs a plugin tool.
+  it("keeps a skill whose required plugin tool is enabled under its model-facing name", async () => {
+    const skillRow = {
+      skillSlug: "lead-handling",
+      skillName: "Lead handling",
+      skillDescription: "Record a lead",
+      versionContent: "body",
+      versionMetadata: { requiredTools: ["crm:contact"] },
+      autoLoad: false,
+    };
+    mockDbSelect.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([skillRow]),
+            }),
+          }),
+        }),
+      }),
+    });
+
+    const enabled = await buildPrompt({ tools: { crm__contact: {} as Tool } });
+    expect(enabled.system).toContain("<name>lead-handling</name>");
+
+    const missing = await buildPrompt({ tools: { other__tool: {} as Tool } });
+    expect(missing.system).not.toContain("<name>lead-handling</name>");
   });
 });
 

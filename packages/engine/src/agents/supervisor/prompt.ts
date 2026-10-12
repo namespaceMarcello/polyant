@@ -3,7 +3,6 @@
 import type { Tool } from "ai";
 import { singleLineValue, scrubClosing } from "../../utils/untrusted-text.js";
 import { eq, and, asc } from "drizzle-orm";
-import { config } from "../../config.js";
 import { db } from "../../database/client.js";
 import { getPrompts, invalidatePromptsCache } from "../../instances/prompts.store.js";
 import { instanceSkills } from "../../instances/instance-skills.schema.js";
@@ -11,11 +10,14 @@ import { skills, skillVersions } from "../../skills/schema.js";
 import { hasAllRequiredEnvBatch } from "../../instances/skill-env.store.js";
 import { normalizeRequiredEnv } from "../../utils/frontmatter.js";
 import { type InstanceSlug, type InstanceUuid } from "../../instances/identifiers.js";
+import { resolveDatetimeSettings, UNSET_AGENT_SETTINGS, type DatetimeSettings } from "../../instances/agent-settings.js";
 import {
   isMcpModelToolName,
   sanitizeRemoteToolDescription,
   REMOTE_TOOL_DESCRIPTION_TAG,
 } from "../tools/mcp/mcp-tool-naming.js";
+import { PRIVATE_STATE_KEY } from "../../conversations/state.buffer.js";
+import { toModelToolName } from "../../utils/model-tool-wire.js";
 
 export { normalizeRequiredEnv, type RequiredEnvEntry } from "../../utils/frontmatter.js";
 
@@ -37,6 +39,12 @@ export interface PromptOptions {
   /** Additional context prompt injected from webhook triggers. Persisted per-conversation. */
   contextPrompt?: string;
   /**
+   * The Room's mandate (`instance_room.prompt`) — the operator-authored
+   * instructions for an event-driven agent. Instance-stable, so it belongs in
+   * the cacheable prefix alongside the DB sections.
+   */
+  roomPrompt?: string;
+  /**
    * Identity of the counterpart this conversation is with. When provided, a
    * `## Current channel` section is injected into the system prompt so the
    * agent always knows who it is talking to across channels.
@@ -53,6 +61,11 @@ export interface PromptOptions {
   conversationState?: Record<string, unknown>;
   /** When true, inject a <current_datetime> tag into the per-turn volatile tail. */
   datetimeInjectionEnabled?: boolean;
+  /**
+   * The agent's resolved datetime formatting. Absent means the deployment
+   * default, which is what a caller with no agent config in hand gets.
+   */
+  datetime?: DatetimeSettings;
   /**
    * When set, render an informational opt-out section so the agent can tell users
    * how to stop/resume messages. The agent NEVER enforces this — handled by the
@@ -97,7 +110,17 @@ function renderChannelIdentitySection(
  * a large blob cannot blow up the prompt. The store remains the source of truth —
  * this section is informational for the model, not authoritative.
  */
-function renderConversationStateSection(state: Record<string, unknown>): string {
+/**
+ * `_private` never reaches the model: plugins keep there what they hand to an
+ * external integration (for example terms passed to a speech-to-text service)
+ * and rely on it staying out of the prompt.
+ */
+function isModelFacingKey(key: string): boolean {
+  return key !== PRIVATE_STATE_KEY;
+}
+
+function renderConversationStateSection(rawState: Record<string, unknown>): string {
+  const state = Object.fromEntries(Object.entries(rawState).filter(([key]) => isModelFacingKey(key)));
   if (Object.keys(state).length === 0) return "";
   // JSON.stringify escapes quotes but not angle brackets, so a string VALUE
   // holding `</conversation_state>` would close the block. The state store is
@@ -252,9 +275,10 @@ async function discoverSkills(
     // Skip if required env vars are not configured
     if (envEntries.length > 0 && !envResults.get(row.skillSlug)) continue;
 
-    // Skip if required tools are not available
+    // Skip if required tools are not available. A skill names its tools
+    // canonically; the tool set is keyed by the model-facing identifier.
     if (meta?.requiredTools && enabledToolNames) {
-      const missingTools = meta.requiredTools.filter((t) => !enabledToolNames.has(t));
+      const missingTools = meta.requiredTools.filter((t) => !enabledToolNames.has(toModelToolName(t)));
       if (missingTools.length > 0) continue;
     }
 
@@ -296,7 +320,7 @@ async function loadSkillsList(
  * The supervisor prompt, split so provider prompt-caching is effective.
  *
  * - `system`: the STABLE prefix — the per-instance DB sections (identity … user
- *   identity) plus any persisted webhook `contextPrompt`. Byte-identical across
+ *   identity), the Room mandate, and any persisted webhook `contextPrompt`. Byte-identical across
  *   turns (and, absent a webhook context, across every conversation of the
  *   instance), so it can be cached.
  * - `turnContext`: the PER-TURN volatile block (current datetime, channel
@@ -356,6 +380,9 @@ export async function buildSupervisorSystemPrompt(options: PromptOptions): Promi
   // note + the (instance-static) opt-out hint. The persisted webhook
   // `contextPrompt` is stable within a conversation, so it stays here too.
   const systemSections = [s01, s02, s03, s04, s05, s06, s07, CONTEXT_TAGS_NOTE];
+  if (options.roomPrompt) {
+    systemSections.push(`## Room Mandate\n\n${options.roomPrompt}`);
+  }
   if (options.optoutHint) {
     systemSections.push(renderOptoutHintSection(options.optoutHint));
   }
@@ -366,13 +393,14 @@ export async function buildSupervisorSystemPrompt(options: PromptOptions): Promi
   // Per-turn volatile block — injected at the tail of the messages, never in system.
   const turnSections: string[] = [];
   if (options.datetimeInjectionEnabled) {
-    const datetime = new Date().toLocaleString(config.datetime.locale, {
-      timeZone: config.datetime.timezone,
+    const settings = options.datetime ?? resolveDatetimeSettings(UNSET_AGENT_SETTINGS);
+    const datetime = new Date().toLocaleString(settings.locale, {
+      timeZone: settings.timezone,
       dateStyle: "full",
       timeStyle: "short",
     });
     turnSections.push(
-      `<current_datetime>\nThe current date and time is ${datetime} (${config.datetime.timezone}). Treat this as the present moment.\n</current_datetime>`,
+      `<current_datetime>\nThe current date and time is ${datetime} (${settings.timezone}). Treat this as the present moment.\n</current_datetime>`,
     );
   }
 

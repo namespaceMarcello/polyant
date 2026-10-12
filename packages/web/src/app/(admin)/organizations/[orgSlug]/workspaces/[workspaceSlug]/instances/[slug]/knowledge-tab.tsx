@@ -6,7 +6,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   FileText,
-  Plus,
   Trash2,
   RefreshCw,
   AlertCircle,
@@ -37,16 +36,15 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { api, getUserErrorMessage, type Instance, type KnowledgeDocument } from "@/lib/api";
+import { providerName } from "@/lib/provider-secrets";
 import { useI18n } from "@/lib/i18n/context";
 import type { TranslationKey } from "@/lib/i18n/types";
 import { usePageSaveAction } from "./page-actions-context";
+import { AddTextDialog } from "@/components/knowledge/add-text-dialog";
 
 interface Props {
   slug: string;
@@ -178,14 +176,18 @@ function KnowledgeToggle({
           upload ends in `status: error` with nothing saying why.
           `instance.embedder` is the ENGINE's answer — `instance.memory` cannot
           stand in, being all-false whenever memory is off, and a client-side copy
-          of the rule cannot see the AWS_REGION fallback. */}
+          of the rule cannot read the encrypted secrets it depends on. */}
       {enabled && instance.embedder?.needsCredentials && (
         <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
           <p className="text-sm text-amber-900 dark:text-amber-200">
+            {/* Names the SELECTED embedder — see the same banner on the memory
+                card. Bedrock keeps its own wording: it needs a region, not a key. */}
             {instance.embeddingProvider === "bedrock"
               ? t("settings.tab.knowledgeAwsWarning")
-              : t("settings.tab.knowledgeOpenaiWarning")}
+              : t("settings.tab.knowledgeEmbedderWarning", {
+                  provider: providerName(instance.embeddingProvider ?? "openai"),
+                })}
           </p>
         </div>
       )}
@@ -197,10 +199,6 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
   const { t } = useI18n();
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [loading, setLoading] = useState(true);
-  const [uploadOpen, setUploadOpen] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [filename, setFilename] = useState("");
-  const [content, setContent] = useState("");
   const [viewDocId, setViewDocId] = useState<string | null>(null);
   const [viewContent, setViewContent] = useState<string>("");
   const [viewFilename, setViewFilename] = useState<string>("");
@@ -226,14 +224,20 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
 
   // Poll for processing documents (max 60 attempts = ~3 minutes)
   const pollCountRef = useRef(0);
-  const documentsRef = useRef(documents);
-  documentsRef.current = documents;
   const MAX_POLL_ATTEMPTS = 60;
 
+  /*
+    Derived from `documents` rather than read off a ref, because it has to be a
+    DEPENDENCY. The effect used to read `documentsRef.current` and declare only
+    `[load, t]`, both stable: it ran once at mount, when `documents` was still
+    empty, so the interval never started. A document left in `processing` never
+    refreshed and the timeout toast never fired.
+  */
+  const hasProcessing = documents.some(
+    (d) => d.status === "processing" || d.status === "uploading",
+  );
+
   useEffect(() => {
-    const hasProcessing = documentsRef.current.some(
-      (d) => d.status === "processing" || d.status === "uploading",
-    );
     if (!hasProcessing) {
       pollCountRef.current = 0;
       return;
@@ -256,26 +260,16 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
       load();
     }, 3000);
     return () => clearInterval(interval);
-  }, [load, t]);
+  }, [hasProcessing, load, t]);
 
-  const handleUpload = async () => {
-    if (!filename.trim() || !content.trim()) return;
-
-    setUploading(true);
+  const handleUpload = async (filename: string, content: string) => {
     try {
-      await api.knowledge.upload(slug, {
-        filename: filename.trim(),
-        content: content.trim(),
-      });
+      await api.knowledge.upload(slug, { filename, content: content.trim() });
       toast.success(t("knowledge.tab.uploaded"));
-      setUploadOpen(false);
-      setFilename("");
-      setContent("");
       load();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("knowledge.tab.uploadFailed")));
-    } finally {
-      setUploading(false);
+      throw err;
     }
   };
 
@@ -412,50 +406,7 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
                 different things, forty pixels apart. */}
             {t("knowledge.exportDocuments")}
           </Button>
-          <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm">
-                <Plus className="mr-1.5 size-4" />
-                {t("knowledge.tab.upload")}
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-h-[85vh] flex flex-col">
-              <DialogHeader>
-                <DialogTitle>{t("knowledge.tab.uploadTitle")}</DialogTitle>
-                <DialogDescription>
-                  {t("knowledge.tab.uploadDescription")}
-                </DialogDescription>
-              </DialogHeader>
-              <div className="space-y-4 overflow-y-auto flex-1 min-h-0">
-                <div className="space-y-2">
-                  <Label>{t("knowledge.tab.filename")}</Label>
-                  <Input
-                    placeholder={t("knowledge.tab.filenamePlaceholder")}
-                    value={filename}
-                    onChange={(e) => setFilename(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>{t("knowledge.tab.content")}</Label>
-                  <Textarea
-                    placeholder={t("knowledge.tab.contentPlaceholder")}
-                    value={content}
-                    onChange={(e) => setContent(e.target.value)}
-                    rows={10}
-                    className="font-mono text-sm max-h-[40vh] resize-y"
-                  />
-                </div>
-              </div>
-              <DialogFooter className="shrink-0">
-                <Button
-                  onClick={handleUpload}
-                  disabled={uploading || !filename.trim() || !content.trim()}
-                >
-                  {uploading ? t("common.saving") : t("knowledge.tab.upload")}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <AddTextDialog onAdd={handleUpload} />
         </div>
       </div>
 

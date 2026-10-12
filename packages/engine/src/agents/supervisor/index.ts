@@ -7,21 +7,24 @@ import { chat, chatStream, type ChatCallOptions } from "../../ai-gateway/index.j
 import {
   getToolRegistry,
   buildTool,
+  missingRequiredSecrets,
   normalizeRequiredSecrets,
   scopeSecrets,
   toModelToolName,
   type ToolContext,
 } from "../tools/registry.js";
+import { artifactApiFor } from "../tools/artifact-store.js";
 import type { Attachment } from "../../channels/types.js";
 import { createAuditLogger } from "../../audit/audit-logger.js";
 import { auditStore } from "../../audit/audit.store.js";
-import { createTaskTool } from "../tools/task-tool.js";
+import { createTaskTool } from "../tools/task.tool.js";
 import { buildSupervisorSystemPrompt } from "./prompt.js";
 import { pipelineLog } from "../../utils/pipeline-logger.js";
 import { serializeForLog } from "../../utils/serialize-for-log.js";
-import { config, DEFAULT_INSTANCE_ID } from "../../config.js";
+import { resolvePlatformSettings } from "../../platform/platform-settings.store.js";
 import { getEnabledToolNames } from "../../instances/instance-tools.store.js";
 import { findInstanceBySlug, findAgentHandoffTargets } from "../../instances/store.js";
+import { resolveInstanceUuid } from "../../instances/instance-meta.js";
 import { asInstanceSlug } from "../../instances/identifiers.js";
 import type { ChatRequest, CostBreakdown } from "../../ai-gateway/types.js";
 import type { LlmDebugPayload, ReasoningDetail, StepDetail } from "../../conversations/schema.js";
@@ -35,11 +38,14 @@ import { buildAgentInvokeTool } from "../tools/agent-invoke.helpers.js";
 import { buildMcpTools } from "../tools/mcp/mcp-tools.js";
 import { agentToolTarget } from "../../authz/agent-tenancy.js";
 import { readAgentScope } from "../../authz/authz.store.js";
+import type { DatetimeSettings } from "../../instances/agent-settings.js";
+import { emitToolStart } from "../../activity-stream/emitters/emit-tool.js";
 
 export interface SupervisorInput {
   message: string;
   conversationHistory?: ModelMessage[];
-  instanceId?: InstanceSlug;
+  /** Required: which agent runs the turn. There is no deployment-wide default. */
+  instanceId: InstanceSlug;
   conversationId?: string;
   conversationSummary?: string;
   /** Override AI provider for this instance. */
@@ -70,6 +76,8 @@ export interface SupervisorInput {
   stateInPromptEnabled?: boolean;
   /** When true, inject the current date/time into every turn (resolved from instance config). */
   datetimeInjectionEnabled?: boolean;
+  /** The agent's resolved datetime formatting; absent = the deployment default. */
+  datetime?: DatetimeSettings;
   /** Per-instance prompt-cache control, forwarded to the ai-gateway ChatRequest. */
   cacheConfig?: { enabled: boolean; ttl: "5m" | "1h" };
   /** Informational opt-out hint to render into the prompt (set when the instance enables it). */
@@ -82,6 +90,8 @@ export interface SupervisorInput {
   attachments?: Attachment[];
   /** Additional context prompt from webhook triggers. Injected as system prompt section. */
   contextPrompt?: string;
+  /** The Room's mandate (`instance_room.prompt`). Injected as a system prompt section on Room cycles. */
+  roomPrompt?: string;
   /**
    * Identity of the counterpart this conversation is with. When provided, a
    * `## Current channel` section is injected into the system prompt so the
@@ -140,6 +150,8 @@ export interface SupervisorOutput {
     totalTokens: number;
     cachedInputTokens?: number;
     cacheCreationInputTokens?: number;
+    /** The 5-minute-TTL share of `cacheCreationInputTokens`, when the provider reports a TTL split. */
+    cacheCreation5mInputTokens?: number;
   };
   /** Model id actually used for this turn (e.g. "claude-sonnet-5"). */
   model: string;
@@ -206,7 +218,7 @@ function wrapToolWithAudit(
   name: string,
   builtTool: Tool,
   instanceId: InstanceSlug,
-  _conversationId?: string,
+  conversationId?: string,
   toolCallTraces?: ToolCallTrace[],
   signals?: SupervisorSignals,
 ): Tool {
@@ -219,6 +231,7 @@ function wrapToolWithAudit(
     inputSchema: original.inputSchema as never,
     execute: async (params: any) => {
       const toolStart = Date.now();
+      const emitToolEnd = emitToolStart({ toolName: name, args: params, conversationId, instanceSlug: instanceId });
 
       try {
         const output = await originalExecute(params);
@@ -239,11 +252,13 @@ function wrapToolWithAudit(
         auditStore.patchDuration(name, instanceId, durationMs);
         const outputPreview = safeOutputPreview(output);
         if (outputPreview) auditStore.patchOutput(name, instanceId, outputPreview);
+        emitToolEnd({ kind: "success", output });
         return output;
       } catch (err) {
         const durationMs = Date.now() - toolStart;
         toolCallTraces?.push({ name, duration_ms: durationMs, success: false });
         auditStore.patchDuration(name, instanceId, durationMs);
+        emitToolEnd({ kind: "error", message: err instanceof Error ? err.message : String(err) });
         throw err;
       }
     },
@@ -258,6 +273,10 @@ interface BuildToolsOptions {
   knowledgeEnabled?: boolean;
   apiKeys?: ChatRequest["apiKeys"];
   provider?: string;
+  /** The agent's pinned model, handed to a spawnTask sub-agent. */
+  model?: string;
+  /** The turn's cancellation signal, handed to a spawnTask sub-agent. */
+  abortSignal?: AbortSignal;
   conversationId?: string;
   toolCallTraces?: ToolCallTrace[];
   includeHarness?: Set<string>;
@@ -271,7 +290,7 @@ interface BuildToolsOptions {
 
 /** Build the tool set scoped to an instance, filtered by DB-stored enabled tool names. */
 async function buildTools(opts: BuildToolsOptions) {
-  const { instanceId, instanceUuid, secrets, memoryEnabled, knowledgeEnabled, apiKeys, provider, conversationId, toolCallTraces, includeHarness, attachments, signals, agentCallDepth, stateBuffer } = opts;
+  const { instanceId, instanceUuid, secrets, memoryEnabled, knowledgeEnabled, apiKeys, provider, model, abortSignal, conversationId, toolCallTraces, includeHarness, attachments, signals, agentCallDepth, stateBuffer } = opts;
   // No rows means no tools. This used to mean "enable everything", which made
   // the empty tool set indistinguishable from the full one: disabling every
   // tool in the panel granted the agent the entire registry instead of none of
@@ -291,16 +310,10 @@ async function buildTools(opts: BuildToolsOptions) {
       if (knowledgeEnabled === false && def.category === "knowledge") continue;
       // Skip harness tools unless their category is explicitly included
       if (def.harness && !isHarnessIncluded) continue;
-      // Check requiredSecrets: skip tools whose non-optional secret keys are not configured.
-      // Optional specs (e.g. provider-conditional API keys) are ignored here — the tool
-      // itself returns an explicit error at runtime if the chosen branch is misconfigured.
-      if (def.requiredSecrets?.length) {
-        const requiredKeys = normalizeRequiredSecrets(def.requiredSecrets)
-          .filter((s) => !s.optional)
-          .map((s) => s.key);
-        const missing = requiredKeys.filter((k) => !secrets?.[k]);
-        if (missing.length > 0) continue;
-      }
+      // Skip tools whose MANDATORY secret keys this agent has not set. The rule,
+      // and why an optional spec is deliberately not checked here, is in
+      // `missingRequiredSecrets`.
+      if (missingRequiredSecrets(def.requiredSecrets, secrets).length > 0) continue;
       // Scope secrets to the keys this tool declares (least-privilege, enforced):
       // a tool — especially third-party plugin code — only ever sees the secrets
       // it declared in requiredSecrets; anything else is simply absent.
@@ -319,6 +332,9 @@ async function buildTools(opts: BuildToolsOptions) {
         // classification in searchAppointmentSlots) work, mirroring what the hook
         // function-action already provides. No query until a tool actually calls it.
         conversation: conversationId ? buildConversationApi(conversationId) : undefined,
+        // Bound to THIS conversation: a handle minted in another one is not
+        // takeable here, so the store needs no per-tool authorization of its own.
+        artifacts: artifactApiFor(instanceId, conversationId),
       };
       // ctx.oauth closes over ctx, so it is assigned after the literal.
       ctx.oauth = makeOAuthAccess(ctx);
@@ -402,7 +418,7 @@ async function buildTools(opts: BuildToolsOptions) {
         callerConversationId: conversationId ?? `${instanceId}:unknown`,
         parentTraceId: undefined,
         currentDepth,
-        timeoutMs: config.agent.callTimeoutMs,
+        timeoutMs: (await resolvePlatformSettings()).agentCallTimeoutMs,
         dispatch: (input) => adapter.dispatch(input),
       });
       tools[synth.name] = aiTool({
@@ -427,7 +443,7 @@ async function buildTools(opts: BuildToolsOptions) {
   // only bounds their blast radius. Moving the merge before this point would
   // silently hand every MCP tool to every sub-agent.
   if (enabledNames.has("spawnTask")) {
-    const spawnTool = createTaskTool({ ...tools }, apiKeys, instanceId, conversationId);
+    const spawnTool = createTaskTool({ ...tools }, apiKeys, instanceId, conversationId, provider, model, abortSignal);
     tools.spawnTask = wrapToolWithAudit("spawnTask", spawnTool, instanceId, conversationId, toolCallTraces, signals);
   }
 
@@ -506,14 +522,16 @@ export function buildUserContent(
 }
 
 async function prepareSupervisor(input: SupervisorInput): Promise<SupervisorContext> {
-  const instanceSlug = input.instanceId ?? DEFAULT_INSTANCE_ID;
+  const instanceSlug = input.instanceId;
 
-  // Resolve slug → UUID for DB queries
-  const instance = await findInstanceBySlug(instanceSlug);
-  if (!instance) {
+  // Resolve slug → UUID for DB queries. The slug → UUID pair never changes,
+  // so the cached meta answers; on a miss (unknown, or not cached) read the
+  // row, so an agent created a moment ago is never reported missing.
+  const instanceUuid =
+    (await resolveInstanceUuid(instanceSlug)) ?? (await findInstanceBySlug(instanceSlug))?.id;
+  if (!instanceUuid) {
     throw new Error(`Instance not found: "${instanceSlug}"`);
   }
-  const instanceUuid = instance.id;
 
   const toolCallTraces: ToolCallTrace[] = [];
   const signals: SupervisorSignals = { replyHandled: false, replyTexts: [] };
@@ -526,6 +544,8 @@ async function prepareSupervisor(input: SupervisorInput): Promise<SupervisorCont
     knowledgeEnabled: input.knowledgeEnabled,
     apiKeys: input.apiKeys,
     provider: input.provider,
+    model: input.model,
+    abortSignal: input.abortSignal,
     conversationId: input.conversationId,
     toolCallTraces,
     includeHarness: input.includeHarness,
@@ -571,9 +591,11 @@ async function prepareSupervisor(input: SupervisorInput): Promise<SupervisorCont
       memoryEnabled: input.memoryEnabled,
       conversationSummary: input.conversationSummary,
       contextPrompt: input.contextPrompt,
+      roomPrompt: input.roomPrompt,
       channelIdentity: input.channelIdentity,
       conversationState: input.stateInPromptEnabled ? input.stateBuffer?.snapshot() : undefined,
       datetimeInjectionEnabled: input.datetimeInjectionEnabled,
+      datetime: input.datetime,
       optoutHint: input.optoutHint,
     });
 

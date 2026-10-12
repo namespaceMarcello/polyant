@@ -23,6 +23,7 @@ import {
   computeMemoryStatusFromInstance,
   computeMemoryStatus,
 } from "./memory-status.js";
+import { registerEmbeddingProvider } from "../../embeddings-gateway/registry.js";
 
 function makeInstance(overrides: Partial<Instance>): Instance {
   return {
@@ -116,15 +117,17 @@ describe("computeMemoryStatusFromInstance", () => {
     expect(status.canEnable).toBe(false);
   });
 
-  it("enables Bedrock memory via the engine-level AWS_REGION fallback when no per-instance region is set", async () => {
-    // Mirrors resolveEmbeddingContext: a region on the engine env is sufficient.
+  it("refuses Bedrock memory with no per-instance region, even with AWS_REGION on the engine", async () => {
+    // The engine-level fallback is gone on purpose: the region is per-agent, and
+    // an env var here must NOT rescue an agent that declares none. Mirrors
+    // resolveEmbeddingContext, which refuses on the same input.
     mockGetAllSecretsById.mockResolvedValue({});
     const instance = makeInstance({ provider: "bedrock", embeddingProvider: "bedrock" });
     const prev = process.env.AWS_REGION;
     process.env.AWS_REGION = "us-east-1";
     try {
       const status = await computeMemoryStatusFromInstance(instance);
-      expect(status).toEqual({ needsOpenAIKey: false, canEnable: true });
+      expect(status.canEnable).toBe(false);
     } finally {
       if (prev === undefined) delete process.env.AWS_REGION;
       else process.env.AWS_REGION = prev;
@@ -157,5 +160,44 @@ describe("computeMemoryStatus", () => {
     const status = await computeMemoryStatus("my-bot");
 
     expect(status).toEqual({ needsOpenAIKey: false, canEnable: true });
+  });
+});
+
+// The defect: readiness asked for `openai_api_key` for anything that was not
+// bedrock, while the resolver reads the registration's own key — so an agent
+// embedding fine on a registered embedder was reported as missing credentials.
+describe("readiness of a registered embedder", () => {
+  beforeEach(() => {
+    registerEmbeddingProvider({
+      name: "some-registered-embedder",
+      label: "Some Registered Embedder",
+      baseURL: "https://example.invalid/v1",
+      modelId: "an-embedding-model",
+      apiKeySecret: "some_registered_embedder_api_key",
+      supportedDims: [1024],
+    });
+  });
+  afterEach(() => {
+    mockGetAllSecretsById.mockReset();
+  });
+
+  it("is ready on its OWN key, with no OpenAI key anywhere", async () => {
+    mockGetAllSecretsById.mockResolvedValue({ some_registered_embedder_api_key: "key-123" });
+
+    const status = await computeMemoryStatusFromInstance(
+      makeInstance({ embeddingProvider: "some-registered-embedder" }),
+    );
+
+    expect(status).toEqual({ needsOpenAIKey: false, canEnable: true });
+  });
+
+  it("is NOT made ready by an OpenAI key it does not use", async () => {
+    mockGetAllSecretsById.mockResolvedValue({ openai_api_key: "sk-test" });
+
+    const status = await computeMemoryStatusFromInstance(
+      makeInstance({ embeddingProvider: "some-registered-embedder" }),
+    );
+
+    expect(status).toEqual({ needsOpenAIKey: true, canEnable: false });
   });
 });

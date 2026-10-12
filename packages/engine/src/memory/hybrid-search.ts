@@ -3,9 +3,9 @@
 import { searchByVector } from "./memory-store.js";
 import { embed, resolveEmbeddingContext } from "../embeddings-gateway/index.js";
 import { conversationStore } from "../conversations/index.js";
-import { DEFAULT_INSTANCE_ID } from "../config.js";
 import { memoryLog } from "./memory-logger.js";
-import { asInstanceSlug, type InstanceSlug } from "../instances/identifiers.js";
+import type { InstanceSlug } from "../instances/identifiers.js";
+import { allTenantsScope } from "../authz/scope-filter.js";
 
 export interface HybridSearchResult {
   content: string;
@@ -25,10 +25,10 @@ export interface HybridSearchResult {
  */
 export async function hybridSearch(
   query: string,
-  instanceId?: InstanceSlug,
+  instanceId: InstanceSlug,
   limit = 10,
 ): Promise<HybridSearchResult[]> {
-  const uid = instanceId ?? asInstanceSlug(DEFAULT_INSTANCE_ID);
+  const uid = instanceId;
   const fetchLimit = Math.max(limit * 2, 20);
 
   // Generate embedding for the query via the provider-aware gateway
@@ -41,7 +41,12 @@ export async function hybridSearch(
       memoryLog.error("HybridSearch", "pgvector semantic search failed:", err);
       return [];
     }),
-    conversationStore.searchByKeyword(query, uid, fetchLimit).catch((err) => {
+    conversationStore.searchByKeyword(
+      allTenantsScope("hybrid search runs in a turn, with no principal; the agent slug already pins one tenant"),
+      query,
+      uid,
+      fetchLimit,
+    ).catch((err) => {
       memoryLog.error("HybridSearch", "PostgreSQL keyword search failed:", err);
       return [];
     }),

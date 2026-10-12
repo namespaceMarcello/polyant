@@ -2,21 +2,19 @@
 
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import { Trash2, Loader2, Zap, Coins, Terminal, FileText, Mic, SearchCode, Database, Webhook, Link2, Pencil } from "lucide-react";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
-import { Badge } from "@/components/ui/badge";
+import { Trash2, Loader2, FileText, Mic, SearchCode, Database, Webhook, Link2, Pencil, ArrowLeft, Copy, MoreHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,7 +24,6 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import {
   Tooltip,
@@ -49,67 +46,38 @@ import { MessageExtras } from "@/components/messages/message-extras";
 import { MessageMetadataPills } from "@/components/messages/message-metadata-pills";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { ChannelIcon } from "@/components/channel-icon";
 import { HookExecutionPill } from "@/components/messages/hook-execution-pill";
+import { SystemActivity } from "@/components/messages/system-activity";
 import { DebugSheet, type DebugSheetTarget } from "@/components/messages/debug-sheet";
 import { ContextStoreSheet } from "@/components/messages/context-store-sheet";
-import { formatRelativeTime, parseUTC } from "@/lib/format";
+import { formatActivityTimestamp, formatRelativeTime, parseUTC } from "@/lib/format";
 import { useI18n } from "@/lib/i18n/context";
 import { useTenantPaths } from "@/lib/tenant/use-tenant-paths";
 import { useFormat } from "@/lib/use-format";
+import { useDetailedView } from "@/hooks/use-detailed-view";
+import { currentTurn, useLiveConversation } from "@/hooks/use-live-conversation";
+import { useFollowBottom } from "@/hooks/use-follow-bottom";
+import { JumpToLatest } from "@/components/messages/jump-to-latest";
+import { LiveTurn } from "@/components/messages/live-turn";
 
 const MESSAGES_PAGE_SIZE = 50;
 
+/** A stored message's time in ms; 0 when the row carries none. */
+function storedAt(message: ConversationMessage): number {
+  return message.createdAt ? parseUTC(message.createdAt).getTime() : 0;
+}
+
 /**
- * Per-message timestamp. Strategy:
- *  - same calendar day  → "14:30:25"
- *  - yesterday          → "ieri / yesterday 14:30:25" (Intl.RelativeTimeFormat picks the locale)
- *  - within last 6 days → "lun 14:30:25"
- *  - same year          → "22 mag 14:30:25"
- *  - older              → "22 mag 2024 14:30:25"
- * The locale is the browser's default — same approach as the rest of the page.
+ * The proxy URL for a stored attachment.
+ *
+ * Each key SEGMENT is percent-encoded, never the key as a whole — the slashes
+ * are the route's structure and must survive. Interpolating the raw key made a
+ * filename carrying `#` unreachable (everything after it became the fragment
+ * and never left the browser) and one carrying `?` land as a query string.
  */
-function formatTime(dateStr: string | null, locale: string): string {
-  if (!dateStr) return "";
-  const date = parseUTC(dateStr);
-  const now = new Date();
-
-  const sameDay = (a: Date, b: Date) =>
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate();
-
-  const time = date.toLocaleTimeString(locale, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-
-  if (sameDay(date, now)) return time;
-
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (sameDay(date, yesterday)) {
-    const label = new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(-1, "day");
-    return `${label} ${time}`;
-  }
-
-  // Within the last 6 days: show weekday abbreviation (lun/tue/…).
-  const sixDaysAgo = new Date(now);
-  sixDaysAgo.setDate(now.getDate() - 6);
-  sixDaysAgo.setHours(0, 0, 0, 0);
-  if (date >= sixDaysAgo) {
-    const weekday = date.toLocaleDateString(locale, { weekday: "short" });
-    return `${weekday} ${time}`;
-  }
-
-  // Older: include the date. Drop the year for messages in the current year.
-  const sameYear = date.getFullYear() === now.getFullYear();
-  const datePart = date.toLocaleDateString(locale, {
-    day: "numeric",
-    month: "short",
-    ...(sameYear ? {} : { year: "numeric" }),
-  });
-  return `${datePart} ${time}`;
+function attachmentHref(s3Key: string): string {
+  return `/api/attachments/${s3Key.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 function AttachmentDisplay({ attachments, isUser }: { attachments: AttachmentMeta[]; isUser: boolean }) {
@@ -120,13 +88,13 @@ function AttachmentDisplay({ attachments, isUser }: { attachments: AttachmentMet
           return (
             <a
               key={i}
-              href={`/api/attachments/${att.s3Key}`}
+              href={attachmentHref(att.s3Key)}
               target="_blank"
               rel="noopener noreferrer"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={`/api/attachments/${att.s3Key}`}
+                src={attachmentHref(att.s3Key)}
                 alt={att.fileName ?? "Attachment"}
                 className="max-h-60 rounded-lg object-contain"
                 loading="lazy"
@@ -137,7 +105,7 @@ function AttachmentDisplay({ attachments, isUser }: { attachments: AttachmentMet
         return (
           <a
             key={i}
-            href={`/api/attachments/${att.s3Key}`}
+            href={attachmentHref(att.s3Key)}
             target="_blank"
             rel="noopener noreferrer"
             className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs ${
@@ -182,12 +150,16 @@ export default function ConversationDetailPage() {
   const [renameTitle, setRenameTitle] = useState("");
   const [renameId, setRenameId] = useState("");
   const [renaming, setRenaming] = useState(false);
+  // Controlled: the delete confirmation opens from the actions menu, not from its own button.
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   // Detailed view: shows per-message metadata pills + reasoning/tool panels.
-  // Off by default; the choice persists across pages via localStorage.
-  const [detailed, setDetailed] = useState(false);
+  // Off by default; the choice is shared with the Playground and persists.
+  const [detailed, toggleDetailed] = useDetailedView();
+  // Live: follow the conversation as it happens, on whatever channel it runs.
+  const [live, setLive] = useState(false);
   // Message targeted by a shared deep link (#msg-<id>) — briefly ring-highlighted.
   const [highlightId, setHighlightId] = useState<string | null>(null);
 
@@ -196,16 +168,6 @@ export default function ConversationDetailPage() {
   const loadingMoreRef = useRef(false);
   const prevScrollHeightRef = useRef<number | null>(null);
   const didInitialScrollRef = useRef(false);
-
-  // Read the persisted preference on mount (client-only, avoids SSR mismatch).
-  useEffect(() => {
-    setDetailed(localStorage.getItem("conversationDetailedView") === "true");
-  }, []);
-
-  const toggleDetailed = (value: boolean) => {
-    setDetailed(value);
-    localStorage.setItem("conversationDetailedView", String(value));
-  };
 
   // Copy a deep link to a specific message. Opening it scrolls to and
   // highlights that message (see the deep-link effect below).
@@ -220,6 +182,15 @@ export default function ConversationDetailPage() {
       setTimeout(() => setHighlightId((cur) => (cur === messageId ? null : cur)), 2600);
     } catch {
       toast.error(t("conversations.detail.linkCopyFailed"));
+    }
+  };
+
+  const handleCopyId = async () => {
+    try {
+      await navigator.clipboard.writeText(conversationId);
+      toast.success(t("conversations.detail.idCopied"));
+    } catch {
+      toast.error(t("conversations.detail.idCopyFailed"));
     }
   };
 
@@ -266,6 +237,51 @@ export default function ConversationDetailPage() {
       loadingMoreRef.current = false;
     }
   };
+
+  // Re-read the header, the newest page and hooks after the engine stores rows.
+  // Merged by id, so older pages already loaded stay and a re-read row is replaced.
+  const refreshLatest = useCallback(async () => {
+    try {
+      const [convRes, msgRes, hooksRes] = await Promise.all([
+        api.conversations.get(conversationId, instanceId).catch(() => null),
+        api.conversations.messages(conversationId, instanceId, { limit: MESSAGES_PAGE_SIZE, order: "desc" }),
+        api.conversations.hookExecutions(conversationId, instanceId).catch(() => null),
+      ]);
+      if (convRes) setConversation(convRes.conversation);
+      setMessages((prev) => {
+        const byId = new Map(prev.map((m) => [m.id, m]));
+        for (const m of msgRes.messages) byId.set(m.id, m);
+        return [...byId.values()].sort((a, b) => storedAt(a) - storedAt(b));
+      });
+      setTotalMessages(msgRes.total);
+      if (hooksRes) setHookExecutions(hooksRes.executions);
+    } catch {
+      // The next stored write retries; the transcript on screen stays valid.
+    }
+  }, [conversationId, instanceId]);
+
+  const { events: liveEvents, connected: liveConnected } = useLiveConversation({
+    conversationId,
+    instanceId,
+    enabled: live && !loading,
+    onPersisted: refreshLatest,
+  });
+
+  // The turn in progress. Once its rows are stored they take its place in the
+  // transcript.
+  const pendingLive = useMemo(
+    () => currentTurn(
+      liveEvents,
+      messages.filter((m) => m.role === "user").map(storedAt),
+      Math.max(0, ...messages.map(storedAt)),
+    ),
+    [liveEvents, messages],
+  );
+
+  // Keep the newest activity in view while following, unless the reader has
+  // scrolled up to read something older.
+  const liveContent = useMemo(() => [pendingLive, messages], [pendingLive, messages]);
+  const { following, jumpToBottom } = useFollowBottom(scrollContainerRef, live, liveContent, { smooth: true });
 
   // After the initial fetch resolves, jump to the bottom (latest message visible).
   // Re-pin on each image load — lazy-loaded images grow the scrollHeight after the
@@ -427,48 +443,52 @@ export default function ConversationDetailPage() {
 
   return (
     <div className="flex h-[calc(100svh-3.5rem-3rem)] flex-col">
-      <Breadcrumb>
-        <BreadcrumbList>
-          <BreadcrumbItem>
-            <BreadcrumbLink asChild>
-              <Link href={paths.workspace("/conversations")}>{t("conversations.detail.breadcrumb")}</Link>
-            </BreadcrumbLink>
-          </BreadcrumbItem>
-          <BreadcrumbSeparator />
-          <BreadcrumbItem>
-            <BreadcrumbPage>{t("conversations.detail.title")}</BreadcrumbPage>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
+      <Link
+        href={paths.workspace("/conversations")}
+        className="inline-flex w-fit items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        {t("conversations.detail.breadcrumb")}
+      </Link>
 
-      <div className="mt-4 flex items-start justify-between">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">{title}</h1>
+      <div className="mt-3 flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+            {live && (
+              <span
+                role="status"
+                title={t(liveConnected ? "conversations.detail.liveConnected" : "conversations.detail.liveConnecting")}
+                className={`inline-flex shrink-0 items-center gap-1.5 text-xs font-medium ${liveConnected ? "text-success" : "text-muted-foreground"}`}
+              >
+                <span className={`size-2 rounded-full ${liveConnected ? "animate-pulse bg-success" : "bg-muted-foreground"}`} />
+                {t("conversations.detail.liveToggle")}
+              </span>
+            )}
+          </div>
           {conversation.title && conversation.summary && (
             <p className="mt-1 text-sm text-muted-foreground">
               {conversation.summary}
             </p>
           )}
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-              {conversationId}
-            </code>
-            {conversation.instanceName && (
-              <Badge variant="secondary">{conversation.instanceName}</Badge>
-            )}
-            <span>{t("conversations.detail.messages", { count: conversation.messageCount })}</span>
-            <span>&middot;</span>
-            <span>{t("conversations.detail.created", { time: formatRelativeTime(conversation.createdAt, t) })}</span>
-            {conversation.totalTokens > 0 && (
-              <>
-                <span>&middot;</span>
-                <TooltipProvider>
-                  <Tooltip>
+          <TooltipProvider>
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+              {[
+                conversation.channel && (
+                  <span key="channel" className="inline-flex items-center gap-1.5 capitalize text-foreground">
+                    <ChannelIcon channel={conversation.channel} className="size-3.5" />
+                    {conversation.channel}
+                  </span>
+                ),
+                conversation.instanceName && <span key="agent">{conversation.instanceName}</span>,
+                <span key="messages">{t("conversations.detail.messages", { count: conversation.messageCount })}</span>,
+                <span key="created">{t("conversations.detail.created", { time: formatRelativeTime(conversation.createdAt, t) })}</span>,
+                conversation.totalTokens > 0 && (
+                  <Tooltip key="tokens">
                     <TooltipTrigger asChild>
-                      <Badge variant="outline" className="gap-1 font-normal tabular-nums cursor-help">
-                        <Zap className="h-3 w-3" />
-                        {fmt.number(conversation.totalTokens)} tokens
-                      </Badge>
+                      <span tabIndex={0} className="cursor-help tabular-nums underline decoration-dotted underline-offset-4">
+                        {t("conversations.detail.totalTokens", { count: fmt.number(conversation.totalTokens) })}
+                      </span>
                     </TooltipTrigger>
                     <TooltipContent>
                       <p>{t("conversations.detail.conversationCost")}: {fmt.number(conversation.conversationTokens)}</p>
@@ -480,74 +500,104 @@ export default function ConversationDetailPage() {
                       )}
                     </TooltipContent>
                   </Tooltip>
-                </TooltipProvider>
-              </>
-            )}
-            {conversation.totalCost > 0 && (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Badge variant="outline" className="gap-1 font-normal tabular-nums cursor-help">
-                      <Coins className="h-3 w-3" />
-                      ${conversation.totalCost.toFixed(4)}
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>{t("conversations.detail.conversationCost")}: ${conversation.conversationCost.toFixed(4)}</p>
-                    <p className="text-muted-foreground">{t("conversations.detail.serviceCost")}: ${conversation.serviceCost.toFixed(4)}</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            )}
-          </div>
+                ),
+                conversation.totalCost > 0 && (
+                  <Tooltip key="cost">
+                    <TooltipTrigger asChild>
+                      <span tabIndex={0} className="cursor-help tabular-nums underline decoration-dotted underline-offset-4">
+                        ${conversation.totalCost.toFixed(4)}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>{t("conversations.detail.conversationCost")}: ${conversation.conversationCost.toFixed(4)}</p>
+                      <p className="text-muted-foreground">{t("conversations.detail.serviceCost")}: ${conversation.serviceCost.toFixed(4)}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                ),
+              ]
+                .filter(Boolean)
+                .flatMap((item, i) => (i === 0 ? [item] : [<span key={`sep-${i}`} aria-hidden="true">&middot;</span>, item]))}
+            </div>
+          </TooltipProvider>
         </div>
-        <div className="flex items-center gap-1">
-        <Label
-          htmlFor="detailed-view"
-          className="mr-2 flex items-center gap-2 text-sm font-normal text-muted-foreground"
-        >
-          <Switch id="detailed-view" checked={detailed} onCheckedChange={toggleDetailed} />
-          {t("conversations.detail.detailedToggle")}
-        </Label>
-        <Button variant="ghost" size="sm" onClick={() => setStateOpen(true)}>
-          <Database className="h-4 w-4" />
-          {t("conversations.state.button")}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={openRename}>
-          <Pencil className="h-4 w-4" />
-          {t("conversations.detail.renameButton")}
-        </Button>
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="ghost" size="sm" className="text-destructive">
-              <Trash2 className="h-4 w-4" />
-              {t("conversations.detail.deleteButton")}
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{t("conversations.detail.deleteTitle")}</AlertDialogTitle>
-              <AlertDialogDescription>
-                {t("conversations.detail.deleteDescription")}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={handleDelete}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setStateOpen(true)}>
+            <Database className="h-4 w-4" />
+            {t("conversations.state.button")}
+          </Button>
+          {/* Non-modal so the rename/delete dialogs it opens get focus and pointer events back. */}
+          <DropdownMenu modal={false}>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon-sm" aria-label={t("conversations.detail.moreActions")}>
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-56">
+              {/* View toggles keep the menu open (preventDefault) so both can be flipped in one go. */}
+              <DropdownMenuItem
+                role="menuitemcheckbox"
+                aria-checked={detailed}
+                onSelect={(e) => {
+                  e.preventDefault();
+                  toggleDetailed(!detailed);
+                }}
               >
-                {t("common.delete")}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+                {t("conversations.detail.detailedToggle")}
+                <Switch checked={detailed} tabIndex={-1} aria-hidden="true" className="pointer-events-none ml-auto" />
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                role="menuitemcheckbox"
+                aria-checked={live}
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setLive((v) => !v);
+                }}
+              >
+                {t("conversations.detail.liveToggle")}
+                <Switch checked={live} tabIndex={-1} aria-hidden="true" className="pointer-events-none ml-auto" />
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={handleCopyId}>
+                <Copy />
+                {t("conversations.detail.copyId")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={openRename}>
+                <Pencil />
+                {t("conversations.detail.renameButton")}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onSelect={() => setDeleteOpen(true)}>
+                <Trash2 />
+                {t("conversations.detail.deleteButton")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("conversations.detail.deleteTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("conversations.detail.deleteDescription")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {t("common.delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <div
         ref={scrollContainerRef}
-        className="mt-8 flex-1 min-h-0 space-y-4 overflow-y-auto pr-2"
+        className="mt-6 flex-1 min-h-0 space-y-4 overflow-y-auto pr-2"
       >
         <div ref={topSentinelRef} aria-hidden="true" />
         {loadingMore && (
@@ -558,41 +608,22 @@ export default function ConversationDetailPage() {
 
         <TooltipProvider>
           {timeline.map((item) => {
-            // Hook execution → centered expandable pill in the timeline
             if (item.kind === "hook") {
               const exec = item.exec;
-              return (
-                <div key={`hook-${exec.id}`} className="flex justify-center">
-                  <HookExecutionPill execution={exec} timestamp={formatTime(exec.createdAt, locale)} />
+              return detailed ? (
+                <div key={`hook-${exec.id}`} className="max-w-[85%]">
+                  <HookExecutionPill execution={exec} timestamp={formatActivityTimestamp(exec.createdAt, locale)} />
                 </div>
-              );
+              ) : null;
             }
 
             const msg = item.msg;
-            // System message → centered amber pill
             if (msg.role === "system") {
-              return (
-                <div key={msg.id} className="flex justify-center">
-                  <div className="max-w-[85%] rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-800 dark:bg-amber-950/30">
-                    <div className="flex items-start gap-2">
-                      <Terminal className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-                      <div className="min-w-0">
-                        <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
-                          {t("conversations.detail.systemMessage")}
-                        </p>
-                        <p className="mt-0.5 whitespace-pre-wrap text-sm text-amber-800 dark:text-amber-200">
-                          {msg.content}
-                        </p>
-                        {msg.createdAt && (
-                          <p className="mt-1 text-xs text-amber-600/60 dark:text-amber-400/60">
-                            {formatTime(msg.createdAt, locale)}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+              return detailed ? (
+                <div key={msg.id} className="max-w-[85%]">
+                  <SystemActivity content={msg.content} timestamp={msg.createdAt ? formatActivityTimestamp(msg.createdAt, locale) : undefined} />
                 </div>
-              );
+              ) : null;
             }
 
             return (
@@ -601,8 +632,12 @@ export default function ConversationDetailPage() {
                 id={`msg-${msg.id}`}
                 className={`flex scroll-mt-4 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
               >
+                <div className={`${msg.role === "user" ? "max-w-[75%]" : "max-w-[85%]"} min-w-0`}>
+                  {msg.role !== "user" && detailed && (
+                    <MessageExtras reasoning={msg.reasoning} steps={msg.steps} />
+                  )}
                 <div
-                  className={`max-w-[75%] min-w-0 overflow-hidden rounded-2xl px-4 py-3 transition-colors duration-500 ${
+                  className={`min-w-0 overflow-hidden rounded-2xl px-4 py-3 transition-colors duration-500 ${
                     highlightId === msg.id
                       ? "bg-accent text-accent-foreground ring-2 ring-accent-strong"
                       : msg.role === "user"
@@ -630,25 +665,16 @@ export default function ConversationDetailPage() {
                         if (a?.language) parts.push(a.language);
                         return parts.length ? `Audio · ${parts.join(" · ")}` : "Audio";
                       })()}
-                      aria-label="Messaggio originato da audio"
+                      aria-label={t("conversations.detail.audioOrigin")}
                     >
                       <Mic className="h-3 w-3" />
                     </span>
                   )}
-                  {msg.role !== "user" && msg.metadata?.source === "hook" && (
+                  {msg.role !== "user" && detailed && msg.metadata?.source === "hook" && (
                     <span className="mb-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
                       <Webhook className="h-3 w-3" />
                       {t("message.provenance.hook", { name: String(msg.metadata.hookName ?? "") })}
                     </span>
-                  )}
-                  {/* Reasoning + steps panels above message text — only in the
-                      detailed view (audit/exploratory UX; hidden in compact). */}
-                  {msg.role !== "user" && detailed && (
-                    <MessageExtras
-                      reasoning={msg.reasoning}
-                      steps={msg.steps}
-                      defaultOpen
-                    />
                   )}
                   <MarkdownRenderer content={msg.content} />
                   {msg.role !== "user" && detailed && (
@@ -661,7 +687,7 @@ export default function ConversationDetailPage() {
                         : "text-muted-foreground"
                     }`}
                   >
-                    <span>{formatTime(msg.createdAt, locale)}</span>
+                    <span>{formatActivityTimestamp(msg.createdAt, locale)}</span>
                     <button
                       type="button"
                       onClick={() => handleShare(msg.id)}
@@ -698,12 +724,16 @@ export default function ConversationDetailPage() {
                     )}
                   </div>
                 </div>
+                </div>
               </div>
             );
           })}
         </TooltipProvider>
 
-        {messages.length === 0 && (
+        <LiveTurn events={pendingLive} showActivity={detailed} />
+        {live && !following && <JumpToLatest onClick={jumpToBottom} />}
+
+        {messages.length === 0 && pendingLive.length === 0 && (
           <p className="text-center text-muted-foreground">
             {t("conversations.detail.noMessages")}
           </p>

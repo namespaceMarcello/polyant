@@ -46,6 +46,13 @@ import {
   invalidateAllInstanceConfigCache,
 } from "./config-resolver.js";
 import { asInstanceSlug } from "./identifiers.js";
+import { resolveInstanceMeta } from "./instance-meta.js";
+import {
+  DEFAULT_DATETIME_LOCALE,
+  DEFAULT_DATETIME_TIMEZONE,
+  DEFAULT_DEDUP_SIMILARITY_THRESHOLD,
+  DEFAULT_MESSAGE_TIMINGS,
+} from "./agent-settings.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -65,11 +72,13 @@ const fakeInstance = {
   authEnabled: true,
   thinkingEnabled: false,
   stateInPromptEnabled: false,
+  webContextFieldMapping: { phone: "caller.phone" },
   cacheEnabled: true,
   cacheTtl: "1h",
   a2aEnabled: true,
   toolResultsInHistoryEnabled: false,
   debugEnabled: false,
+  attachmentStorageEnabled: true,
   icon: null,
   sttProvider: "openai",
   optoutEnabled: false,
@@ -127,11 +136,21 @@ describe("instances/config-resolver", () => {
         thinkingLevel: "medium",
         temperature: null,
         stateInPromptEnabled: false,
+        webContextFieldMapping: {},
         datetimeInjectionEnabled: true,
+        // The six behaviours that moved off the environment. Resolved, so the
+        // config carries values rather than nulls; the row declares none here, so
+        // each is the shipped default — asserted against the exported constants
+        // rather than a literal, because the datetime defaults come from the
+        // runtime's zone and locale.
+        datetime: { timezone: DEFAULT_DATETIME_TIMEZONE, locale: DEFAULT_DATETIME_LOCALE },
+        dedupSimilarityThreshold: DEFAULT_DEDUP_SIMILARITY_THRESHOLD,
+        messageTimings: DEFAULT_MESSAGE_TIMINGS,
         cacheConfig: { enabled: true, ttl: "1h" },
         a2aEnabled: false,
         toolResultsInHistoryEnabled: false,
         debugEnabled: false,
+        attachmentStorageEnabled: false,
         optout: {
           enabled: false,
           stopKeywords: ["STOP"],
@@ -187,10 +206,18 @@ describe("instances/config-resolver", () => {
         // but gpt-4o supports temperature so the gate passes; null means "use provider default".
         temperature: null,
         stateInPromptEnabled: false,
+        webContextFieldMapping: { phone: "caller.phone" },
+        // Same three as above: the fixture row declares none of the six, so each
+        // resolves to the deployment default.
+        datetimeInjectionEnabled: undefined,
+        datetime: { timezone: DEFAULT_DATETIME_TIMEZONE, locale: DEFAULT_DATETIME_LOCALE },
+        dedupSimilarityThreshold: DEFAULT_DEDUP_SIMILARITY_THRESHOLD,
+        messageTimings: DEFAULT_MESSAGE_TIMINGS,
         cacheConfig: { enabled: true, ttl: "1h" },
         a2aEnabled: true,
         toolResultsInHistoryEnabled: false,
         debugEnabled: false,
+        attachmentStorageEnabled: true,
         optout: {
           enabled: false,
           stopKeywords: ["STOP"],
@@ -352,6 +379,17 @@ describe("instances/config-resolver", () => {
 
       // findInstanceBySlug: 1 (default) + 1 (creative) + 1 (default re-query) = 3
       expect(mockFindInstanceBySlug).toHaveBeenCalledTimes(3);
+    });
+
+    it("also drops the agent's meta, so a rename shows at once", async () => {
+      mockFindInstanceBySlug
+        .mockResolvedValueOnce({ ...fakeInstance, name: "Old name" })
+        .mockResolvedValueOnce({ ...fakeInstance, name: "New name" });
+
+      expect((await resolveInstanceMeta("default"))?.name).toBe("Old name");
+      invalidateInstanceConfigCache(asInstanceSlug("default"));
+
+      expect((await resolveInstanceMeta("default"))?.name).toBe("New name");
     });
   });
 

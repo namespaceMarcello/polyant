@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { findInstanceBySlug } from "./store.js";
+import { registeredProviderApiKeys } from "../ai-gateway/providers/registry.js";
 import { asInstanceSlug, type InstanceSlug } from "./identifiers.js";
 import { getAllSecretsById } from "./secrets.store.js";
 import { SECRET_KEYS } from "./secrets.store.js";
 import { TtlCache } from "../utils/ttl-cache.js";
-import { isThinkingCapable, resolveModel, clampTemperature, temperatureSupported } from "../ai-gateway/config.js";
+import { DEFAULT_PROVIDER, isThinkingCapable, resolveModel, clampTemperature, temperatureSupported } from "../ai-gateway/config.js";
 import type { CacheTtl, ModelTier } from "../ai-gateway/types.js";
 import type { STTCredentials, InstanceSttSetting } from "../stt-gateway/types.js";
+import {
+  resolveDatetimeSettings,
+  resolveDedupSimilarityThreshold,
+  resolveMessageTimings,
+  UNSET_AGENT_SETTINGS,
+  type DatetimeSettings,
+  type MessageTimingSettings,
+} from "./agent-settings.js";
+import { invalidateAllInstanceMeta, invalidateInstanceMeta } from "./instance-meta.js";
 
 export interface InstanceConfig {
   provider: string | undefined;
@@ -47,8 +57,21 @@ export interface InstanceConfig {
   temperature: number | null;
   /** When true, the conversation state store is rendered read-only into the system prompt. */
   stateInPromptEnabled: boolean;
+  /** Web channel: state key → dot-path into a `chat/stream` request's `context` (empty = no context accepted). */
+  webContextFieldMapping: Record<string, string>;
   /** When true, inject the current date/time into every turn (volatile tail). */
   datetimeInjectionEnabled: boolean;
+  /**
+   * The six per-agent behaviours that used to be deployment configuration,
+   * already resolved: the agent's own value where it set one, the deployment
+   * default where it did not. `instances/agent-settings.ts` owns that fallback,
+   * and resolving here means every consumer reads a number rather than deciding
+   * again — the pipeline, the supervisor, the summariser, the room engine and
+   * the message coordinator all carry this bundle already.
+   */
+  datetime: DatetimeSettings;
+  dedupSimilarityThreshold: number;
+  messageTimings: MessageTimingSettings;
   /** Per-instance prompt-cache control, forwarded verbatim to the ai-gateway ChatRequest. */
   cacheConfig: { enabled: boolean; ttl: CacheTtl };
   /** Gates A2A (Agent2Agent) server exposure for this instance. Default false — opt-in. */
@@ -57,6 +80,8 @@ export interface InstanceConfig {
   toolResultsInHistoryEnabled: boolean;
   /** When true, the exact LLM request payload (system + messages + tools) is persisted per turn for debug. */
   debugEnabled: boolean;
+  /** When true, inbound attachments are copied to the agent's bucket. Default false — opt-in. */
+  attachmentStorageEnabled: boolean;
   /** GDPR opt-out feature config (per instance). */
   optout: {
     enabled: boolean;
@@ -78,11 +103,20 @@ export interface InstanceConfig {
  * the `standard` tier — match that fallback here so the capability gate
  * matches what runs at request time.
  */
+export function resolveEffectiveModelSelection(
+  provider: string | null | undefined,
+  model: string | null | undefined,
+): { provider: string; model: string } {
+  const effectiveProvider = provider ?? DEFAULT_PROVIDER;
+  return {
+    provider: effectiveProvider,
+    model: model ?? resolveModel(effectiveProvider, "standard" satisfies ModelTier),
+  };
+}
+
 function effectiveModelFor(provider: string | undefined, model: string | undefined): string | undefined {
-  if (model) return model;
-  if (!provider) return undefined;
   try {
-    return resolveModel(provider, "standard" satisfies ModelTier);
+    return resolveEffectiveModelSelection(provider, model).model;
   } catch {
     return undefined;
   }
@@ -94,11 +128,13 @@ const cache = new TtlCache<string, InstanceConfig>({ maxSize: 200, ttlMs: 30_000
 /** Invalidate cached config for a specific instance. */
 export function invalidateInstanceConfigCache(slug: InstanceSlug): void {
   cache.delete(slug);
+  invalidateInstanceMeta(slug);
 }
 
 /** Invalidate all cached configs. */
 export function invalidateAllInstanceConfigCache(): void {
   cache.clear();
+  invalidateAllInstanceMeta();
 }
 
 /**
@@ -127,11 +163,16 @@ export async function resolveInstanceConfig(instanceSlug: InstanceSlug): Promise
       thinkingLevel: "medium",
       temperature: null,
       stateInPromptEnabled: false,
+      webContextFieldMapping: {},
       datetimeInjectionEnabled: true,
+      datetime: resolveDatetimeSettings(UNSET_AGENT_SETTINGS),
+      dedupSimilarityThreshold: resolveDedupSimilarityThreshold(UNSET_AGENT_SETTINGS),
+      messageTimings: resolveMessageTimings(UNSET_AGENT_SETTINGS),
       cacheConfig: { enabled: true, ttl: "1h" },
       a2aEnabled: false,
       toolResultsInHistoryEnabled: false,
       debugEnabled: false,
+      attachmentStorageEnabled: false,
       optout: { enabled: false, stopKeywords: ["STOP"], resumeKeywords: ["START"], closingMessage: null, resumeMessage: null, injectPromptHint: true },
       stt: { provider: "openai", credentials: {} },
     };
@@ -179,6 +220,10 @@ export async function resolveInstanceConfig(instanceSlug: InstanceSlug): Promise
     provider: instance.provider ?? undefined,
     model: instance.model ?? undefined,
     apiKeys: {
+      // A provider registered at boot carries its key under its own name. The
+      // declared type is closed on purpose (see ChatRequest.apiKeys) and an
+      // adapter reads its own key through `providerApiKey()`, hence the cast.
+      ...(registeredProviderApiKeys(secrets) as Record<string, string | undefined>),
       openai: secrets[SECRET_KEYS.OPENAI_API_KEY],
       anthropic: secrets[SECRET_KEYS.ANTHROPIC_API_KEY],
       nebius: secrets[SECRET_KEYS.NEBIUS_API_KEY],
@@ -207,7 +252,11 @@ export async function resolveInstanceConfig(instanceSlug: InstanceSlug): Promise
       ? clampTemperature(instance.temperature)
       : null,
     stateInPromptEnabled: instance.stateInPromptEnabled,
+    webContextFieldMapping: instance.webContextFieldMapping ?? {},
     datetimeInjectionEnabled: instance.datetimeInjectionEnabled,
+    datetime: resolveDatetimeSettings(instance),
+    dedupSimilarityThreshold: resolveDedupSimilarityThreshold(instance),
+    messageTimings: resolveMessageTimings(instance),
     cacheConfig: {
       enabled: instance.cacheEnabled,
       ttl: instance.cacheTtl === "5m" ? "5m" : "1h",
@@ -215,6 +264,7 @@ export async function resolveInstanceConfig(instanceSlug: InstanceSlug): Promise
     a2aEnabled: instance.a2aEnabled,
     toolResultsInHistoryEnabled: instance.toolResultsInHistoryEnabled,
     debugEnabled: instance.debugEnabled,
+    attachmentStorageEnabled: instance.attachmentStorageEnabled,
     optout: {
       enabled: instance.optoutEnabled,
       stopKeywords: instance.optoutStopKeywords,

@@ -2,7 +2,6 @@
 
 import { type Instructions, type LanguageModel, type ModelMessage, isStepCount } from "ai";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import { config } from "../../config.js";
 import { temperatureSupported } from "../config.js";
 import { tracedGenerateText, tracedStreamText } from "../langsmith.js";
 import { stripReasoningTags } from "../strip-reasoning-tags.js";
@@ -10,61 +9,6 @@ import type { CacheTtl, ChatRequest, ChatResponse, ChatStreamResult, ProviderAda
 import type { LlmDebugPayload, ReasoningDetail, StepDetail } from "../../conversations/schema.js";
 
 type ModelFactory = (modelId: string, apiKeys?: ChatRequest["apiKeys"]) => LanguageModel;
-
-const C = { reset: "\x1b[0m", cyan: "\x1b[36m", dim: "\x1b[2m" };
-
-/**
- * Verbose dev toggle that logs the full system prompt + every message sent to
- * the provider on every call. Useful for diagnosing prompt drift in dev; a
- * **leak vector in production** (system prompts often contain customer-specific
- * data, names, contact details).
- *
- * Hard guard: forced off when `NODE_ENV === "production"`, even if the env var
- * is set. Emits a stderr warning at module load so operators see the override.
- * If you genuinely need this in prod (e.g. to debug a one-off incident on a
- * staging-like environment), set `NODE_ENV` to something other than
- * "production" for that engine pod.
- */
-const DEBUG_LLM_PAYLOAD = (() => {
-  const requested = process.env.DEBUG_LLM_PAYLOAD === "1";
-  if (!requested) return false;
-  if (process.env.NODE_ENV === "production") {
-    // eslint-disable-next-line no-console -- intentional startup warning to stderr
-    console.warn(
-      "[ai-gateway] DEBUG_LLM_PAYLOAD=1 is set but NODE_ENV=production — " +
-        "ignoring (verbose prompt logging would leak customer data via stdout). " +
-        "Unset NODE_ENV or change it from 'production' to re-enable.",
-    );
-    return false;
-  }
-  return true;
-})();
-
-function logLlmPayload(providerName: string, modelId: string, request: ChatRequest) {
-  if (!DEBUG_LLM_PAYLOAD) return;
-
-  const ts = new Date().toLocaleTimeString(config.datetime.locale, { hour12: false });
-  const sys = request.system ?? "";
-  const toolNames = request.tools ? Object.keys(request.tools) : [];
-
-  console.log(
-    `${C.cyan}[${ts}] 🔍 LLM REQUEST PAYLOAD [${providerName}/${modelId}]${C.reset}`
-  );
-  console.log(`${C.dim}${JSON.stringify({
-    systemPromptLength: sys.length,
-    systemPrompt: sys,
-    messageCount: request.messages.length,
-    messages: request.messages.map(m => ({
-      role: m.role,
-      content: typeof m.content === "string"
-        ? m.content.slice(0, 200) + (m.content.length > 200 ? "..." : "")
-        : `[${Array.isArray(m.content) ? m.content.length + " parts" : typeof m.content}]`,
-    })),
-    tools: toolNames,
-    toolCount: toolNames.length,
-    maxSteps: request.maxSteps ?? 1,
-  }, null, 2)}${C.reset}`);
-}
 
 /**
  * Serialize the tool definitions sent to the model for debug capture.
@@ -124,12 +68,13 @@ function aggregateStepUsage(
 /** Compute token usage, falling back to step-level aggregation when top-level is unavailable. */
 function buildUsage(
   topLevelUsage: MappedUsage,
-  steps: { usage?: { promptTokens?: number; completionTokens?: number } }[],
+  steps: { usage?: MappedUsage }[],
 ): {
   promptTokens: number;
   completionTokens: number;
   cachedInputTokens: number;
   cacheCreationInputTokens: number;
+  cacheCreation5mInputTokens?: number;
 } {
   let prompt = safeTokens(topLevelUsage.promptTokens);
   let completion = safeTokens(topLevelUsage.completionTokens);
@@ -140,12 +85,29 @@ function buildUsage(
 
   // Cache counts come from the top-level/total usage only — the per-step
   // fallback (aggregateStepUsage) has no cache breakdown, so they stay 0 there.
+  // The one exception is the TTL split of the writes: the SDK's cumulative usage
+  // drops the raw provider usage it is read from, so it is summed over the steps.
+  const cacheCreationInputTokens = safeTokens(topLevelUsage.cacheCreationInputTokens);
+  const split5m = topLevelUsage.cacheCreation5mInputTokens ?? cacheWrite5mAcrossSteps(steps);
   return {
     promptTokens: prompt,
     completionTokens: completion,
     cachedInputTokens: safeTokens(topLevelUsage.cachedInputTokens),
-    cacheCreationInputTokens: safeTokens(topLevelUsage.cacheCreationInputTokens),
+    cacheCreationInputTokens,
+    ...(split5m !== undefined
+      ? { cacheCreation5mInputTokens: Math.min(safeTokens(split5m), cacheCreationInputTokens) }
+      : {}),
   };
+}
+
+/** The steps' reported 5m cache writes, summed; undefined when no step reported a TTL split. */
+function cacheWrite5mAcrossSteps(steps: { usage?: MappedUsage }[]): number | undefined {
+  let total: number | undefined;
+  for (const step of steps) {
+    const v = step.usage?.cacheCreation5mInputTokens;
+    if (v !== undefined) total = (total ?? 0) + v;
+  }
+  return total;
 }
 
 /**
@@ -166,7 +128,7 @@ interface SdkStep {
   toolResults?: { toolCallId: string; result: unknown }[];
   reasoningDetails?: unknown[];
   finishReason?: string;
-  usage?: { promptTokens?: number; completionTokens?: number };
+  usage?: MappedUsage;
 }
 
 /**
@@ -185,6 +147,56 @@ interface MappedUsage {
   cachedInputTokens?: number;
   /** Cache-write input tokens (cache WRITE, Anthropic). Subset of promptTokens. */
   cacheCreationInputTokens?: number;
+  /** The 5-minute-TTL share of `cacheCreationInputTokens`, when the provider reports a TTL split. */
+  cacheCreation5mInputTokens?: number;
+}
+
+/**
+ * What the model calls a turn completed had cost, once the turn has failed.
+ *
+ * A `chat()` is up to `maxSteps` model calls. When step N throws (a provider
+ * error, a context-length overflow) or the call is aborted, the model calls
+ * that had already answered were billed by the provider, but the SDK's result
+ * — the only other place usage is read — never arrives. Keyed by the thrown
+ * error, so the gateway reading it learns the usage of exactly that failed call.
+ *
+ * Counted per MODEL CALL (`onLanguageModelCallEnd`), not per step: a step ends
+ * only after its tools have run, so a turn aborted while a tool was running —
+ * the message coordinator's cancel-and-restart, typically — had an answered,
+ * billed model call that no step ever reported.
+ */
+const usageBeforeFailure = new WeakMap<object, UsageBeforeFailure>();
+
+/** The summed usage of the completed steps, and each step's own (`calls`). */
+type UsageBeforeFailure = Required<MappedUsage> & { calls: Required<MappedUsage>[] };
+
+/** The usage of the model calls a failed or aborted turn completed, or null when none had answered. */
+export function usageCompletedBeforeFailure(err: unknown): UsageBeforeFailure | null {
+  return err !== null && typeof err === "object" ? usageBeforeFailure.get(err) ?? null : null;
+}
+
+/** Sums each answered model call's usage (`onLanguageModelCallEnd`) and pins it to the turn's error. */
+function completedCallsUsage() {
+  // A 5m count of 0 prices exactly like an absent split (every write at `cacheWrite`).
+  const total = { promptTokens: 0, completionTokens: 0, cachedInputTokens: 0, cacheCreationInputTokens: 0, cacheCreation5mInputTokens: 0 };
+  const calls: Required<MappedUsage>[] = [];
+  return {
+    onLanguageModelCallEnd: (event: { usage?: unknown }) => {
+      const usage = mapUsage(event.usage);
+      const call = {
+        promptTokens: usage.promptTokens ?? 0,
+        completionTokens: usage.completionTokens ?? 0,
+        cachedInputTokens: usage.cachedInputTokens ?? 0,
+        cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
+        cacheCreation5mInputTokens: usage.cacheCreation5mInputTokens ?? 0,
+      };
+      for (const key of Object.keys(total) as (keyof typeof total)[]) total[key] += call[key];
+      calls.push(call);
+    },
+    pinTo(err: unknown): void {
+      if (calls.length > 0 && err !== null && typeof err === "object") usageBeforeFailure.set(err, { ...total, calls: [...calls] });
+    },
+  };
 }
 
 function mapUsage(u: unknown): MappedUsage {
@@ -200,12 +212,33 @@ function mapUsage(u: unknown): MappedUsage {
   // incremental caching (the `prepareStep` marker) is counted once per step,
   // never lost. Verified live on OpenAI/Anthropic/Bedrock.
   const details = (o.inputTokenDetails ?? {}) as Record<string, unknown>;
+  const cacheCreationInputTokens = num(details.cacheWriteTokens);
+  const cacheCreation5mInputTokens = cacheWrite5mOf(o.raw, cacheCreationInputTokens);
   return {
     promptTokens: num(o.inputTokens),
     completionTokens: num(o.outputTokens),
     cachedInputTokens: num(details.cacheReadTokens) ?? num(o.cachedInputTokens),
-    cacheCreationInputTokens: num(details.cacheWriteTokens),
+    cacheCreationInputTokens,
+    ...(cacheCreation5mInputTokens !== undefined ? { cacheCreation5mInputTokens } : {}),
   };
+}
+
+/**
+ * The 5-minute-TTL share of one step's cache writes, from the raw provider usage
+ * the SDK passes through on each step (`usage.raw`). Anthropic splits its writes
+ * by TTL there — `cache_creation: { ephemeral_5m_input_tokens,
+ * ephemeral_1h_input_tokens }`, summing to `cache_creation_input_tokens` — and
+ * prices them differently (1.25× vs 2× input); the SDK normalizes only the
+ * total. Undefined when the step carries no split (every other provider).
+ */
+function cacheWrite5mOf(raw: unknown, cacheWriteTotal: number | undefined): number | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const split = (raw as Record<string, unknown>).cache_creation;
+  if (!split || typeof split !== "object") return undefined;
+  const { ephemeral_5m_input_tokens: m5, ephemeral_1h_input_tokens: h1 } = split as Record<string, unknown>;
+  if (typeof m5 === "number") return m5;
+  if (typeof h1 === "number" && cacheWriteTotal !== undefined) return Math.max(0, cacheWriteTotal - h1);
+  return undefined;
 }
 
 /**
@@ -350,6 +383,9 @@ export function buildSteps(steps: SdkStep[], totalDurationMs: number): StepDetai
     if (reasoning) detail.reasoning = reasoning;
     if (s.usage?.promptTokens !== undefined) detail.promptTokens = safeTokens(s.usage.promptTokens);
     if (s.usage?.completionTokens !== undefined) detail.completionTokens = safeTokens(s.usage.completionTokens);
+    if (s.usage?.cachedInputTokens !== undefined) detail.cachedInputTokens = safeTokens(s.usage.cachedInputTokens);
+    if (s.usage?.cacheCreationInputTokens !== undefined) detail.cacheCreationInputTokens = safeTokens(s.usage.cacheCreationInputTokens);
+    if (s.usage?.cacheCreation5mInputTokens !== undefined) detail.cacheCreation5mInputTokens = safeTokens(s.usage.cacheCreation5mInputTokens);
     return detail;
   });
 }
@@ -374,7 +410,7 @@ function buildChatResponse(
   providerName: string,
 ): ChatResponse {
   const steps = buildSteps(rawSteps, durationMs);
-  const { promptTokens, completionTokens, cachedInputTokens, cacheCreationInputTokens } =
+  const { promptTokens, completionTokens, cachedInputTokens, cacheCreationInputTokens, cacheCreation5mInputTokens } =
     buildUsage(usage, rawSteps);
 
   // Prefer the SDK's top-level reasoningDetails when available (it already has
@@ -397,6 +433,7 @@ function buildChatResponse(
       totalTokens: promptTokens + completionTokens,
       cachedInputTokens,
       cacheCreationInputTokens,
+      ...(cacheCreation5mInputTokens !== undefined ? { cacheCreation5mInputTokens } : {}),
     },
     durationMs,
     model: modelId,
@@ -539,9 +576,9 @@ function describeMessages(messages: ModelMessage[]): string {
  * reason (`responseBody`) discarded. `ctx` is the folded request actually sent
  * to the SDK — dumped structurally (never raw) so role-alternation /
  * message-shape bugs are visible. `responseBody` can echo request/message text
- * back (e.g. a content-policy 400), so like `ctx` it is only logged in full
- * under `DEBUG_LLM_PAYLOAD`; otherwise just its length. Duck-typed, no SDK
- * import.
+ * back (e.g. a content-policy 400), so it is NEVER logged raw: only its length
+ * plus the machine-readable error type/code, extracted by `errorBodyReason`.
+ * Duck-typed, no SDK import.
  */
 /**
  * Character count of the instructions, whatever shape they arrive in. Since v7
@@ -557,6 +594,28 @@ function describeInstructions(instructions: Instructions | undefined): string {
     return String(v.content ?? "").length;
   };
   return `present(${textOf(instructions)})`;
+}
+
+/**
+ * The error type/code out of a provider's JSON error body, and nothing else.
+ * Every provider nests it differently and some answer plain text, so this is
+ * best-effort by design: a miss returns `null` and the caller logs the length
+ * alone. Deliberately does NOT read `message` — that is the field that quotes
+ * the offending content back.
+ */
+function errorBodyReason(body: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!parsed || typeof parsed !== "object") return null;
+    const root = parsed as Record<string, unknown>;
+    const nested = (root.error && typeof root.error === "object" ? root.error : {}) as Record<string, unknown>;
+    for (const candidate of [nested.type, nested.code, root.__type, root.type, root.code]) {
+      if (typeof candidate === "string" && candidate.trim()) return candidate.trim().slice(0, 120);
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function logProviderError(
@@ -582,11 +641,16 @@ function logProviderError(
     // A provider error body commonly echoes the offending request/message text
     // back (e.g. a content-policy 400 quoting the flagged content), so it is
     // exactly as sensitive as `ctx.messages` above — which is why that side is
-    // never logged raw, only via `describeMessages`'s structural summary. Mirror
-    // that here: full body only under the same prod-guarded DEBUG_LLM_PAYLOAD
-    // toggle used for request logging; otherwise just its length.
+    // never logged raw, only via `describeMessages`'s structural summary. Same
+    // here: the length, plus the error TYPE/CODE, which is the half that names
+    // the reason (`ValidationException`, `invalid_request_error`) and carries no
+    // free text. This used to log 2000 raw characters under DEBUG_LLM_PAYLOAD;
+    // that toggle is gone, and the per-instance `debug_enabled` capture is where
+    // a full request is inspected.
     const body = String(e.responseBody);
-    parts.push(DEBUG_LLM_PAYLOAD ? `body=${body.slice(0, 2000)}` : `body_length=${body.length}`);
+    parts.push(`body_length=${body.length}`);
+    const reason = errorBodyReason(body);
+    if (reason) parts.push(`body_reason=${reason}`);
   }
   if (typeof e?.url === "string") parts.push(`url=${e.url}`);
   console.error(parts.filter(Boolean).join(" "));
@@ -668,10 +732,9 @@ export function createProvider(
     async chat(request: ChatRequest, modelId: string): Promise<ChatResponse> {
       const start = Date.now();
 
-      logLlmPayload(providerName, modelId, request);
-
       const { instructions, messages } = prepare(request, modelId);
       const prepareStep = request.cacheConfig?.enabled === false ? undefined : buildPrepareStep(hooks, modelId);
+      const completed = completedCallsUsage();
       const result = await withProviderErrorLog(providerName, modelId, { system: instructions, messages }, () =>
         tracedGenerateText({
           model: createModel(modelId, request.apiKeys),
@@ -680,11 +743,15 @@ export function createProvider(
           tools: request.tools,
           stopWhen: isStepCount(request.maxSteps ?? 1),
           abortSignal: request.abortSignal,
+          onLanguageModelCallEnd: completed.onLanguageModelCallEnd,
           ...(prepareStep ? { prepareStep } : {}),
           ...(request.providerOptions ? { providerOptions: request.providerOptions as Record<string, Record<string, never>> } : {}),
           ...temperatureCallParam(providerName, modelId, request),
         }),
-      );
+      ).catch((err: unknown) => {
+        completed.pinTo(err);
+        throw err;
+      });
 
       // v5+: per-turn reasoning blocks are exposed at the top level as `reasoning`
       // (array). Normalised for type safety.
@@ -706,13 +773,12 @@ export function createProvider(
     async chatStream(request: ChatRequest, modelId: string): Promise<ChatStreamResult> {
       const start = Date.now();
 
-      logLlmPayload(providerName, modelId, request);
-
       // wrapAISDK wraps streamText in traceable, making it return a Promise.
       // The await resolves immediately (before streaming completes) because
       // tracing happens at the model middleware level, not the streamText level.
       const { instructions, messages } = prepare(request, modelId);
       const prepareStep = request.cacheConfig?.enabled === false ? undefined : buildPrepareStep(hooks, modelId);
+      const completed = completedCallsUsage();
       const result = await withProviderErrorLog(providerName, modelId, { system: instructions, messages }, () =>
         tracedStreamText({
           model: createModel(modelId, request.apiKeys),
@@ -721,6 +787,7 @@ export function createProvider(
           tools: request.tools,
           stopWhen: isStepCount(request.maxSteps ?? 1),
           abortSignal: request.abortSignal,
+          onLanguageModelCallEnd: completed.onLanguageModelCallEnd,
           ...(prepareStep ? { prepareStep } : {}),
           ...(request.providerOptions ? { providerOptions: request.providerOptions as Record<string, Record<string, never>> } : {}),
           ...temperatureCallParam(providerName, modelId, request),
@@ -753,6 +820,7 @@ export function createProvider(
           } catch (err) {
             // Stream-time provider errors surface here (not at the initial await).
             logProviderError(providerName, modelId, err, { system: instructions, messages });
+            completed.pinTo(err);
             throw err;
           }
         })(),

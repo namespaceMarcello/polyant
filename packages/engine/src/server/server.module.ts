@@ -23,6 +23,8 @@ import { InstanceKnowledgeController } from "./instances/instance-knowledge.cont
 import { InstanceScheduledTasksController } from "./instances/instance-scheduled-tasks.controller.js";
 import { WebhookController } from "./webhooks/webhook.controller.js";
 import { TwilioWebhookController } from "./channels/twilio-webhook.controller.js";
+import { TelegramWebhookController } from "./channels/telegram-webhook.controller.js";
+import { SlackWebhookController } from "./channels/slack-webhook.controller.js";
 import { RoomController } from "./room/room.controller.js";
 import { InstanceHooksController } from "./hooks/instance-hooks.controller.js";
 import { HookFunctionsController } from "./hooks/hook-functions.controller.js";
@@ -39,16 +41,25 @@ import { UsersModule } from "../users/users.module.js";
 import { ActivityStreamModule } from "../activity-stream/activity-stream.module.js";
 import { OptoutsModule } from "./optouts/optouts.module.js";
 import { MembersModule } from "./members/members.module.js";
+import { ApiKeysModule } from "./api-keys/api-keys.module.js";
 import { OrganizationsModule } from "../organizations/organizations.module.js";
 import { throttleTracker } from "./throttle-tracker.js";
+import { resolvePlatformSettingsOrDefaults } from "../platform/platform-settings.store.js";
+import { PlatformSettingsController } from "./platform-settings/platform-settings.controller.js";
 
 @Module({
   imports: [
     ThrottlerModule.forRoot({
       throttlers: [{
         name: "default",
-        ttl: config.server.throttle.ttlMs,
-        limit: config.server.throttle.limit,
+        // Resolved per request rather than at boot: both numbers are platform
+        // settings, so an administrator who widens the window while a client is
+        // hammering the API sees it take effect without a redeploy. The store's
+        // ten-second cache is what keeps this one cheap, and the
+        // `OrDefaults` reader is what keeps a database blip from turning every
+        // route into a 500.
+        ttl: async () => (await resolvePlatformSettingsOrDefaults()).throttleTtlMs,
+        limit: async () => (await resolvePlatformSettingsOrDefaults()).throttleLimit,
       }],
       // Bypass throttling entirely (global default + per-route @Throttle) when
       // disabled via THROTTLE_ENABLED=false — see config.ts server.throttle.
@@ -69,6 +80,7 @@ import { throttleTracker } from "./throttle-tracker.js";
     ActivityStreamModule,
     OptoutsModule,
     MembersModule,
+    ApiKeysModule,
     OrganizationsModule,
   ],
   providers: [
@@ -76,6 +88,7 @@ import { throttleTracker } from "./throttle-tracker.js";
   ],
   controllers: [
     HealthController,
+    PlatformSettingsController,
     MemoriesController,
     InstancesController,
     InstancePromptsController,
@@ -91,6 +104,8 @@ import { throttleTracker } from "./throttle-tracker.js";
     InstanceScheduledTasksController,
     WebhookController,
     TwilioWebhookController,
+    TelegramWebhookController,
+    SlackWebhookController,
     RoomController,
     InstanceHooksController,
     HookFunctionsController,

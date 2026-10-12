@@ -23,7 +23,7 @@ describe("readPluginManifest", () => {
 });
 
 describe("engineSatisfies", () => {
-  const mk = (engine: string) => ({ name: "p", version: "1.0.0", engine, toolsDir: "tools", hooksDir: "hooks", namespace: "p", oauthProviders: [] });
+  const mk = (engine: string) => ({ name: "p", version: "1.0.0", engine, toolsDir: "tools", hooksDir: "hooks", namespace: "p", oauthProviders: [], system: { apk: [], npmGlobal: [], env: {} } });
 
   it("true when the engine version is inside the range", () => {
     expect(engineSatisfies(mk(">=0.1.0"), "0.1.0")).toBe(true);
@@ -82,5 +82,65 @@ describe("oauthProviders in manifest", () => {
       oauthProviders: [{ name: "x", authorizeUrl: "https://a", scope: "" }],
     });
     expect(r.success).toBe(false);
+  });
+});
+
+describe("pluginManifestSchema — system requirements", () => {
+  const base = { name: "p", version: "1.0.0", engine: ">=1.0.0" };
+
+  it("defaults to empty when absent — a plugin that needs nothing declares nothing", () => {
+    const r = pluginManifestSchema.safeParse(base);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.system).toEqual({ apk: [], npmGlobal: [], env: {} });
+  });
+
+  it("parses packages and env, and fills the lists it was not given", () => {
+    const r = pluginManifestSchema.safeParse({
+      ...base,
+      system: {
+        apk: ["chromium", "nss"],
+        env: { PUPPETEER_EXECUTABLE_PATH: "/usr/bin/chromium-browser" },
+      },
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.system.apk).toEqual(["chromium", "nss"]);
+      expect(r.data.system.npmGlobal).toEqual([]);
+      expect(r.data.system.env.PUPPETEER_EXECUTABLE_PATH).toBe("/usr/bin/chromium-browser");
+    }
+  });
+
+  it("rejects a non-string env value rather than coercing it into an image", () => {
+    const r = pluginManifestSchema.safeParse({ ...base, system: { env: { PORT: 4000 } } });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects an empty package name", () => {
+    const r = pluginManifestSchema.safeParse({ ...base, system: { apk: [""] } });
+    expect(r.success).toBe(false);
+  });
+});
+
+describe("displayName and description in manifest", () => {
+  const base = { name: "p", version: "1.0.0", engine: ">=0.1.0" };
+
+  it("are optional: a manifest without them is still valid", () => {
+    const r = pluginManifestSchema.safeParse(base);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.displayName).toBeUndefined();
+      expect(r.data.description).toBeUndefined();
+    }
+  });
+
+  it("are carried through when present", () => {
+    const r = pluginManifestSchema.safeParse({ ...base, displayName: "CRM", description: "Contacts and deals." });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data).toMatchObject({ displayName: "CRM", description: "Contacts and deals." });
+  });
+
+  it("reject an empty string, which would render as a blank name", () => {
+    expect(pluginManifestSchema.safeParse({ ...base, displayName: "" }).success).toBe(false);
+    expect(pluginManifestSchema.safeParse({ ...base, description: "" }).success).toBe(false);
   });
 });

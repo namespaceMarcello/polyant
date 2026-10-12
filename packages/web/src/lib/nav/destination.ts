@@ -8,10 +8,9 @@
  * adjacent vertical lists at the same visual weight read as one two-level tree cut
  * in half — neither can say "you are here", so both try to.
  *
- * There is one destination here: an agent. (The Enterprise panel has three — it
- * also has a Settings surface and an Admin Console to put behind them. The
- * mechanism is deliberately the same shape in both, so a section moving between
- * editions moves as data, not as a rewrite.)
+ * There is one destination here: an agent. (A panel with more surfaces, such as
+ * settings or an admin console, adds them as further destinations: the mechanism
+ * is data, so a new destination is a row, not a rewrite.)
  */
 
 import type { LucideIcon } from "lucide-react";
@@ -21,6 +20,7 @@ import { isNavActive } from "@/components/layout/nav-main";
 import {
   AGENT_MACROS,
   AGENT_SECTIONS,
+  agentSection,
   agentSectionsByMacro,
   resolveAgentTab,
 } from "./agent-sections";
@@ -86,19 +86,30 @@ export function agentFromPath(
 function agentGroups(orgSlug: string, workspaceSlug: string, agentSlug: string): DestinationGroup[] {
   const base = workspacePath(orgSlug, workspaceSlug, `/instances/${encodeURIComponent(agentSlug)}`);
   return AGENT_MACROS.flatMap(({ macro, titleKey }) => {
+    if (macro === "automation") return [];
     const sections = agentSectionsByMacro(macro);
     // A macro with no section would be a heading over nothing.
     if (sections.length === 0) return [];
+    const items = sections.map((section) => ({
+      key: section.tab,
+      titleKey: section.titleKey,
+      href: `${base}?tab=${section.tab}`,
+      icon: section.icon,
+    }));
+    if (macro === "behaviour") {
+      const automation = agentSectionsByMacro("automation")[0];
+      items.splice(items.findIndex((item) => item.key === "params"), 0, {
+        key: "automation",
+        titleKey: "instances.macro.automation",
+        href: `${base}?tab=${automation.tab}`,
+        icon: automation.icon,
+      });
+    }
     return [
       {
         key: macro,
         labelKey: titleKey,
-        items: sections.map((section) => ({
-          key: section.tab,
-          titleKey: section.titleKey,
-          href: `${base}?tab=${section.tab}`,
-          icon: section.icon,
-        })),
+        items,
       },
     ];
   });
@@ -124,11 +135,7 @@ export function resolveDestination(pathname: string): Destination | null {
  * path comparison every other nav surface uses would mark every one of them active
  * at once. When an item's href carries a tab, the tab decides.
  *
- * And it decides by LEAF: a sidebar row is a macro entry linking to
- * the first section it holds, so it must stay lit while you move along that page's
- * tab row — otherwise opening the second tab of Comportamento leaves the sidebar
- * with nothing lit at all. `resolveAgentTab` is applied first, so a legacy or absent
- * `?tab=` lights the entry the page actually rendered.
+ * The Automazione row stays active across its three page tabs.
  *
  * @param currentTab the URL's `tab` parameter, or `null` when it carries none.
  */
@@ -140,7 +147,9 @@ export function isDestinationItemActive(
   const [path, query] = href.split("?");
   const itemTab = query ? new URLSearchParams(query).get("tab") : null;
   if (!itemTab) return isNavActive(pathname, href);
-  return isNavActive(pathname, path, true) && resolveAgentTab(currentTab) === itemTab;
+  const activeTab = resolveAgentTab(currentTab);
+  return isNavActive(pathname, path, true) &&
+    (itemTab === "webhooks" ? agentSection(activeTab).macro === "automation" : activeTab === itemTab);
 }
 
 /**

@@ -5,21 +5,12 @@ import type { Request, Response } from "express";
 import { OpenAIService } from "./openai.service.js";
 import { Public } from "../../auth/decorators/public.decorator.js";
 import { validateInstanceApiKey } from "./instance-api-key-auth.js";
+import { RequirePermission, Permission } from "../../authz/index.js";
 import type { ChatCompletionRequest } from "./openai.types.js";
+import { TurnStreamRelay } from "./turn-stream-relay.js";
 
 /**
- * Keep-alive cadence for the SSE stream. Long, output-less tool calls (e.g.
- * `claudeCode` cloning + analysing a repo for minutes) emit no stream parts, so
- * without a periodic byte an idle timeout on the browser/proxy would sever the
- * connection and the client would miss the final `done`. An SSE comment line
- * (starting with ":") keeps it warm and is ignored by the stream parser. Matches
- * the activity-stream heartbeat so both long-lived SSE endpoints stay warm below
- * the typical 30–60s proxy idle cut-off.
- */
-const HEARTBEAT_MS = 25_000;
-
-/**
- * Native streaming endpoint for the admin playground (and other first-party UIs).
+ * Native typed-SSE streaming: `chat/stream` is the Web channel's endpoint (public, key-gated), `playground/stream` is the panel's own (session-gated).
  *
  * Unlike `/v1/chat/completions` (OpenAI-compatible), this endpoint emits a
  * **typed SSE stream** that exposes the full multi-step + reasoning timeline
@@ -48,6 +39,10 @@ const HEARTBEAT_MS = 25_000;
 export class InstanceChatStreamController {
   constructor(@Inject(OpenAIService) private readonly openaiService: OpenAIService) {}
 
+  /**
+   * The Web channel's streaming endpoint: public, gated by the channel switch
+   * and the agent's API key (see `validateInstanceApiKey`).
+   */
   @Public()
   @Post(":slug/chat/stream")
   async stream(
@@ -56,12 +51,38 @@ export class InstanceChatStreamController {
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
-    // Per-instance API key auth (mirrors /v1/chat/completions). The global
-    // JWT AuthGuard is skipped via @Public() — this route accepts the same
-    // Bearer-token shape as the OpenAI-compatible endpoint, NOT a session
-    // cookie. See instance-api-key-auth.ts for the rules.
-    await validateInstanceApiKey(slug, req.headers["authorization"] as string | undefined);
+    // Before the first await: see TurnStreamRelay for what a disconnect does.
+    const relay = new TurnStreamRelay(res);
 
+    // Web channel on + per-instance API key (mirrors /v1/chat/completions); the
+    // global JWT AuthGuard is skipped via @Public(), so this route takes the
+    // same Bearer-token shape as the OpenAI-compatible endpoint, NOT a session
+    // cookie. A web turn: on an agent that maps call context it needs the key
+    // even when the agent is otherwise open (see WebTurn).
+    await validateInstanceApiKey(slug, req.headers["authorization"] as string | undefined,
+      { carriesContext: body.context !== undefined && body.context !== null });
+
+    await this.pipe(slug, body, res, relay);
+  }
+
+  /**
+   * The panel's playground: an authenticated panel user talking to an agent. It
+   * is not the Web channel, so it works whatever that channel's state and needs
+   * no agent key; the session and `agent.playground:use` on this agent decide.
+   */
+  @RequirePermission(Permission.PLAYGROUND_USE)
+  @Post(":slug/playground/stream")
+  async playground(
+    @Param("slug") slug: string,
+    @Body() body: ChatCompletionRequest,
+    @Res() res: Response,
+  ): Promise<void> {
+    const relay = new TurnStreamRelay(res);
+    // Panel turns carry no call context.
+    await this.pipe(slug, { ...body, context: undefined }, res, relay);
+  }
+
+  private async pipe(slug: string, body: ChatCompletionRequest, res: Response, relay: TurnStreamRelay): Promise<void> {
     // Force the model field to the URL slug — the playground already passes
     // it but we ignore any client-side override to keep the route authoritative.
     const request: ChatCompletionRequest = { ...body, model: slug, stream: true };
@@ -80,28 +101,14 @@ export class InstanceChatStreamController {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
-    // Keep the connection warm during output-less stretches (see HEARTBEAT_MS).
-    const heartbeat = setInterval(() => {
-      try {
-        res.write(": ping\n\n");
-      } catch {
-        // Socket already gone; the close handler / finally will clear this.
-      }
-    }, HEARTBEAT_MS);
-
-    // Abort the underlying pipeline if the client disconnects.
-    const abortController = new AbortController();
-    req.on("close", () => {
-      clearInterval(heartbeat);
-      if (!abortController.signal.aborted) abortController.abort();
-    });
+    relay.startHeartbeat();
 
     let stream;
     try {
-      stream = await this.openaiService.chatCompletionStream(request);
+      stream = await this.openaiService.chatCompletionStream(request, relay.signal);
     } catch (err) {
       const message = err instanceof Error ? err.message : "stream initialisation failed";
-      clearInterval(heartbeat);
+      relay.stopHeartbeat();
       send("error", { message });
       send("done", {});
       res.end();
@@ -140,7 +147,8 @@ export class InstanceChatStreamController {
         finishReason?: string;
         error?: unknown;
       }>) {
-        if (abortController.signal.aborted) break;
+        if (relay.clientGone) break;
+        relay.observe(event.type);
 
         switch (event.type) {
           case "start-step": {
@@ -210,7 +218,7 @@ export class InstanceChatStreamController {
       const message = err instanceof Error ? err.message : "stream error";
       send("error", { message });
     } finally {
-      clearInterval(heartbeat);
+      relay.stopHeartbeat();
       res.end();
       // Safety net: if the loop threw before `completed` was awaited, swallow
       // its eventual rejection so it never surfaces as an unhandled rejection.

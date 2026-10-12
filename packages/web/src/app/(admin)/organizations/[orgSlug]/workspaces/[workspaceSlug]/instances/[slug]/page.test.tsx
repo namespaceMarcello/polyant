@@ -71,6 +71,30 @@ vi.mock("@/lib/i18n/context", () => ({
 }));
 
 const mockInstancesGet = vi.fn();
+const mockUseStatusChecks = vi.fn((_input: {
+  instance: Instance | null;
+  tools: unknown[];
+  skills: unknown[];
+}) => ({
+  checks: [
+    {
+      id: "provider-no-credentials",
+      severity: "broken" as const,
+      titleKey: "status.check.providerCredentials.title" as const,
+      bodyKey: "status.check.providerCredentials.body" as const,
+      section: "credentials",
+      sectionKey: "instances.detail.tabCredentials" as const,
+    },
+  ],
+  verdict: "broken" as const,
+  loading: false,
+  refresh: vi.fn(),
+}));
+
+vi.mock("./use-status-checks", () => ({
+  useStatusChecks: (input: { instance: Instance | null; tools: unknown[]; skills: unknown[] }) =>
+    mockUseStatusChecks(input),
+}));
 
 vi.mock("@/lib/api", () => ({
   api: {
@@ -93,16 +117,16 @@ vi.mock("./tools-tab", () => ({ ToolsTab: () => <div>tab-body:tools</div> }));
 vi.mock("./mcp-servers-tab", () => ({ McpServersTab: () => <div>tab-body:mcp</div> }));
 vi.mock("./skills-tab", () => ({ SkillsTab: () => <div>tab-body:skills</div> }));
 vi.mock("./knowledge-tab", () => ({ KnowledgeTab: () => <div>tab-body:knowledge</div> }));
-// One component, two sections: which half it renders is the `section` prop, and
-// the stub reports it — a copy-paste leaving both addresses on one half fails here.
-vi.mock("./settings-tab", () => ({
-  SettingsTab: ({ section }: { section: string }) => <div>tab-body:settings:{section}</div>,
-}));
+vi.mock("./model-tab", () => ({ ModelTab: () => <div>tab-body:model</div> }));
 vi.mock("./channels-section", () => ({ ChannelsSection: () => <div>tab-body:channels</div> }));
 vi.mock("./analytics-tab", () => ({ AnalyticsTab: () => <div>tab-body:analytics</div> }));
 // Stubbed like every other body: this file is about navigation, and the status
 // block makes its own requests (covered by `overview-status.test.tsx`).
-vi.mock("./status-tab", () => ({ StatusTab: () => <div>tab-body:status</div> }));
+vi.mock("./status-tab", () => ({
+  StatusTab: ({ status }: { status?: { checks: Array<{ id: string }> } }) => (
+    <div>tab-body:status:{status?.checks.map((check) => check.id).join(",")}</div>
+  ),
+}));
 vi.mock("./logs-tab", () => ({ LogsTab: () => <div>tab-body:logs</div> }));
 vi.mock("./params-tab", () => ({ ParamsTab: () => <div>tab-body:params</div> }));
 vi.mock("./agent-conversations-tab", () => ({
@@ -118,6 +142,8 @@ vi.mock("./hooks-tab", () => ({ HooksTab: () => <div>tab-body:hooks</div> }));
 vi.mock("./privacy-tab", () => ({ PrivacyTab: () => <div>tab-body:privacy</div> }));
 
 import InstanceDetailPage from "./page";
+import { api } from "@/lib/api";
+import { toast } from "sonner";
 import { DEFAULT_AGENT_TAB } from "@/lib/nav/agent-sections";
 
 function makeInstance(overrides: Partial<Instance> = {}): Instance {
@@ -129,6 +155,8 @@ function makeInstance(overrides: Partial<Instance> = {}): Instance {
     status: "active",
     provider: "openai",
     model: "gpt-4o",
+    effectiveProvider: "openai",
+    effectiveModel: "gpt-4o",
     memoryEnabled: true,
     knowledgeEnabled: false,
     langsmithEnabled: false,
@@ -162,8 +190,8 @@ function makeInstance(overrides: Partial<Instance> = {}): Instance {
  */
 const EVERY_SECTION = [
   "overview", "analytics",
-  "general", "settings", "credentials", "channels",
-  "prompts", "tools", "toolSecrets", "mcp", "skills", "knowledge", "hooks", "params",
+  "general", "settings", "channels",
+  "prompts", "tools", "mcp", "skills", "knowledge", "hooks", "params",
   "webhooks", "scheduled", "room",
   "privacy",
   "conversations", "memories", "logs",
@@ -171,12 +199,8 @@ const EVERY_SECTION = [
 
 /** Which stub body a section renders, where the two differ. */
 const BODY_OF: Record<string, string> = {
-  overview: "status",
-  // One component, four pages: the stub reports which half it was asked for, so a
-  // copy-paste leaving two addresses on one section fails here.
-  settings: "settings:model",
-  credentials: "settings:credentials",
-  toolSecrets: "settings:toolSecrets",
+  overview: "status:provider-no-credentials",
+  settings: "model",
 };
 
 /**
@@ -191,7 +215,11 @@ const BODY_OF: Record<string, string> = {
 const DROPPED_ADDRESSES = [
   "triggers",
   "governance",
-  // Enterprise sections. They are not aliases either: an address that names
+  // The tool parameters' page: they are set in each tool's own panel now.
+  "toolSecrets",
+  // The provider keys' page: each key is set in the Model block of the task that uses it.
+  "credentials",
+  // Sections this build does not ship. They are not aliases either: an address that names
   // nothing in this build lands on the default section like any other.
   "policy",
   "compliance",
@@ -213,7 +241,7 @@ describe("InstanceDetailPage — sections", () => {
 
   it("lands on the overview, alone", async () => {
     render(<InstanceDetailPage />);
-    await screen.findByText("tab-body:status");
+    await screen.findByText("tab-body:status:provider-no-credentials");
 
     for (const value of EVERY_SECTION) {
       if (value === "overview") continue;
@@ -283,10 +311,48 @@ describe("InstanceDetailPage — sections", () => {
     ).toBeInTheDocument();
   });
 
+  // Prompts, tools and skills are each read with their own permission. A custom
+  // role holding agent:read without one of them used to see "agent not found"
+  // and be sent back to the list, even for the Providers or Overview section.
+  it("opens the agent when a secondary read is refused", async () => {
+    vi.mocked(api.prompts.list).mockRejectedValueOnce(new Error("403"));
+    render(<InstanceDetailPage />);
+
+    await screen.findByText("tab-body:status:provider-no-credentials");
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  // Every section is introduced the same way, by the page: the line under the
+  // title is never a section's own paragraph, so no two sections word or place
+  // their intro differently.
+  it("writes the line under every section's title, the same way", async () => {
+    for (const value of EVERY_SECTION) {
+      resetSearch(`tab=${value}`);
+      const { unmount } = render(<InstanceDetailPage />);
+      await waitFor(() => expect(screen.getByText(`tab-body:${BODY_OF[value] ?? value}`)).toBeInTheDocument());
+      const heading = screen.getByRole("heading", { level: 2 });
+      expect(heading.nextElementSibling?.textContent).toMatch(new RegExp(`^agentSection\\.${value}`));
+      unmount();
+    }
+  });
+
   it("falls back to the overview for an unknown `?tab=` value", async () => {
     resetSearch("tab=not-a-real-tab");
     render(<InstanceDetailPage />);
 
-    await waitFor(() => expect(screen.getByText("tab-body:status")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("tab-body:status:provider-no-credentials")).toBeInTheDocument());
+  });
+
+  it("builds readiness from the loaded agent", async () => {
+    // The overview renders the readiness list; the Model section shows each
+    // task's state in its own block instead of the list.
+    resetSearch("tab=overview");
+    render(<InstanceDetailPage />);
+
+    await screen.findByText("tab-body:status:provider-no-credentials");
+    expect(mockUseStatusChecks).toHaveBeenCalled();
+    expect(mockUseStatusChecks.mock.calls.at(-1)?.[0]).toMatchObject({
+      instance: expect.objectContaining({ slug: "test-instance" }),
+    });
   });
 });

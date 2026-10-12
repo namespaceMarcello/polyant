@@ -2,6 +2,7 @@
 
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,13 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useChangelogCheck } from "@/hooks/use-changelog-check";
 import { useI18n } from "@/lib/i18n/context";
-import { ChangelogEntryCard } from "./changelog-entry-card";
+import { useOnboardingBusy } from "@/lib/onboarding/onboarding-context";
+
+// The card renders markdown (react-markdown, rehype-highlight): loaded only
+// when the dialog opens, not on every admin page that mounts this modal.
+const ChangelogEntryCard = dynamic(() => import("./changelog-entry-card").then((m) => m.ChangelogEntryCard), {
+  ssr: false,
+});
 
 /**
  * Mounted once in the admin layout. Gated inside useChangelogCheck to
@@ -26,9 +33,11 @@ import { ChangelogEntryCard } from "./changelog-entry-card";
 export function ChangelogUpdateModal() {
   const { t } = useI18n();
   const { version, newVersionAvailable, unseenChangelogs, markAsSeen } = useChangelogCheck();
+  // The guided setup and the tours come first; the changelog opens once they are away.
+  const guidanceBusy = useOnboardingBusy();
 
   return (
-    <Dialog open={newVersionAvailable} onOpenChange={(open) => !open && markAsSeen()}>
+    <Dialog open={newVersionAvailable && !guidanceBusy} onOpenChange={(open) => !open && markAsSeen()}>
       <DialogContent className="max-h-[80vh] sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t("changelog.modalTitle")}</DialogTitle>

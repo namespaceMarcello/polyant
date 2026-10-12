@@ -7,8 +7,8 @@ import { type ManagementAuditStore, managementAuditStore } from "./management-au
  * (RBAC Stream 7).
  *
  * Privilege-granting actions (`member.role_assign`, `member.remove`,
- * `user.role_update`, `platform_admin.bootstrap`) are audited because a role
- * change controls the permission guard — up to a total bypass. `role_bindings`
+ * `user.role_update`) are audited because a role change controls the permission
+ * guard — up to a total bypass. `role_bindings`
  * are upserted delete-then-insert, so `role_bindings.created_by` is destroyed by
  * the next assignment: this audit log is the ONLY durable trace of who granted
  * what, and when.
@@ -22,13 +22,26 @@ export const ManagementAuditAction = {
   MemberRemove: "member.remove",
   McpServerWrite: "mcp_server.write",
   McpServerDelete: "mcp_server.delete",
-  PlatformAdminBootstrap: "platform_admin.bootstrap",
   UserCreate: "user.create",
   // The wire value stays `user.role_update` although `users.role` is gone:
   // renaming it would orphan every audit row already written under it.
   UserRoleUpdate: "user.role_update",
   UserDelete: "user.delete",
   UserPasswordReset: "user.password_reset",
+  /**
+   * A change to the installation's own policies. Audited because one of them —
+   * the analytics retention window — DELETES data when shortened, and the row is
+   * the only durable record of who shortened it: `platform_settings` keeps the
+   * current value and `updated_by`, both overwritten by the next change.
+   */
+  PlatformSettingsUpdate: "platform_settings.update",
+  /**
+   * A management API key issued or revoked. A key is a bearer credential with
+   * the Owner permission set and records nothing about who issued it, so this
+   * row is the only trace of who handed one out, or took one away.
+   */
+  ApiKeyCreate: "api_key.create",
+  ApiKeyDelete: "api_key.delete",
 } as const;
 
 export type ManagementAuditActionValue =
@@ -40,8 +53,12 @@ export const ManagementAuditTarget = {
   Secret: "secret",
   Member: "member",
   McpServer: "mcp_server",
-  /** A platform-level account (`/api/users` surface, bootstrap-owner). */
+  /** A platform-level account (the `/api/users` surface). */
   User: "user",
+  /** The installation itself — the single `platform_settings` row. */
+  PlatformSettings: "platform_settings",
+  /** A management API key (`management_api_keys`), by id. */
+  ApiKey: "api_key",
 } as const;
 
 export type ManagementAuditTargetValue =

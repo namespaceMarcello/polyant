@@ -6,6 +6,40 @@ import { loadConversationState, flushConversationState } from "./state.store.js"
  *  it via `ctx.state.channel`; it is never written by the LLM. */
 export const CHANNEL_STATE_KEY = "_channel";
 
+/** Reserved key for data a plugin keeps for external integrations (for example
+ *  terms passed to a speech-to-text service) that the model must not see.
+ *  Stored, returned by the state API and readable/writable by tools and hooks
+ *  like any other key, but always removed before state is rendered into the
+ *  prompt. */
+export const PRIVATE_STATE_KEY = "_private";
+
+/**
+ * State keys nobody outside the engine may target: the prototype-pollution
+ * names, and every key with a leading underscore. The underscore namespace is
+ * the engine's and its adapters' — the server-seeded channel identity
+ * (`_channel`), plugin-private data (`_private`), and keys channel adapters or
+ * plugins keep for themselves — so a whole prefix is refused rather than a list
+ * that a new adapter key would silently fall outside of.
+ *
+ * SINGLE SOURCE. Every boundary that lets a caller/client name a state key must
+ * narrow through `isReservedStateKey` — the web context field mapping
+ * (`conversations/field-mapping.ts`) does. A second hand-written copy would
+ * diverge the moment a key is added here, and the boundary that kept the stale
+ * copy would be the one still accepting it.
+ */
+export const RESERVED_STATE_KEYS: ReadonlySet<string> = new Set<string>([
+  CHANNEL_STATE_KEY,
+  PRIVATE_STATE_KEY,
+  "__proto__",
+  "constructor",
+  "prototype",
+]);
+
+/** Whether a caller-named state key is engine-owned; see `RESERVED_STATE_KEYS`. */
+export function isReservedStateKey(key: string): boolean {
+  return key.startsWith("_") || RESERVED_STATE_KEYS.has(key);
+}
+
 /** Max serialized size of a conversation's state blob, enforced at write time so
  *  a tool cannot grow an unbounded JSONB row (indirectly from LLM output). */
 export const MAX_STATE_BYTES = 64 * 1024;

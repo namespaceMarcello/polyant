@@ -1,23 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, it, expect } from "vitest";
-import { resolveModel, estimateCost, estimateCostBreakdown, estimateSttCost, providerConfigs, isThinkingCapable, isReasoningAlwaysOn, reasoningControlFor, reasoningLevelsFor, resolveReasoningLevel, clampTemperature, temperatureSupported, cacheSupported } from "./config.js";
+import { resolveModel, estimateCost, estimateCostBreakdown, estimateTurnCostBreakdown, estimateSttCost, providerConfigs, isThinkingCapable, isReasoningAlwaysOn, reasoningControlFor, reasoningLevelsFor, resolveReasoningLevel, clampTemperature, temperatureSupported, cacheSupported } from "./config.js";
 
 describe("resolveModel", () => {
+  // The gpt-4o family these used to name is in OpenAI's deprecated list; the
+  // tiers are where an agent lands when nobody chose a model.
   it("resolves openai fast tier", () => {
-    expect(resolveModel("openai", "fast")).toBe("gpt-4o-mini");
+    expect(resolveModel("openai", "fast")).toBe("gpt-6-luna");
   });
 
   it("resolves openai standard tier", () => {
-    expect(resolveModel("openai", "standard")).toBe("gpt-4o");
+    expect(resolveModel("openai", "standard")).toBe("gpt-6-sol");
   });
 
   it("resolves openai heavy tier", () => {
-    expect(resolveModel("openai", "heavy")).toBe("o3");
+    expect(resolveModel("openai", "heavy")).toBe("gpt-6-astra");
   });
 
   it("resolves anthropic fast tier", () => {
-    expect(resolveModel("anthropic", "fast")).toBe("claude-haiku-4-5-20251001");
+    expect(resolveModel("anthropic", "fast")).toBe("claude-haiku-5-5");
   });
 
   it("resolves anthropic standard tier", () => {
@@ -140,23 +142,40 @@ describe("estimateCost", () => {
     expect(cost).toBeCloseTo(expected, 12);
   });
 
-  it("prices GPT-5.6 cache read at 0.1x and cache WRITE at 1.25x (per-model override)", () => {
-    // gpt-5.6-luna: input $1/1M, output $6/1M. 1000 input = 200 full + 600 read + 200 write.
+  it("prices an OpenAI GPT-5.6+ cache write at 1.25x the uncached input rate", () => {
+    // gpt-5.6-luna, published $/1M: input 0.20, cached input 0.02, cache write
+    // 0.25, output 1.20. 1000 input = 200 full + 600 read + 200 write.
     const cost = estimateCost("openai", "gpt-5.6-luna", 1000, 500, {
       cachedInputTokens: 600,
       cacheCreationInputTokens: 200,
     });
-    const expected =
-      (200 * 1.0) / 1_000_000 + // regular input
-      (600 * 1.0 * 0.1) / 1_000_000 + // cache read 0.1x
-      (200 * 1.0 * 1.25) / 1_000_000 + // cache write 1.25x
-      (500 * 6.0) / 1_000_000; // output
+    const expected = (200 * 0.2 + 600 * 0.02 + 200 * 0.25 + 500 * 1.2) / 1_000_000;
     expect(cost).toBeCloseTo(expected, 12);
-    // The per-model override must NOT leak to the pre-5.6 provider default.
-    expect(estimateCost("openai", "gpt-4o", 1000, 0, { cacheCreationInputTokens: 1000 })).toBeCloseTo(
-      0, // gpt-4o write multiplier is 0 → cache writes are free
+  });
+
+  it("prices a GPT-6 Luna cache write at the published $0.125/1M", () => {
+    // Written as 0 before, so a GPT-6 turn's writes cost nothing and a cached
+    // run looked ~2.5x cheaper than it was. (One call under the 272K long-context
+    // threshold, so the base rate applies.)
+    expect(estimateCost("openai", "gpt-6-luna", 200_000, 0, { cacheCreationInputTokens: 200_000 })).toBeCloseTo(
+      0.025,
       12,
     );
+  });
+
+  it("recosts a cached GPT-6 Luna call with its cache writes", () => {
+    // One call shaped like the average of a 148-conversation eval run.
+    const cost = estimateCost("openai", "gpt-6-luna", 105_252, 365, {
+      cachedInputTokens: 91_865,
+      cacheCreationInputTokens: 13_362,
+    });
+    const expected = ((105_252 - 91_865 - 13_362) * 0.1 + 91_865 * 0.01 + 13_362 * 0.125 + 365 * 0.5) / 1_000_000;
+    expect(cost).toBeCloseTo(expected, 12);
+  });
+
+  it("keeps pre-5.6 OpenAI cache writes free", () => {
+    expect(estimateCost("openai", "gpt-5.4", 1000, 0, { cacheCreationInputTokens: 1000 })).toBe(0);
+    expect(estimateCost("openai", "gpt-4.1", 1000, 0, { cacheCreationInputTokens: 1000 })).toBe(0);
   });
 
   it("clamps a cache breakdown larger than the prompt total to non-negative regular input", () => {
@@ -167,9 +186,162 @@ describe("estimateCost", () => {
     expect(cost).toBeCloseTo((900 * 3.0 * 0.1) / 1_000_000, 12);
   });
 
-  it("prices Bedrock cross-Region (eu.*) profiles at the base rate — no surcharge", () => {
+  it("prices a Bedrock eu.* Claude 4.5+ profile 10% over the global one", () => {
+    // This used to assert no surcharge. Anthropic's pricing page states that a
+    // regional or multi-region endpoint — which an `eu.` inference profile is —
+    // carries a 10% premium over the global endpoint for Claude 4.5 and later.
+    const global = (1000 * 3.0) / 1_000_000 + (500 * 15.0) / 1_000_000;
+    expect(estimateCost("bedrock", "global.anthropic.claude-sonnet-4-6", 1000, 500)).toBeCloseTo(global, 12);
+    expect(estimateCost("bedrock", "eu.anthropic.claude-sonnet-4-6", 1000, 500)).toBeCloseTo(global * 1.1, 12);
+  });
+
+  it("leaves a pre-4.5 Bedrock eu.* profile at its old price, as the premium does not reach it", () => {
     const base = (1000 * 3.0) / 1_000_000 + (500 * 15.0) / 1_000_000;
-    expect(estimateCost("bedrock", "eu.anthropic.claude-sonnet-4-6", 1000, 500)).toBeCloseTo(base, 12);
+    expect(estimateCost("bedrock", "eu.anthropic.claude-sonnet-4-20250514-v1:0", 1000, 500)).toBeCloseTo(base, 12);
+  });
+});
+
+/**
+ * Claude Haiku 5.5 is priced by prompt length: past 100K prompt tokens EVERY rate
+ * of that call is 5× (input, output, cache), and the threshold is judged per
+ * model call — a step of a tool loop — never on the turn's sum.
+ */
+describe("prompt-length pricing (Claude Haiku 5.5)", () => {
+  const usd = (n: number) => n / 1_000_000;
+
+  it("bills a prompt of exactly 100K tokens at the base rates", () => {
+    expect(estimateCost("anthropic", "claude-haiku-5-5", 100_000, 1_000)).toBeCloseTo(usd(100_000 * 0.1 + 1_000 * 0.5), 12);
+  });
+
+  it("bills every bucket of a longer prompt at the long rates, cache included", () => {
+    const cost = estimateCostBreakdown("anthropic", "claude-haiku-5-5", 150_000, 2_000, {
+      cachedInputTokens: 90_000,
+      cacheCreationInputTokens: 20_000,
+      cacheCreation5mInputTokens: 5_000,
+    });
+    expect(cost.input).toBeCloseTo(usd(40_000 * 0.5), 12);
+    expect(cost.cacheRead).toBeCloseTo(usd(90_000 * 0.05), 12);
+    expect(cost.cacheWrite).toBeCloseTo(usd(15_000 * 1.0 + 5_000 * 0.625), 12);
+    expect(cost.output).toBeCloseTo(usd(2_000 * 2.5), 12);
+  });
+
+  it("counts cache reads and writes toward the threshold", () => {
+    // 10K uncached, but a 95K cache read takes the prompt past 100K.
+    const cost = estimateCostBreakdown("anthropic", "claude-haiku-5-5", 105_000, 0, { cachedInputTokens: 95_000 });
+    expect(cost.input).toBeCloseTo(usd(10_000 * 0.5), 12);
+  });
+
+  it("prices a turn call by call, so steps under the threshold stay at the base rates", () => {
+    const step = { promptTokens: 40_000, completionTokens: 500 };
+    const total = { promptTokens: 120_000, completionTokens: 1_500 };
+    const cost = estimateTurnCostBreakdown("anthropic", "claude-haiku-5-5", total, [step, step, step]);
+    expect(cost.total).toBeCloseTo(usd(3 * (40_000 * 0.1 + 500 * 0.5)), 12);
+    // Priced on the sum, the same turn would have crossed the threshold.
+    expect(estimateTurnCostBreakdown("anthropic", "claude-haiku-5-5", total, undefined).total).toBeCloseTo(
+      usd(120_000 * 0.5 + 1_500 * 2.5),
+      12,
+    );
+  });
+
+  it("prices only the calls that crossed the threshold at the long rates", () => {
+    const cost = estimateTurnCostBreakdown(
+      "anthropic",
+      "claude-haiku-5-5",
+      { promptTokens: 210_000, completionTokens: 0 },
+      [{ promptTokens: 90_000, completionTokens: 0 }, { promptTokens: 120_000, completionTokens: 0 }],
+    );
+    expect(cost.total).toBeCloseTo(usd(90_000 * 0.1 + 120_000 * 0.5), 12);
+  });
+
+  it("leaves a model with one price at every length on the turn's total", () => {
+    const total = { promptTokens: 120_000, completionTokens: 1_500, cachedInputTokens: 60_000 };
+    expect(estimateTurnCostBreakdown("anthropic", "claude-sonnet-5", total, [{ promptTokens: 1, completionTokens: 1 }])).toEqual(
+      estimateCostBreakdown("anthropic", "claude-sonnet-5", 120_000, 1_500, { cachedInputTokens: 60_000 }),
+    );
+  });
+
+  it("keeps the long-prompt tier on the Bedrock profiles, with the EU 10% premium", () => {
+    expect(estimateCost("bedrock", "global.anthropic.claude-haiku-5-5", 200_000, 0)).toBeCloseTo(usd(200_000 * 0.5), 12);
+    expect(estimateCost("bedrock", "eu.anthropic.claude-haiku-5-5", 200_000, 0)).toBeCloseTo(usd(200_000 * 0.55), 12);
+  });
+});
+
+describe("prompt-length pricing (OpenAI GPT-5.4 / 5.6 / 6, past 272K input tokens)", () => {
+  const usd = (n: number) => n / 1_000_000;
+
+  it("bills a call over 272K input tokens at the long-context rates, cache reads and writes included", () => {
+    const cost = estimateCostBreakdown("openai", "gpt-6-sol", 300_000, 1_000, { cachedInputTokens: 200_000, cacheCreationInputTokens: 50_000 });
+    expect(cost.input).toBeCloseTo(usd(50_000 * 4), 12);
+    expect(cost.cacheRead).toBeCloseTo(usd(200_000 * 0.4), 12);
+    expect(cost.cacheWrite).toBeCloseTo(usd(50_000 * 5), 12);
+    expect(cost.output).toBeCloseTo(usd(1_000 * 15), 12);
+  });
+
+  it("bills a call of exactly 272K input tokens at the base rates", () => {
+    expect(estimateCost("openai", "gpt-6-sol", 272_000, 1_000)).toBeCloseTo(usd(272_000 * 2 + 1_000 * 10), 12);
+  });
+
+  it("leaves the models capped at 272K on one price", () => {
+    expect(estimateCost("openai", "gpt-5.4-mini", 400_000, 0)).toBeCloseTo(usd(400_000 * 0.75), 12);
+  });
+});
+
+describe("estimateCostBreakdown – Anthropic cache writes priced by TTL", () => {
+  // Sonnet 5.5, published $/1M: input 2, 5m write 2.50, 1h write 4, read 0.10, output 10.
+  const INPUT = 16_840_640;
+  const READ = 14_832_729;
+  const WRITE = 1_429_569;
+  const OUTPUT = 78_572;
+  const base = (INPUT - READ - WRITE) * 2 + READ * 0.1 + OUTPUT * 10;
+
+  it("bills a write with no reported TTL split at the 1h rate, as before the split existed", () => {
+    const cost = estimateCostBreakdown("anthropic", "claude-sonnet-5-5", INPUT, OUTPUT, {
+      cachedInputTokens: READ,
+      cacheCreationInputTokens: WRITE,
+    });
+    expect(cost.cacheWrite).toBeCloseTo((WRITE * 4) / 1_000_000, 12);
+    expect(cost.total).toBeCloseTo((base + WRITE * 4) / 1_000_000, 12);
+    expect(cost.total).toBeCloseTo(9.144, 3);
+  });
+
+  it("bills writes reported as 5m at 1.25x input", () => {
+    const cost = estimateCostBreakdown("anthropic", "claude-sonnet-5-5", INPUT, OUTPUT, {
+      cachedInputTokens: READ,
+      cacheCreationInputTokens: WRITE,
+      cacheCreation5mInputTokens: WRITE,
+    });
+    expect(cost.total).toBeCloseTo((base + WRITE * 2.5) / 1_000_000, 12);
+    expect(cost.total).toBeCloseTo(7.0, 3);
+  });
+
+  it("bills a turn mixing 5m and 1h writes at each one's own rate", () => {
+    // A cross-turn 1h write plus the within-turn 5m step marker.
+    const cost = estimateCostBreakdown("anthropic", "claude-sonnet-5-5", 10_000, 200, {
+      cachedInputTokens: 6_000,
+      cacheCreationInputTokens: 3_000,
+      cacheCreation5mInputTokens: 1_000,
+    });
+    expect(cost.cacheWrite).toBeCloseTo((2_000 * 4 + 1_000 * 2.5) / 1_000_000, 12);
+    expect(cost.cacheRead).toBeCloseTo((6_000 * 0.1) / 1_000_000, 12);
+    expect(cost.input).toBeCloseTo((1_000 * 2) / 1_000_000, 12);
+    expect(cost.total).toBeCloseTo((1_000 * 2 + 6_000 * 0.1 + 2_000 * 4 + 1_000 * 2.5 + 200 * 10) / 1_000_000, 12);
+  });
+
+  it("ignores a 5m count on a model with a single write rate", () => {
+    // Bedrock caches at 5m only, and its cacheWrite is already that rate.
+    const withSplit = estimateCost("bedrock", "global.anthropic.claude-sonnet-5-5", 1000, 0, {
+      cacheCreationInputTokens: 1000,
+      cacheCreation5mInputTokens: 1000,
+    });
+    expect(withSplit).toBeCloseTo((1000 * 2.5) / 1_000_000, 12);
+  });
+
+  it("never bills more 5m writes than there are writes", () => {
+    const cost = estimateCostBreakdown("anthropic", "claude-sonnet-5-5", 1000, 0, {
+      cacheCreationInputTokens: 100,
+      cacheCreation5mInputTokens: 500,
+    });
+    expect(cost.cacheWrite).toBeCloseTo((100 * 2.5) / 1_000_000, 12);
   });
 });
 
@@ -217,8 +389,18 @@ describe("estimateSttCost", () => {
     expect(estimateSttCost("openai", "whisper-1", 120)).toBeCloseTo(0.012, 10);
   });
 
+  // Every voice note on Deepgram or Amazon Transcribe was logged at $0, so the
+  // spend those providers bill never reached the analytics.
+  it("prices Deepgram Nova-3 at its pre-recorded list rate of $0.0043 per minute", () => {
+    expect(estimateSttCost("deepgram", "nova-3", 60)).toBeCloseTo(0.0043, 10);
+  });
+
+  it("prices Amazon Transcribe streaming at $0.0001667 per second", () => {
+    expect(estimateSttCost("aws", "transcribe-streaming", 90)).toBeCloseTo(90 * 0.0001667, 10);
+  });
+
   it("returns 0 for unknown provider", () => {
-    expect(estimateSttCost("aws", "transcribe-streaming", 60)).toBe(0);
+    expect(estimateSttCost("other", "transcribe-streaming", 60)).toBe(0);
   });
 
   it("returns 0 for unknown model", () => {
@@ -376,33 +558,53 @@ describe("isThinkingCapable", () => {
 });
 
 describe("isReasoningAlwaysOn", () => {
+  // Provider + model, because two providers publish the same bare id: the gate
+  // used to look the id up across providers and answered from the first row.
   it.each([
     // gpt-oss reasons on EVERY call (no off), whatever provider serves it.
-    ["openai.gpt-oss-120b-1:0", true],
-    ["openai.gpt-oss-20b-1:0", true],
-    ["us.openai.gpt-oss-120b-1:0", true],
-    ["openai/gpt-oss-120b", true],
+    ["bedrock", "openai.gpt-oss-120b-1:0", true],
+    ["bedrock", "openai.gpt-oss-20b-1:0", true],
+    ["bedrock", "us.openai.gpt-oss-120b-1:0", true],
+    ["nebius", "openai/gpt-oss-120b", true],
     // OpenAI o-series + gpt-5.6 reason on every call (LIVE-VERIFIED: they still
     // spend reasoning tokens with reasoning OFF). gpt-5.4 has a real off.
-    ["o3", true],
-    ["gpt-5.6-sol", true],
-    ["gpt-5.6-luna", true],
-    ["gpt-5.4", false],
+    ["openai", "o3", true],
+    ["openai", "gpt-5.6-sol", true],
+    ["openai", "gpt-5.6-luna", true],
+    ["openai", "gpt-5.4", false],
     // MiniMax (Bedrock + Nebius), Kimi K2, Qwen3-Next-Thinking reason on every call,
     // no working off-switch (live-verified: enable_thinking:false still reasons).
-    ["minimax.minimax-m2.5", true],
-    ["MiniMaxAI/MiniMax-M2.5", true],
-    ["moonshotai/Kimi-K2.6", true],
-    ["moonshotai/Kimi-K2.7-Code", true],
-    ["Qwen/Qwen3-Next-80B-A3B-Thinking", true],
+    ["bedrock", "minimax.minimax-m2.5", true],
+    ["nebius", "MiniMaxAI/MiniMax-M2.5", true],
+    ["nebius", "moonshotai/Kimi-K2.6", true],
+    ["nebius", "moonshotai/Kimi-K2.7-Code", true],
+    ["nebius", "Qwen/Qwen3-Next-80B-A3B-Thinking", true],
     // Toggleable hybrids (Qwen3.5, GLM) / budget-based (Claude) have a real off.
-    ["Qwen/Qwen3.5-397B-A17B", false],
-    ["zai-org/GLM-5.2", false],
-    ["eu.anthropic.claude-sonnet-5", false],
-    ["gpt-4o", false],
-    ["", false],
-  ])("%s -> %s", (model, expected) => {
-    expect(isReasoningAlwaysOn(model)).toBe(expected);
+    ["nebius", "Qwen/Qwen3.5-397B-A17B", false],
+    ["nebius", "zai-org/GLM-5.2", false],
+    ["bedrock", "eu.anthropic.claude-sonnet-5", false],
+    // Claude that refuses `disabled` and has no lower setting (LIVE-VERIFIED
+    // 2026-09-29): Fable 5 and 5.1, Opus 5.5 on both providers. Opus 5 and
+    // Sonnet 5.5 are their switchable neighbours.
+    ["anthropic", "claude-fable-5", true],
+    ["anthropic", "claude-fable-5-1", true],
+    ["anthropic", "claude-opus-5-5", true],
+    ["bedrock", "eu.anthropic.claude-opus-5-5", true],
+    ["anthropic", "claude-opus-5", false],
+    ["bedrock", "global.anthropic.claude-opus-5", false],
+    ["anthropic", "claude-sonnet-5-5", false],
+    ["openai", "gpt-4o", false],
+    ["openai", "", false],
+    ["", "o3", false],
+  ])("%s/%s -> %s", (provider, model, expected) => {
+    expect(isReasoningAlwaysOn(provider, model)).toBe(expected);
+  });
+
+  it("falls back to the id heuristic for an un-catalogued id, per provider", () => {
+    // The fallback is still id-only (a family name is a family name), but it is
+    // reached through the provider, so a catalogued row always wins over it.
+    expect(isReasoningAlwaysOn("nebius", "someorg/gpt-oss-42b")).toBe(true);
+    expect(isReasoningAlwaysOn("nebius", "someorg/Llama-9")).toBe(false);
   });
 });
 

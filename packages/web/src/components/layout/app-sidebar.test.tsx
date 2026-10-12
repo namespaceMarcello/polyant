@@ -52,7 +52,7 @@ describe("AppSidebar", () => {
 
   it("shows a versioned About link in the footer without adding it to overview navigation", () => {
     const { container } = render(
-      <I18nProvider>
+      <I18nProvider initialLocale="it">
         <SidebarProvider>
           <AppSidebar user={{ name: "Ada Lovelace", email: "ada@example.com", isPlatformAdmin: false }} />
         </SidebarProvider>
@@ -82,7 +82,7 @@ describe("AppSidebar — a destination takes over the sidebar", () => {
   it("shows the agent's sections under their headings, and NOT the daily nav", () => {
     mockPathname.value = AGENT;
     render(
-      <I18nProvider>
+      <I18nProvider initialLocale="it">
         <SidebarProvider>
           <AppSidebar user={{ name: "Ada", email: "ada@example.com", isPlatformAdmin: false }} />
         </SidebarProvider>
@@ -99,6 +99,8 @@ describe("AppSidebar — a destination takes over the sidebar", () => {
     expect(within(content).queryByRole("link", { name: /^comportamento$/i })).not.toBeInTheDocument();
     expect(within(content).getByRole("link", { name: /^prompt$/i })).toBeInTheDocument();
     expect(within(content).getByRole("link", { name: /^strumenti$/i })).toBeInTheDocument();
+    expect(within(content).getByRole("link", { name: /^automazioni$/i })).toBeInTheDocument();
+    expect(within(content).queryByRole("link", { name: /^webhook$/i })).not.toBeInTheDocument();
 
     /*
       And none of the daily work. Conversazioni and Memoria are the trap here:
@@ -114,7 +116,7 @@ describe("AppSidebar — a destination takes over the sidebar", () => {
 
   it("shows the daily nav, and no agent entries, everywhere else", () => {
     render(
-      <I18nProvider>
+      <I18nProvider initialLocale="it">
         <SidebarProvider>
           <AppSidebar user={{ name: "Ada", email: "ada@example.com", isPlatformAdmin: false }} />
         </SidebarProvider>
@@ -135,7 +137,7 @@ describe("AppSidebar — a destination takes over the sidebar", () => {
 describe("AppSidebar — Members is org administration, Settings is platform administration", () => {
   const renderAs = (isPlatformAdmin: boolean) =>
     render(
-      <I18nProvider>
+      <I18nProvider initialLocale="it">
         <SidebarProvider>
           <AppSidebar user={{ name: "Ada", email: "ada@example.com", isPlatformAdmin }} />
         </SidebarProvider>

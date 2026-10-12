@@ -11,7 +11,8 @@ import {
 import type { Response } from "express";
 import { getAnalytics } from "../../analytics/analytics.store.js";
 import { getLatencyAnalytics } from "../../analytics/latency.store.js";
-import { findInstanceBySlug, resolvePrincipalOrgId } from "../../instances/store.js";
+import { findInstanceBySlug } from "../../instances/store.js";
+import { callerTenantScope } from "../utils/caller-tenant-scope.js";
 import { asInstanceSlug } from "../../instances/identifiers.js";
 import { parseDateRange } from "../utils/parse-date-range.js";
 import { CurrentUser } from "../../auth/decorators/current-user.decorator.js";
@@ -22,17 +23,23 @@ import { RequirePermission, Permission } from "../../authz/index.js";
  * A SHORT, PRIVATE cache on both analytics routes.
  *
  * `AnalyticsDashboard` is the organization landing page — the first thing every
- * user sees on login and on every org switch — and it fires sixteen uncached
- * aggregate scans, four of which count every message ever (the LATERAL subquery
- * carries no date predicate of its own) and two of which unnest jsonb per
- * message. There is no rollup table and no client-side cache, so it was a full
- * recomputation on every mount.
+ * user sees on login and on every org switch — and it fires about sixteen
+ * aggregate queries. Message totals come from the conversations' own counters
+ * and the message-level scans are bounded to the conversations active in the
+ * window (migration conversation_message_counters), but there is no rollup table and no client-side
+ * cache, so every mount still recomputes.
  *
  * `private` is not optional: this is tenant-scoped data and must never be held
  * by a shared proxy. 30s is chosen to absorb a reload and a back-navigation
  * without making the dashboard feel stale.
  */
 const ANALYTICS_CACHE_CONTROL = "private, max-age=30";
+/**
+ * The tenancy of these responses is decided by a HEADER, not by the URL, so two
+ * workspaces answer different bodies at the same address. A cache that does not
+ * know that would serve one workspace's figures for the other.
+ */
+const ANALYTICS_CACHE_VARY = "X-Workspace-Slug, X-Org-Slug";
 
 @Controller("api")
 export class AnalyticsController {
@@ -46,12 +53,13 @@ export class AnalyticsController {
     @Res({ passthrough: true }) res?: Response,
   ) {
     const range = parseDateRange(from, to);
-    const orgId = (await resolvePrincipalOrgId(user?.orgId)) ?? undefined;
+    const scope = await callerTenantScope(user);
     const [analytics, latency] = await Promise.all([
-      getAnalytics(range, undefined, true, orgId),
-      getLatencyAnalytics(range, undefined, orgId),
+      getAnalytics(scope, range, undefined, true),
+      getLatencyAnalytics(scope, range),
     ]);
     res?.setHeader("Cache-Control", ANALYTICS_CACHE_CONTROL);
+    res?.setHeader("Vary", ANALYTICS_CACHE_VARY);
     return { ...analytics, latency };
   }
 
@@ -69,14 +77,15 @@ export class AnalyticsController {
     if (!instance) throw new NotFoundException(`Instance "${slug}" not found`);
 
     const range = parseDateRange(from, to);
-    const orgId = (await resolvePrincipalOrgId(user?.orgId)) ?? undefined;
-    // orgId is ANDed in the store: a foreign-org slug yields empty analytics
+    const scope = await callerTenantScope(user);
+    // The scope is ANDed in the store: a foreign-org slug yields empty analytics
     // (param-IDOR closed at the store layer, not by an extra ownership check).
     const [analytics, latency] = await Promise.all([
-      getAnalytics(range, instance.slug, false, orgId),
-      getLatencyAnalytics(range, instance.slug, orgId),
+      getAnalytics(scope, range, instance.slug),
+      getLatencyAnalytics(scope, range, instance.slug),
     ]);
     res?.setHeader("Cache-Control", ANALYTICS_CACHE_CONTROL);
+    res?.setHeader("Vary", ANALYTICS_CACHE_VARY);
     return { ...analytics, latency };
   }
 }

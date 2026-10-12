@@ -94,15 +94,15 @@ export const PROVIDER_SECRET_SECTIONS: readonly ProviderSecretSection[] = [
 ];
 
 /**
- * Every key the credentials surfaces own — derived from the sections above so it
+ * Every key the Modello section owns — derived from the sections above so it
  * cannot drift from them, plus Deepgram, which is reached only through the
  * speech-to-text picker and so has no section of its own.
  *
  * Its use is subtractive: no OTHER surface may render one of these. A tool is
- * free to declare a provider key in its `requiredSecrets` (`claudeCode` asks for
- * `anthropic_api_key`) and reads the very key the agent already holds — so the
- * tools' secret page filters these out rather than offering a second field for
- * one credential, which is how "where do I put this key" came to have two
+ * free to declare a provider key in its `requiredSecrets` (a plugin tool may ask
+ * for `anthropic_api_key`) and reads the very key the agent already holds — so a
+ * tool's panel points to the Modello section rather than offering a second field
+ * for one credential, which is how "where do I put this key" came to have two
  * answers. `auth_api_key` is deliberately not here: it authenticates a caller
  * INTO this agent, belongs to no provider, and lives beside its channel.
  */
@@ -110,3 +110,26 @@ export const PROVIDER_CREDENTIAL_KEYS: ReadonlySet<string> = new Set<string>([
   ...PROVIDER_SECRET_SECTIONS.flatMap((section) => section.fields.map((field) => field.key)),
   SECRET_KEYS.DEEPGRAM,
 ]);
+
+/**
+ * How a provider is WRITTEN in the panel. The identifiers (`openai`,
+ * `bedrock`) are the API's vocabulary, not a reader's: the agent's Settings
+ * tab has spelled them properly for a long time, and the provider lists are
+ * the same nouns on a different page.
+ */
+export const BRAND_NAMES: Readonly<Record<string, string>> = {
+  hubspot: "HubSpot",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  nebius: "Nebius",
+  bedrock: "AWS Bedrock",
+  aws: "AWS",
+  deepgram: "Deepgram",
+  tavily: "Tavily",
+  langsmith: "LangSmith",
+};
+
+/** The provider's name where there is one, the identifier where there is not. */
+export function providerName(provider: string): string {
+  return BRAND_NAMES[provider] ?? provider;
+}

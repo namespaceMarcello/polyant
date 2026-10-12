@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { UnauthorizedException } from "@nestjs/common";
+import { NotFoundException, UnauthorizedException } from "@nestjs/common";
 
 /**
  * Unit tests for the validateAuth() method on OpenAIController.
@@ -16,9 +16,14 @@ import { UnauthorizedException } from "@nestjs/common";
 // Mock resolveInstanceConfig + findInstanceBySlug
 // ---------------------------------------------------------------------------
 
-const { mockResolveInstanceConfig, mockFindInstanceBySlug } = vi.hoisted(() => ({
+const { mockResolveInstanceConfig, mockFindInstanceBySlug, mockIsWebChannelEnabled } = vi.hoisted(() => ({
   mockResolveInstanceConfig: vi.fn(),
   mockFindInstanceBySlug: vi.fn(),
+  mockIsWebChannelEnabled: vi.fn(),
+}));
+
+vi.mock("../../instances/channels.store.js", () => ({
+  isWebChannelEnabled: mockIsWebChannelEnabled,
 }));
 
 vi.mock("../../instances/config-resolver.js", () => ({
@@ -41,6 +46,11 @@ vi.mock("./openai.service.js", () => ({
 // ---------------------------------------------------------------------------
 
 import { OpenAIController } from "./openai.controller.js";
+import { validateInstanceApiKey } from "./instance-api-key-auth.js";
+
+beforeEach(() => {
+  mockIsWebChannelEnabled.mockResolvedValue(true);
+});
 
 function callValidateAuth(
   controller: OpenAIController,
@@ -59,6 +69,7 @@ describe("OpenAIController.validateAuth — auth bypass protection (#38)", () =>
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsWebChannelEnabled.mockResolvedValue(true);
     // Return a valid instance so validateAuth proceeds to config checks
     mockFindInstanceBySlug.mockResolvedValue({ id: "test-id", slug: "my-bot", status: "active" });
     controller = new (OpenAIController as any)({});
@@ -151,5 +162,143 @@ describe("OpenAIController.validateAuth — auth bypass protection (#38)", () =>
     await expect(
       callValidateAuth(controller, "my-bot", "Bearer a-much-longer-key-that-differs"),
     ).rejects.toThrow("Invalid API key");
+  });
+});
+
+describe("validateInstanceApiKey — the Web channel switch", () => {
+  beforeEach(() => {
+    mockFindInstanceBySlug.mockResolvedValue({ id: "test-id", slug: "my-bot", status: "active" });
+    mockResolveInstanceConfig.mockResolvedValue({ authEnabled: true, authApiKey: "k".repeat(32) });
+  });
+
+  it("answers 404 on a web turn when Web is off, even with the right key", async () => {
+    mockIsWebChannelEnabled.mockResolvedValue(false);
+    await expect(
+      validateInstanceApiKey("my-bot", `Bearer ${"k".repeat(32)}`, { carriesContext: false }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("answers the same 404 for an unknown agent on a web turn", async () => {
+    mockFindInstanceBySlug.mockResolvedValue(undefined);
+    await expect(
+      validateInstanceApiKey("nope", undefined, { carriesContext: false }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("lets a web turn through with Web on and the right key", async () => {
+    await expect(
+      validateInstanceApiKey("my-bot", `Bearer ${"k".repeat(32)}`, { carriesContext: false }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("does not look at the Web switch for a caller that is not a web turn (A2A)", async () => {
+    mockIsWebChannelEnabled.mockResolvedValue(false);
+    await expect(
+      validateInstanceApiKey("my-bot", `Bearer ${"k".repeat(32)}`),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("validateInstanceApiKey — web context on an open agent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFindInstanceBySlug.mockResolvedValue({ id: "test-id", slug: "my-bot", status: "active" });
+  });
+
+  const openAgent = (webContextFieldMapping: Record<string, string>) =>
+    mockResolveInstanceConfig.mockResolvedValue({ authEnabled: false, authApiKey: "k", webContextFieldMapping });
+
+  it("requires the key on a later, context-free turn when the agent maps context", async () => {
+    // The hole: a keyed request writes the caller's identity into the state of
+    // chat_id X; a plain turn on X, with no key, then inherited it and the
+    // agent's tools acted on that identity.
+    openAgent({ contactId: "customer.id" });
+    const { validateInstanceApiKey } = await import("./instance-api-key-auth.js");
+
+    await expect(validateInstanceApiKey("my-bot", undefined, { carriesContext: false })).rejects.toThrow("Missing Bearer token");
+    await expect(validateInstanceApiKey("my-bot", "Bearer k", { carriesContext: false })).resolves.toBeUndefined();
+  });
+
+  it("leaves an open agent open when it maps no context", async () => {
+    openAgent({});
+    const { validateInstanceApiKey } = await import("./instance-api-key-auth.js");
+
+    await expect(validateInstanceApiKey("my-bot", undefined, { carriesContext: false })).resolves.toBeUndefined();
+  });
+
+  it("leaves routes other than web turns to the agent switch", async () => {
+    // A2A turns run on their own conversation ids and never load web state.
+    openAgent({ contactId: "customer.id" });
+    const { validateInstanceApiKey } = await import("./instance-api-key-auth.js");
+
+    await expect(validateInstanceApiKey("my-bot", undefined)).resolves.toBeUndefined();
+  });
+});
+
+describe("OpenAIController — streaming request refused by the pipeline", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFindInstanceBySlug.mockResolvedValue({ id: "test-id", slug: "my-bot", status: "active" });
+    mockResolveInstanceConfig.mockResolvedValue({ authEnabled: false });
+  });
+
+  it("answers an ordinary error, having written nothing of the stream yet", async () => {
+    const { BadRequestException } = await import("@nestjs/common");
+    const refusal = new BadRequestException("no");
+    const controller = new (OpenAIController as any)({
+      chatCompletionStream: vi.fn().mockRejectedValue(refusal),
+    });
+    const res = { setHeader: vi.fn(), write: vi.fn(), end: vi.fn(), json: vi.fn(), on: vi.fn() };
+
+    await expect(
+      controller.chatCompletions(
+        { model: "my-bot", stream: true, messages: [{ role: "user", content: "ciao" }] },
+        res,
+      ),
+    ).rejects.toBe(refusal);
+
+    expect(res.setHeader).not.toHaveBeenCalled();
+    expect(res.write).not.toHaveBeenCalled();
+  });
+});
+
+describe("OpenAIController — agent without a provider key", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFindInstanceBySlug.mockResolvedValue({ id: "test-id", slug: "my-bot", status: "active" });
+    mockResolveInstanceConfig.mockResolvedValue({ authEnabled: false });
+  });
+
+  const refusal = async () => {
+    const { MissingProviderKeyException } = await import("./missing-provider-key.exception.js");
+    return new MissingProviderKeyException("no key");
+  };
+  const makeRes = () => ({ setHeader: vi.fn(), write: vi.fn(), end: vi.fn(), json: vi.fn(), on: vi.fn() });
+
+  it("sets x-should-retry: false and rethrows the 503, non-streaming", async () => {
+    const err = await refusal();
+    const controller = new (OpenAIController as any)({ chatCompletion: vi.fn().mockRejectedValue(err) });
+    const res = makeRes();
+
+    await expect(
+      controller.chatCompletions({ model: "my-bot", messages: [{ role: "user", content: "ciao" }] }, res),
+    ).rejects.toBe(err);
+
+    expect(res.setHeader).toHaveBeenCalledWith("x-should-retry", "false");
+    expect(res.json).not.toHaveBeenCalled();
+  });
+
+  it("answers before any stream byte or stream header, streaming", async () => {
+    const err = await refusal();
+    const controller = new (OpenAIController as any)({ chatCompletionStream: vi.fn().mockRejectedValue(err) });
+    const res = makeRes();
+
+    await expect(
+      controller.chatCompletions({ model: "my-bot", stream: true, messages: [{ role: "user", content: "ciao" }] }, res),
+    ).rejects.toBe(err);
+
+    expect(res.setHeader).toHaveBeenCalledTimes(1);
+    expect(res.setHeader).toHaveBeenCalledWith("x-should-retry", "false");
+    expect(res.write).not.toHaveBeenCalled();
   });
 });

@@ -9,6 +9,8 @@
  * - shutdown() clears the interval and resets isRunning.
  * - tick() short-circuits when no due tasks.
  * - tick() respects MAX_CONCURRENT (3) — only schedules executable batch.
+ * - startup recovers rows abandoned by a dead process, and leaves live ones alone.
+ * - the per-tick reaper fails runs past their own deadline, not past the default one.
  *
  * Uses vi.useFakeTimers() — no real setTimeout is exercised.
  */
@@ -25,12 +27,18 @@ const { mockStore, mockRunLog, mockChannelManager } = vi.hoisted(() => ({
     markCompleted: vi.fn(),
     markFailed: vi.fn(),
     remove: vi.fn(),
+    removeAfterRun: vi.fn(),
     update: vi.fn(),
+    findStuckRunning: vi.fn(),
+    countStuckRunning: vi.fn(),
+    clearRunningMarker: vi.fn(),
   },
   mockRunLog: {
     createRun: vi.fn(),
     completeRun: vi.fn(),
     failRun: vi.fn(),
+    failDanglingRuns: vi.fn(),
+    findDanglingRuns: vi.fn(),
   },
   mockChannelManager: {
     sendOutbound: vi.fn(),
@@ -42,6 +50,16 @@ vi.mock("./run-log.store.js", () => mockRunLog);
 vi.mock("../channels/channel-manager.js", () => ({
   channelManager: mockChannelManager,
 }));
+const { mockConversationStore } = vi.hoisted(() => ({
+  mockConversationStore: { ensureConversation: vi.fn(), appendMessages: vi.fn() },
+}));
+vi.mock("../conversations/index.js", () => ({ conversationStore: mockConversationStore }));
+vi.mock("../instances/store.js", () => ({
+  findInstanceBySlug: vi.fn(async () => ({ status: "active" })),
+}));
+vi.mock("../activity-stream/emit-helpers.js", () => ({
+  resolveInstanceMeta: vi.fn(async () => undefined),
+}));
 vi.mock("./schedule-utils.js", () => ({
   computeNextRun: vi.fn(() => new Date()),
   computeRetryDelay: vi.fn(() => 30_000),
@@ -52,6 +70,12 @@ vi.mock("./schedule-utils.js", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 import { schedulerService } from "./scheduler.service.js";
+
+// The platform policies are a row; this suite has no database. The values are
+// the shipped defaults, so the assertions read the same as before they moved.
+vi.mock("../platform/platform-settings.store.js", () => ({
+  resolvePlatformSettings: async () => ({ schedulerOrphanGraceMs: 900_000, schedulerDefaultMaxRunMs: 1_800_000 }),
+}));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -74,12 +98,18 @@ describe("SchedulerService", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     mockStore.getDueTasks.mockReset().mockResolvedValue([]);
-    mockStore.markRunning.mockReset().mockResolvedValue(true);
-    mockStore.markCompleted.mockReset().mockResolvedValue(undefined);
-    mockStore.markFailed.mockReset().mockResolvedValue(undefined);
+    mockStore.markRunning.mockReset().mockResolvedValue(new Date());
+    mockStore.markCompleted.mockReset().mockResolvedValue(new Date());
+    mockStore.removeAfterRun.mockReset().mockResolvedValue(true);
+    mockStore.markFailed.mockReset().mockResolvedValue(true);
     mockRunLog.createRun.mockReset().mockResolvedValue("run-1");
     mockRunLog.completeRun.mockReset().mockResolvedValue(undefined);
     mockRunLog.failRun.mockReset().mockResolvedValue(undefined);
+    mockRunLog.failDanglingRuns.mockReset().mockResolvedValue(0);
+    mockRunLog.findDanglingRuns.mockReset().mockResolvedValue([]);
+    mockStore.findStuckRunning.mockReset().mockResolvedValue([]);
+    mockStore.countStuckRunning.mockReset().mockResolvedValue(0);
+    mockStore.clearRunningMarker.mockReset().mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -122,6 +152,29 @@ describe("SchedulerService", () => {
       expect(schedulerService.isRunning).toBe(true);
     });
 
+    it("arms the tick loop even when a recovered missed task never settles", async () => {
+      // A missed task found at startup runs an ordinary pipeline. If it hangs, the reaper
+      // in the tick loop is its only supervision, and boot must not wait on it either.
+      const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+      mockStore.getDueTasks.mockResolvedValue([{
+        id: "task-missed",
+        name: "missed",
+        instanceId: "acme",
+        schedule: { type: "cron", expression: "0 6 * * *" },
+        prompt: "noop",
+        keepHistory: false,
+        deleteAfterRun: false,
+        maxRetries: 3,
+        consecutiveErrors: 0,
+      }]);
+      schedulerService.initialize(() => new Promise(() => {}));
+
+      await schedulerService.start();
+
+      expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 30_000);
+      expect(schedulerService.isRunning).toBe(true);
+    });
+
     it("shutdown() clears the interval and sets isRunning=false", async () => {
       const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
       schedulerService.initialize(noopHandler);
@@ -160,6 +213,296 @@ describe("SchedulerService", () => {
       await schedulerService.tick();
 
       expect(mockStore.getDueTasks).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Crash-safety: startup recovery
+  // -----------------------------------------------------------------------
+  describe("startup recovery of orphaned rows", () => {
+    const orphan = (over: Record<string, unknown> = {}) => ({
+      id: "task-orphan",
+      name: "daily",
+      instanceId: "acme",
+      schedule: { type: "cron", expression: "0 6 * * *" },
+      lastRunStatus: "running",
+      updatedAt: new Date(Date.now() - 60 * 60_000),
+      lastRunAt: new Date(Date.now() - 60 * 60_000),
+      maxRunMs: null,
+      keepHistory: false,
+      deleteAfterRun: false,
+      maxRetries: 3,
+      consecutiveErrors: 0,
+      ...over,
+    });
+
+    it("clears the running marker and closes the dangling run, before looking for work", async () => {
+      // The order matters and is the whole point: `getDueTasks` skips rows marked
+      // `running`, so a recovery that ran after the missed-task pass would leave exactly
+      // the interrupted tasks unseen.
+      const calls: string[] = [];
+      mockStore.findStuckRunning.mockImplementation(async () => {
+        calls.push("findStuckRunning");
+        return [orphan()];
+      });
+      mockStore.clearRunningMarker.mockImplementation(async () => {
+        calls.push("clearRunningMarker");
+        return ["task-orphan"];
+      });
+      mockRunLog.findDanglingRuns.mockImplementation(async () => {
+        calls.push("findDanglingRuns");
+        return ["run-orphan"];
+      });
+      mockRunLog.failDanglingRuns.mockImplementation(async () => {
+        calls.push("failDanglingRuns");
+        return 1;
+      });
+      mockStore.getDueTasks.mockImplementation(async () => {
+        calls.push("getDueTasks");
+        return [];
+      });
+
+      schedulerService.initialize(noopHandler);
+      await schedulerService.start();
+
+      expect(calls.indexOf("clearRunningMarker")).toBeLessThan(calls.indexOf("getDueTasks"));
+      expect(mockRunLog.failDanglingRuns).toHaveBeenCalledWith(
+        ["run-orphan"],
+        expect.stringContaining("orphaned"),
+      );
+    });
+
+    it("clears only the claim it read, and closes only the runs it observed before clearing", async () => {
+      // Once the marker is cleared another replica may claim the task for a new run B.
+      // Recovery must neither clear B's marker nor close B's run-log row, so it names
+      // the claim it read and reads the dangling runs while the marker still holds.
+      const task = orphan();
+      const calls: string[] = [];
+      mockStore.findStuckRunning.mockResolvedValue([task]);
+      mockRunLog.findDanglingRuns.mockImplementation(async () => {
+        calls.push("findDanglingRuns");
+        return ["run-a"];
+      });
+      mockStore.clearRunningMarker.mockImplementation(async () => {
+        calls.push("clearRunningMarker");
+        return ["task-orphan"];
+      });
+      schedulerService.initialize(noopHandler);
+
+      await schedulerService.start();
+
+      expect(mockStore.clearRunningMarker).toHaveBeenCalledWith([{ id: "task-orphan", claim: task.lastRunAt }]);
+      expect(calls).toEqual(["findDanglingRuns", "clearRunningMarker"]);
+      expect(mockRunLog.failDanglingRuns).toHaveBeenCalledWith(["run-a"], expect.any(String));
+    });
+
+    it("does NOT count a failure for an interrupted run", async () => {
+      // An interrupted run is a deploy's fault, not the task's: counting it would burn a
+      // retry, push `nextRunAt` away, and after enough deploys disable the task outright.
+      mockStore.findStuckRunning.mockResolvedValue([orphan()]);
+      mockStore.clearRunningMarker.mockResolvedValue(["task-orphan"]);
+
+      schedulerService.initialize(noopHandler);
+      await schedulerService.start();
+
+      expect(mockStore.markFailed).not.toHaveBeenCalled();
+    });
+
+    it("respects the deploy overlap window: the cutoff is in the past, never now", async () => {
+      // A row younger than the grace may belong to the OUTGOING process, still legitimately
+      // running it. Recovering it means running the task twice — for a task that delivers
+      // something outward, worse than running it late.
+      mockStore.findStuckRunning.mockResolvedValue([]);
+      schedulerService.initialize(noopHandler);
+      await schedulerService.start();
+
+      const cutoff = mockStore.findStuckRunning.mock.calls[0]![0] as Date;
+      // Default grace is 15 minutes; assert the shape (a past cutoff), not the constant.
+      expect(cutoff.getTime()).toBeLessThan(Date.now() - 60_000);
+    });
+
+    it("does not reclaim a run still inside its deadline, even after the deploy grace", async () => {
+      mockStore.findStuckRunning.mockResolvedValue([
+        orphan({ updatedAt: new Date(Date.now() - 20 * 60_000) }),
+        orphan({ id: "long-running", updatedAt: new Date(Date.now() - 40 * 60_000), maxRunMs: 60 * 60_000 }),
+      ]);
+      schedulerService.initialize(noopHandler);
+
+      await schedulerService.start();
+
+      expect(mockStore.clearRunningMarker).not.toHaveBeenCalled();
+      expect(mockRunLog.failDanglingRuns).not.toHaveBeenCalled();
+    });
+
+    it("closes only rows whose running marker was actually cleared", async () => {
+      mockStore.findStuckRunning.mockResolvedValue([orphan()]);
+      mockStore.clearRunningMarker.mockResolvedValue([]);
+      schedulerService.initialize(noopHandler);
+
+      await schedulerService.start();
+
+      expect(mockRunLog.failDanglingRuns).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Crash-safety: the per-tick reaper
+  // -----------------------------------------------------------------------
+  describe("reaper", () => {
+    const runningFor = (ms: number, maxRunMs: number | null = null) => ({
+      id: "task-hung",
+      name: "weekly",
+      instanceId: "acme",
+      schedule: { type: "cron", expression: "0 8 * * 1" },
+      lastRunStatus: "running",
+      updatedAt: new Date(Date.now() - ms),
+      lastRunAt: new Date(Date.now() - ms),
+      maxRunMs,
+      keepHistory: false,
+      deleteAfterRun: false,
+      maxRetries: 3,
+      consecutiveErrors: 0,
+    });
+
+    it("fails a run past its deadline, and counts it as a failure", async () => {
+      // Here the failure IS the task's own behaviour: it had its declared time and did not
+      // finish, so the retry backoff is the right response.
+      mockStore.findStuckRunning.mockResolvedValue([runningFor(31 * 60_000)]);
+      mockRunLog.findDanglingRuns.mockResolvedValue(["run-hung"]);
+      schedulerService.initialize(noopHandler);
+
+      await schedulerService.tick();
+
+      expect(mockStore.markFailed).toHaveBeenCalledWith("task-hung", expect.stringContaining("orphaned"), expect.anything());
+      expect(mockRunLog.failDanglingRuns).toHaveBeenCalledWith(["run-hung"], expect.stringContaining("orphaned"));
+    });
+
+    it("fails only the claim it read, and leaves the run log alone when the row moved on", async () => {
+      // Between the read and the write the hung run may have finished and the
+      // task been claimed again by another replica. The reaper must not fail
+      // that newer claim, nor close its run as orphaned.
+      const hung = runningFor(31 * 60_000);
+      mockStore.findStuckRunning.mockResolvedValue([hung]);
+      mockStore.markFailed.mockResolvedValue(false);
+      schedulerService.initialize(noopHandler);
+
+      await schedulerService.tick();
+
+      expect(mockStore.markFailed).toHaveBeenCalledWith("task-hung", expect.any(String), hung.lastRunAt);
+      expect(mockRunLog.failDanglingRuns).not.toHaveBeenCalled();
+    });
+
+    it("leaves a run alone while it is inside its deadline", async () => {
+      mockStore.findStuckRunning.mockResolvedValue([runningFor(60_000)]);
+      schedulerService.initialize(noopHandler);
+
+      await schedulerService.tick();
+
+      expect(mockStore.markFailed).not.toHaveBeenCalled();
+    });
+
+    it("honours a per-task deadline SHORTER than the default", async () => {
+      // The regression this pins: bounding the scan by the default deadline would have been
+      // faster and would have ignored every stricter per-task deadline until the default
+      // had elapsed. So the scan reads every running row and checks each against its own.
+      mockStore.findStuckRunning.mockResolvedValue([runningFor(2 * 60_000, 60_000)]);
+      schedulerService.initialize(noopHandler);
+
+      await schedulerService.tick();
+
+      expect(mockStore.markFailed).toHaveBeenCalledWith("task-hung", expect.stringContaining("60000 ms"), expect.anything());
+    });
+
+    it("runs before the due-task query, so a reaped row can run in the same tick", async () => {
+      const calls: string[] = [];
+      mockStore.findStuckRunning.mockImplementation(async () => {
+        calls.push("reap");
+        return [];
+      });
+      mockStore.getDueTasks.mockImplementation(async () => {
+        calls.push("due");
+        return [];
+      });
+      schedulerService.initialize(noopHandler);
+
+      await schedulerService.tick();
+
+      expect(calls).toEqual(["reap", "due"]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Observability: the failure here is the absence of success
+  // -----------------------------------------------------------------------
+  describe("outbound delivery", () => {
+    const outboundTask = (channel: string, target: string) => ({
+      id: "task-out",
+      name: "reminder",
+      instanceId: "acme",
+      schedule: { type: "cron", expression: "0 9 * * *" },
+      prompt: "remind",
+      outboundChannel: channel,
+      outboundTarget: target,
+      keepHistory: true,
+      deleteAfterRun: false,
+      maxRetries: 3,
+      consecutiveErrors: 0,
+    });
+
+    beforeEach(() => {
+      mockConversationStore.ensureConversation.mockReset().mockResolvedValue({ created: true });
+      mockConversationStore.appendMessages.mockReset().mockResolvedValue(undefined);
+      mockChannelManager.sendOutbound.mockReset().mockResolvedValue(undefined);
+    });
+
+    it("records the delivered message in the contact's conversation, keyed as their replies are", async () => {
+      // The contact's reply arrives on `+39…` and is keyed `acme:whatsapp:+39…` by the
+      // inbound pipeline; the reminder it answers must be in that same conversation.
+      schedulerService.initialize(noopHandler);
+      await schedulerService.runNow(outboundTask("whatsapp", "whatsapp:+393331234567") as never);
+
+      expect(mockChannelManager.sendOutbound).toHaveBeenCalledWith(
+        "acme", "whatsapp", "whatsapp:+393331234567", "ok", { throwOnSuppressed: true },
+      );
+      expect(mockConversationStore.ensureConversation).toHaveBeenCalledWith(
+        "acme:whatsapp:+393331234567",
+        "acme",
+        expect.objectContaining({ channel: "whatsapp", userIdentifier: "+393331234567" }),
+      );
+      expect(mockConversationStore.appendMessages).toHaveBeenCalledWith("acme:whatsapp:+393331234567", [
+        expect.objectContaining({ role: "assistant", content: "ok" }),
+      ]);
+    });
+
+    it("keys the conversation on the id the adapter reports for the delivery", async () => {
+      mockChannelManager.sendOutbound.mockResolvedValue({ channelId: "D0DM42" });
+      schedulerService.initialize(noopHandler);
+
+      await schedulerService.runNow(outboundTask("slack", "U0USER1") as never);
+
+      expect(mockConversationStore.appendMessages).toHaveBeenCalledWith("acme:slack:D0DM42", expect.any(Array));
+    });
+
+    it("records nothing when the delivery fails or is suppressed", async () => {
+      mockChannelManager.sendOutbound.mockRejectedValue(new Error("Outbound suppressed by recipient opt-out"));
+      schedulerService.initialize(noopHandler);
+
+      await schedulerService.runNow(outboundTask("whatsapp", "+393331234567") as never);
+
+      expect(mockConversationStore.appendMessages).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("health", () => {
+    it("reports free slots and stuck rows in numbers", async () => {
+      mockStore.countStuckRunning.mockResolvedValue(2);
+      const h = await schedulerService.health();
+
+      expect(h.maxConcurrent).toBe(3);
+      expect(h.freeSlots).toBe(3 - h.inFlight);
+      expect(h.stuckRunning).toBe(2);
+      // No names of instances or tasks: the endpoint is unauthenticated.
+      expect(JSON.stringify(h)).not.toContain("acme");
     });
   });
 });
