@@ -68,9 +68,9 @@ export class InstanceChatStreamController {
   /**
    * The panel's playground: an authenticated panel user talking to an agent. It
    * is not the Web channel, so it works whatever that channel's state and needs
-   * no agent key; the session and the permission decide.
+   * no agent key; the session and `agent.playground:use` on this agent decide.
    */
-  @RequirePermission(Permission.AGENT_WRITE)
+  @RequirePermission(Permission.PLAYGROUND_USE)
   @Post(":slug/playground/stream")
   async playground(
     @Param("slug") slug: string,

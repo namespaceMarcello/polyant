@@ -183,6 +183,13 @@ describe("InstanceChatStreamController.stream", () => {
     );
   });
 
+  it("keeps chat/stream gated: a refused key never opens the turn", async () => {
+    mockValidateInstanceApiKey.mockRejectedValue(new Error("Invalid API key"));
+    await expect(controller.stream("acme", { messages: [] } as never, makeReq("Bearer bad") as never, makeRes() as never))
+      .rejects.toThrow("Invalid API key");
+    expect(chatCompletionStream).not.toHaveBeenCalled();
+  });
+
   it("aborts the pipeline when the client disconnects before the turn produced anything", async () => {
     let signal: AbortSignal | undefined;
     chatCompletionStream.mockImplementation(async (_request: unknown, abort: AbortSignal) => {
