@@ -126,6 +126,8 @@ import type {
   McpServer,
   McpTestResult,
   TenantContextPayload,
+  OnboardingState,
+  OnboardingPatch,
 } from "./api-types";
 
 // ── HTTP Client ─────────────────────────────────────────────────────
@@ -294,6 +296,12 @@ export const api = {
       request<{ ok: boolean }>("/api/me/password", {
         method: "POST",
         body: JSON.stringify(data),
+      }),
+    /** Writes the caller's own guidance state; the engine returns the merged record. */
+    updateOnboarding: (patch: OnboardingPatch) =>
+      request<{ onboarding: OnboardingState }>("/api/me/onboarding", {
+        method: "PATCH",
+        body: JSON.stringify(patch),
       }),
   },
   members: {
