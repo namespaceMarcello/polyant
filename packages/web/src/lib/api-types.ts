@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type { LocalizedText } from "./i18n/localized-text";
+
 // ── Users ───────────────────────────────────────────────────────────
 
 export interface AdminUser {
@@ -309,8 +311,10 @@ export interface PromptSection {
 export interface RequiredSecretSpec {
   key: string;
   type: "text" | "select";
-  label?: string;
-  description?: string;
+  /** The field's title, per locale. Render it through `secretSpecLabel`. */
+  label?: LocalizedText;
+  /** What the value is, per locale. Render it through `secretSpecDescription`. */
+  description?: LocalizedText;
   choices?: string[];
   optional?: boolean;
   /** false → readable value (shown in cleartext, prefilled from `currentValue`); true/undefined → secret (masked input). */
@@ -328,13 +332,16 @@ export interface ToolPluginInfo {
   namespace: string;
   name: string;
   version: string;
-  displayName?: string;
-  description?: string;
+  displayName?: LocalizedText;
+  description?: LocalizedText;
 }
 
 export interface ToolState {
   name: string;
+  /** What the model reads. One string; shown to people only on request. */
   description: string;
+  /** The author's sentence for people, per locale; absent ⇒ the panel shows the first line of `description`. */
+  summary?: LocalizedText;
   category: string;
   enabled: boolean;
   requiredSecrets?: RequiredSecretSpec[];
@@ -831,6 +838,8 @@ export interface InstanceHook {
 export interface HookFunctionInfo {
   name: string;
   description: string;
+  /** The author's sentence for people, per locale; absent ⇒ the panel shows `description`. */
+  summary?: LocalizedText;
   requiredSecrets: RequiredSecretSpec[];
   /** true ⇒ the hook may replace the response; affected turns run non-streamed. */
   mutatesResponse: boolean;
@@ -884,6 +893,9 @@ export interface OptoutContact {
 
 export type McpAuthMode = "none" | "static" | "oauth";
 
+/** Whose account an oauth server acts as: each conversation's own, or one an admin connected for the agent. */
+export type McpOAuthAccount = "conversation" | "shared";
+
 export interface McpServer {
   id: string;
   slug: string;
@@ -893,6 +905,11 @@ export interface McpServer {
   enabled: boolean;
   /** Secret fields (token / clientSecret) are masked (`••••1234`) — see mcp-config-mask.ts on the engine. */
   config: Record<string, unknown>;
+  /**
+   * The account an admin connected for the whole agent, on an oauth server
+   * whose `config.account` is `"shared"`. Null while none is connected.
+   */
+  sharedAccount?: { connectedAt: string; connectedBy: string | null } | null;
 }
 
 export interface McpTestResult {
