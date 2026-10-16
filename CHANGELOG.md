@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-10-16
+
+There is no 1.3.2 of Polyant.
+
+### Added
+
+- The agent's Embedder panel lets you choose the embedding dimension among the
+  ones the embedder supports. `PATCH /api/instances/:slug` accepts
+  `embeddingDim`; changing it deletes memories and knowledge like an embedder
+  switch, and requires `confirmWipe` when there is data to lose.
+
+### Changed
+
+- A 4xx `HttpException` is logged as a warning, a 5xx as an error.
+- The tool drawer is wider, so parameters and secrets fit.
+
+### Fixed
+
+- Uploading an agent icon failed under the default CSP, which blocks `blob:`
+  images. The file is now decoded without loading a URL, and a decode failure
+  shows an error.
+- The channel manager left the message coordinator running on shutdown.
+- Expired active webhook triggers were never swept.
+- The Telegram adapter kept the body reader locked after a capped read.
+- Speech-to-text requests left their abort listener on the caller's signal.
+- Outbound HTTP did not close the per-request agent after the response.
+- The AI call log dropped the newest entries instead of the oldest when its
+  buffer overflowed.
+- Copying a webhook URL or an auth secret showed a success toast when the
+  clipboard refused the write.
+- The knowledge tab printed an undefined unit for documents of 1 GB or more.
+
 ## [1.3.1] - 2026-10-14
 
 ### Changed
@@ -924,7 +956,8 @@ Patch release. It restores agent creation, which fails on every attempt in 1.1.0
 - Delegated sub-agents cannot recursively spawn further sub-agents.
 - Node.js 22 is aligned across the supported development and container environments.
 
-[Unreleased]: https://github.com/polyant-ai/polyant/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/polyant-ai/polyant/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/polyant-ai/polyant/compare/v1.3.1...v1.3.3
 [1.3.1]: https://github.com/polyant-ai/polyant/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/polyant-ai/polyant/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/polyant-ai/polyant/compare/v1.1.2...v1.2.0
