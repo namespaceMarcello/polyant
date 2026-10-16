@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { format, subDays } from "date-fns";
 import type { TranslationKey } from "@/lib/i18n/types";
 
 type TranslateFn = (
@@ -22,7 +23,7 @@ export function parseUTC(dateStr: string): Date {
 export function formatRelativeTime(
   dateStr: string | null,
   t: TranslateFn,
-  locale?: string,
+  locale: string,
 ): string {
   if (!dateStr) return "\u2014";
   const date = parseUTC(dateStr);
@@ -55,7 +56,7 @@ export function truncate(text: string, maxLen: number): string {
  * choice, so it has to be threaded in: `useFormat()` (lib/use-format.ts) binds
  * these to it, and components use that rather than calling `toLocaleString`.
  */
-export function formatDate(iso: string | null | undefined, locale?: string): string {
+export function formatDate(iso: string | null | undefined, locale: string): string {
   if (!iso) return "\u2014";
   try {
     return parseUTC(iso).toLocaleDateString(locale, {
@@ -77,7 +78,7 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${mins}m ${secs}s`;
 }
 
-export function formatDateTime(iso: string | null | undefined, locale?: string): string {
+export function formatDateTime(iso: string | null | undefined, locale: string): string {
   if (!iso) return "\u2014";
   try {
     return parseUTC(iso).toLocaleString(locale, {
@@ -93,7 +94,7 @@ export function formatDateTime(iso: string | null | undefined, locale?: string):
 }
 
 /** Full timestamp for conversation messages and recorded activity. */
-export function formatActivityTimestamp(iso: string | null | undefined, locale?: string): string {
+export function formatActivityTimestamp(iso: string | null | undefined, locale: string): string {
   if (!iso) return "";
   return parseUTC(iso).toLocaleString(locale, {
     year: "numeric",
@@ -106,7 +107,7 @@ export function formatActivityTimestamp(iso: string | null | undefined, locale?:
 }
 
 /** Wall-clock only — for a transcript, where the day is a separator above. */
-export function formatTime(iso: string | null | undefined, locale?: string): string {
+export function formatTime(iso: string | null | undefined, locale: string): string {
   if (!iso) return "\u2014";
   try {
     return parseUTC(iso).toLocaleTimeString(locale, {
@@ -119,7 +120,7 @@ export function formatTime(iso: string | null | undefined, locale?: string): str
 }
 
 /** Thousands separators in the UI's locale — 1.234 in Italian, 1,234 in English. */
-export function formatNumber(value: number, locale?: string): string {
+export function formatNumber(value: number, locale: string): string {
   return value.toLocaleString(locale);
 }
 
@@ -136,4 +137,14 @@ export function formatTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
   return String(value);
+}
+
+/** A calendar day as `"YYYY-MM-DD"`, the shape every date filter and range picker exchanges. */
+export function toIsoDay(date: Date): string {
+  return format(date, "yyyy-MM-dd");
+}
+
+/** The inclusive window ending today and starting `days` days back; 30 is the dashboards' default. */
+export function lastDays(days: number, now: Date = new Date()): { from: string; to: string } {
+  return { from: toIsoDay(subDays(now, days)), to: toIsoDay(now) };
 }
