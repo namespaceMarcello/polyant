@@ -116,6 +116,7 @@ export interface PipelineContext {
   /** True when no message rows were persisted before this turn (first successful turn). */
   isFirstTurn: boolean;
   hasOverflow: boolean;
+  /** Messages the next turn leaves out of its window; summarized after this turn's reply. */
   droppedMessages: ModelMessage[] | undefined;
   instanceConfig: InstanceConfig;
   langsmith: { apiKey: string; project: string } | undefined;
@@ -132,6 +133,25 @@ export interface PipelineContext {
 // ---------------------------------------------------------------------------
 // preparePipeline — context prep phase (extracted from ~lines 222-296)
 // ---------------------------------------------------------------------------
+
+/** Rows a turn reads back, and how many of them it shows verbatim; the older ones reach the model through the summary. */
+const HISTORY_READ = 16;
+const HISTORY_WINDOW = 10;
+
+/**
+ * The messages read for this turn that the NEXT turn will no longer show
+ * verbatim, once this turn has stored `added` more rows. They have to be in the
+ * summary by the time that turn reads it. Summarizing only what THIS turn left
+ * out put every message in the summary one turn after it had left the window,
+ * so each turn saw the two messages that had just slid out neither verbatim nor
+ * summarized. The older ones in the read are handed over again: a few lines of
+ * input that keep the summary whole when an earlier update is missing (a failed
+ * summary call, an odd row count, a conversation older than this rule).
+ */
+function messagesOutsideNextWindow(history: ModelMessage[], added: number): ModelMessage[] {
+  if (history.length + added < HISTORY_READ) return [];
+  return history.slice(0, history.length - (HISTORY_WINDOW - added));
+}
 
 /** Build LangSmith config from instance config, or undefined if not enabled. */
 function buildLangsmithConfig(cfg: InstanceConfig): { apiKey: string; project: string } | undefined {
@@ -212,12 +232,12 @@ export async function preparePipeline(
   // instead of running the same ordered query twice. The config is the 30s-cached one.
   const instanceConfigPromise = resolveInstanceConfig(instanceId);
   const textHistory = () =>
-    conversationStore.getRecentMessages(conversationId, 16).catch(() => [] as ModelMessage[]);
+    conversationStore.getRecentMessages(conversationId, HISTORY_READ).catch(() => [] as ModelMessage[]);
   const historyPromise: Promise<{ messages: ModelMessage[]; rows?: MessageRow[] }> =
     instanceConfigPromise.then(async (config) => {
       if (config.toolResultsInHistoryEnabled && !isAutoTaskTurn) {
         try {
-          const rows = await conversationStore.getRecentMessageRows(conversationId, 16);
+          const rows = await conversationStore.getRecentMessageRows(conversationId, HISTORY_READ);
           return { messages: rowsToModelMessages(rows), rows };
         } catch {
           // Same degradation as before: the text read stands in for the rows.
@@ -250,16 +270,18 @@ export async function preparePipeline(
   const incomingSystemMessages = (msg.metadata?.systemMessages as Array<{ role: string; content: string }>) ?? [];
 
   // Sliding window: if >15 messages exist, use summary + last 10; otherwise pass all
-  const hasOverflow = conversationHistory.length > 15;
+  const hasOverflow = conversationHistory.length > HISTORY_READ - 1;
   let history: ModelMessage[] | undefined;
   let conversationSummary: string | undefined;
-  let droppedMessages: ModelMessage[] | undefined;
+
+  // Summarized after the reply, for the turn after this one. This turn stores its
+  // user and assistant rows, plus at most the system messages it carries.
+  const droppedMessages = messagesOutsideNextWindow(conversationHistory, 2 + incomingSystemMessages.length);
 
   if (hasOverflow) {
     conversationSummary =
       (await conversationStore.getSummary(conversationId).catch(() => null)) ?? undefined;
-    history = conversationHistory.slice(-10);
-    droppedMessages = conversationHistory.slice(0, -10);
+    history = conversationHistory.slice(-HISTORY_WINDOW);
   } else {
     conversationSummary = undefined;
     history = conversationHistory.length > 0
@@ -272,7 +294,7 @@ export async function preparePipeline(
   // persisted `steps` so the model retains tool outputs across turns. The dropped
   // messages / summary stay text-only.
   if (replayRows && replayRows.length > 0) {
-    history = buildHistoryWithToolResults(hasOverflow ? replayRows.slice(-10) : replayRows);
+    history = buildHistoryWithToolResults(hasOverflow ? replayRows.slice(-HISTORY_WINDOW) : replayRows);
   }
 
   const langsmith = buildLangsmithConfig(instanceConfig);
@@ -418,10 +440,7 @@ export interface AfterResponseOptions {
   debugPayload?: LlmDebugPayload;
   /** Pre-generated assistant message UUID (streaming path) — keeps the persisted id stable. */
   assistantMessageId?: string;
-  existingSummary?: string;
-  /** When true, the sliding window overflowed — generate/update summary. */
-  needsSummaryUpdate?: boolean;
-  /** Messages that fell outside the retained window (to be summarized). */
+  /** Messages the next turn leaves out of its window: folded into the summary now, so that turn finds them there. */
   droppedMessages?: ModelMessage[];
   memoryEnabled?: boolean;
   /** The agent's resolved datetime formatting, for the summary's "as of" stamp. */
@@ -440,6 +459,28 @@ export interface AfterResponseOptions {
   /** Message arrival time (pipeline start). Used as the user row's created_at so the
    * commit-on-success write doesn't stamp it at end-of-turn (keeps user < assistant). */
   receivedAt?: Date;
+}
+
+/** The tail of each conversation's summary updates; an entry lives only while one is queued or running. */
+const summaryQueue = new Map<string, Promise<void>>();
+
+/**
+ * Run `job` after the conversation's previous summary update has finished.
+ *
+ * Post-response work is fire-and-forget, so the next turn can finish while this
+ * one's summary call is still out; two updates built on the same stored summary
+ * would each overwrite the other's messages. One at a time per conversation,
+ * each reading the summary the last one stored, keeps every message. In-process,
+ * like the summary cache it reads through.
+ */
+function inSummaryOrder(conversationId: string, job: () => Promise<void>): Promise<void> {
+  const run = (summaryQueue.get(conversationId) ?? Promise.resolve()).then(job);
+  const tail = run.catch(() => undefined);
+  summaryQueue.set(conversationId, tail);
+  void tail.then(() => {
+    if (summaryQueue.get(conversationId) === tail) summaryQueue.delete(conversationId);
+  });
+  return run;
 }
 
 export function afterResponse(opts: AfterResponseOptions): void {
@@ -543,18 +584,21 @@ export function afterResponse(opts: AfterResponseOptions): void {
       content: `User: ${opts.userMessage}\nAssistant: ${opts.assistantResponse}`,
     });
 
-    // 2. Update conversation summary (only when sliding window overflows)
-    if (opts.needsSummaryUpdate && opts.droppedMessages?.length) {
-      const existing = opts.existingSummary
-        ? `Previous summary: ${opts.existingSummary}\n\n`
-        : "";
-      const droppedText = opts.droppedMessages
+    // 2. Update conversation summary (only when the next turn's window leaves messages out)
+    const dropped = opts.droppedMessages ?? [];
+    if (dropped.length > 0) await inSummaryOrder(opts.conversationId, async () => {
+      const droppedText = dropped
         .map(m => {
           const label = m.role === "user" ? "User" : m.role === "system" ? "System" : "Assistant";
           return `${label}: ${m.content}`;
         })
         .join("\n");
       try {
+        // Read when this update runs, not when the turn started: the turn before
+        // may have stored its summary since, and building on the older one would
+        // overwrite it.
+        const previous = await conversationStore.getSummary(opts.conversationId);
+        const existing = previous ? `Previous summary: ${previous}\n\n` : "";
         const datetime = opts.datetime ?? resolveDatetimeSettings(UNSET_AGENT_SETTINGS);
         const now = new Date().toLocaleString(datetime.locale, {
           timeZone: datetime.timezone,
@@ -580,7 +624,7 @@ export function afterResponse(opts: AfterResponseOptions): void {
       } catch (err) {
         console.error("Summary generation failed:", err);
       }
-    }
+    });
 
     // 3. Automatic memory extraction (fire-and-forget within fire-and-forget)
     if (opts.memoryEnabled !== false) {
@@ -821,8 +865,6 @@ export async function runPipelinePost(opts: PipelinePostOptions): Promise<Pipeli
       reasoning: opts.reasoning,
       debugPayload: opts.debugPayload,
       assistantMessageId: opts.assistantMessageId,
-      existingSummary: ctx.conversationSummary,
-      needsSummaryUpdate: ctx.hasOverflow,
       droppedMessages: ctx.droppedMessages,
       memoryEnabled: ctx.instanceConfig.memoryEnabled,
       datetime: ctx.instanceConfig.datetime,
