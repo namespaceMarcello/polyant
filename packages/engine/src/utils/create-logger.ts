@@ -2,8 +2,10 @@
 
 /**
  * Shared logger factory for colored, timestamped console output.
- * Used by pipeline-logger, room-logger, webhook-logger, etc.
+ * Used by pipeline-logger and the module loggers.
  */
+
+import { errMsg } from "./error.js";
 
 export const COLORS = {
   reset: "\x1b[0m",
@@ -105,6 +107,18 @@ export interface Logger {
   error(prefix: string, msg: string, err?: unknown): void;
 }
 
+type LogTee = (level: "info" | "warn" | "error", line: string) => void;
+let tee: LogTee | null = null;
+
+/**
+ * Register a second destination for every formatted line (the daily log file,
+ * see `installFileLogger`). Lines are written to stdout/stderr directly, so
+ * the file logger's `console.*` interception never sees them.
+ */
+export function setLogTee(fn: LogTee | null): void {
+  tee = fn;
+}
+
 /**
  * Create a structured logger with colored, timestamped output.
  * The `defaultColor` is used for info-level messages.
@@ -117,24 +131,29 @@ export function createLogger(defaultColor: string = COLORS.cyan): Logger {
     return `${COLORS.dim}${ts()}${COLORS.reset} ${color}[${sanitizeForLog(prefix)}]${COLORS.reset} ${sanitizeForLog(msg)}`;
   }
 
+  function emit(level: "info" | "warn" | "error", prefix: string, msg: string): void {
+    const line = fmt(level, prefix, msg);
+    (level === "info" ? process.stdout : process.stderr).write(line + "\n");
+    tee?.(level, line);
+  }
+
   return {
     debug(prefix: string, msg: string): void {
       if (!shouldLog("debug")) return;
-      process.stdout.write(fmt("info", prefix, msg) + "\n");
+      emit("info", prefix, msg);
     },
     info(prefix: string, msg: string): void {
       if (!shouldLog("info")) return;
-      process.stdout.write(fmt("info", prefix, msg) + "\n");
+      emit("info", prefix, msg);
     },
     warn(prefix: string, msg: string): void {
       if (!shouldLog("warn")) return;
-      process.stderr.write(fmt("warn", prefix, msg) + "\n");
+      emit("warn", prefix, msg);
     },
     error(prefix: string, msg: string, err?: unknown): void {
       if (!shouldLog("error")) return;
-      const errMsg = sanitizeForLog(err instanceof Error ? err.message : String(err ?? ""));
-      const full = errMsg ? `${msg} — ${errMsg}` : msg;
-      process.stderr.write(fmt("error", prefix, full) + "\n");
+      const detail = err == null ? "" : sanitizeForLog(errMsg(err));
+      emit("error", prefix, detail ? `${msg} — ${detail}` : msg);
     },
   };
 }
