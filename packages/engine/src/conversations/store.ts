@@ -50,13 +50,25 @@ function stripNulString(s: string): string {
 /** Max persisted length of a conversation title (display-only text). */
 export const MAX_TITLE_CHARS = 120;
 
-/** First non-empty line, collapsed whitespace, hard-capped at MAX_TITLE_CHARS. */
+const WRAPPING_QUOTES_RE = /^["'“”‘’«»`]+|["'“”‘’«»`]+$/g;
+const SPEAKER_LABEL_RE = /^(?:user|utente|assistant|assistente)\s*:\s*/i;
+
+/**
+ * First non-empty line, without a leading speaker label ("User:", "Utente:",
+ * "Assistant:") or wrapping quotes, collapsed whitespace, hard-capped at
+ * MAX_TITLE_CHARS. The model sometimes echoes the transcript format it was fed.
+ */
 export function normalizeTitle(title: string): string {
   const firstLine = title
     .split("\n")
     .map((l) => l.trim())
     .find((l) => l.length > 0) ?? "";
-  const collapsed = firstLine.replace(/\s+/g, " ");
+  const collapsed = firstLine
+    .replace(WRAPPING_QUOTES_RE, "")
+    .replace(SPEAKER_LABEL_RE, "")
+    .replace(WRAPPING_QUOTES_RE, "")
+    .trim()
+    .replace(/\s+/g, " ");
   return collapsed.length <= MAX_TITLE_CHARS
     ? collapsed
     : collapsed.slice(0, MAX_TITLE_CHARS - 1).trimEnd() + "…";
