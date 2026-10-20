@@ -3,7 +3,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Activity } from "lucide-react";
+import { PageHeader } from "@/components/layout/page-header";
 import { useI18n } from "@/lib/i18n/context";
 import { api, type Instance } from "@/lib/api";
 import { useActivityStream } from "./_hooks/use-activity-stream";
@@ -60,40 +60,33 @@ export default function ActivityPage() {
   }, [events, excluded, hydrated]);
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-6 p-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <Activity className="text-muted-foreground size-5" />
-            <h1 className="text-2xl font-semibold tracking-tight">
-              {t("activityStream.title")}
-            </h1>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title={t("activityStream.title")}
+        subtitle={t("activityStream.subtitle")}
+        actions={
+          <div className="flex items-center gap-3">
+            {filterOptions.length > 0 && (
+              <InstanceFilter
+                instances={filterOptions}
+                excluded={excluded}
+                onToggle={toggle}
+                onSelectAll={clear}
+                onDeselectAll={() => setAll(filterOptions.map((o) => o.id))}
+                labels={{
+                  title: t("activityStream.filter.title"),
+                  allSelected: t("activityStream.filter.allSelected"),
+                  someSelected: (visible, total) =>
+                    t("activityStream.filter.someSelected", { visible, total }),
+                  selectAll: t("activityStream.filter.selectAll"),
+                  deselectAll: t("activityStream.filter.deselectAll"),
+                }}
+              />
+            )}
+            <LiveIndicator label={indicatorLabel} active={realLive} />
           </div>
-          <p className="text-muted-foreground mt-1 text-sm">
-            {t("activityStream.subtitle")}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {filterOptions.length > 0 && (
-            <InstanceFilter
-              instances={filterOptions}
-              excluded={excluded}
-              onToggle={toggle}
-              onSelectAll={clear}
-              onDeselectAll={() => setAll(filterOptions.map((o) => o.id))}
-              labels={{
-                title: t("activityStream.filter.title"),
-                allSelected: t("activityStream.filter.allSelected"),
-                someSelected: (visible, total) =>
-                  t("activityStream.filter.someSelected", { visible, total }),
-                selectAll: t("activityStream.filter.selectAll"),
-                deselectAll: t("activityStream.filter.deselectAll"),
-              }}
-            />
-          )}
-          <LiveIndicator label={indicatorLabel} active={realLive} />
-        </div>
-      </div>
+        }
+      />
 
       {error && (
         <div className="border-destructive/50 bg-destructive/10 text-destructive rounded-md border p-3 text-sm">
