@@ -419,6 +419,12 @@ export class PermissionGuard implements CanActivate {
   private decide(allowed: boolean, permission: PermissionKey, reason: string): boolean {
     if (allowed) return true;
     logger.warn(LOG_PREFIX, `deny ${permission} (${reason})`);
-    throw new ForbiddenException(`Missing permission: ${permission}`);
+    throw new ForbiddenException({
+      statusCode: 403,
+      message: `Missing permission: ${permission}`,
+      error: "Forbidden",
+      code: "missing_permission",
+      permission,
+    });
   }
 }
