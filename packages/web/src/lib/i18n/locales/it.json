@@ -429,6 +429,7 @@
   "analytics.charts.conversationTrend": "Conversazioni e Messaggi",
   "analytics.charts.hourlyDistribution": "Distribuzione Oraria",
   "analytics.charts.modelDistribution": "Utilizzo Modelli",
+  "analytics.charts.serviceCalls": "Chiamate di servizio (titoli, riassunti, controlli)",
   "analytics.charts.otherModels": "Altri ({count})",
   "analytics.charts.tierDistribution": "Breakdown Tier",
   "analytics.charts.toolUsage": "Tool Più Usati",
