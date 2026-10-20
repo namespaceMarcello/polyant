@@ -24,15 +24,6 @@ export interface ActiveTour {
 }
 
 /** Where "Not now" on the agent-tour offer is remembered: this browser session. */
-export const AGENT_PROMPT_SNOOZE_KEY = "polyant.agentTourPrompt.snoozed";
-
-function readSnoozed(): boolean {
-  try {
-    return window.sessionStorage.getItem(AGENT_PROMPT_SNOOZE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
 
 export interface OnboardingContextValue {
   /** The caller's record; null while loading or when the engine offers none. */
@@ -52,9 +43,6 @@ export interface OnboardingContextValue {
   setTourIndex: (index: number) => void;
   /** `exit` leaves the record as it is, `done` finishes it, `never` dismisses it. */
   endTour: (outcome: "exit" | "done" | "never") => void;
-  /** True once the person said "not now" to the agent-tour prompt in this browser session. */
-  agentPromptSnoozed: boolean;
-  snoozeAgentPrompt: () => void;
 }
 
 const OnboardingContext = createContext<OnboardingContextValue | null>(null);
@@ -79,18 +67,6 @@ export function OnboardingProvider({
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null);
   const [wizard, setWizard] = useState({ open: false, step: 0 });
   const [tour, setTour] = useState<ActiveTour | null>(null);
-  const [agentPromptSnoozed, setAgentPromptSnoozed] = useState(false);
-  useEffect(() => {
-    if (readSnoozed()) setAgentPromptSnoozed(true);
-  }, []);
-  const snoozeAgentPrompt = useCallback(() => {
-    setAgentPromptSnoozed(true);
-    try {
-      window.sessionStorage.setItem(AGENT_PROMPT_SNOOZE_KEY, "1");
-    } catch {
-      // Without storage the offer is hidden for this page view only.
-    }
-  }, []);
   // The latest record, for callbacks that must not be recreated on every write.
   const latest = useRef<OnboardingState | null>(null);
   const tourRef = useRef<ActiveTour | null>(null);
@@ -177,10 +153,8 @@ export function OnboardingProvider({
       startTour,
       setTourIndex: (index) => setTour((t) => (t ? { ...t, index } : t)),
       endTour,
-      agentPromptSnoozed,
-      snoozeAgentPrompt,
     }),
-    [onboarding, isPlatformAdmin, snoozeAgentPrompt, update, wizard, openWizard, closeWizard, finishWizard, tour, startTour, endTour, agentPromptSnoozed],
+    [onboarding, isPlatformAdmin, update, wizard, openWizard, closeWizard, finishWizard, tour, startTour, endTour],
   );
 
   return <OnboardingContext.Provider value={value}>{children}</OnboardingContext.Provider>;
