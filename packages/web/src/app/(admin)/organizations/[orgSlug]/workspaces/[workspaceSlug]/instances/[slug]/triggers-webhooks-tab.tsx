@@ -2,7 +2,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -15,9 +15,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { LoadFailed } from "@/components/ui/load-failed";
+import { useResource } from "@/hooks/use-resource";
+import { Skeleton } from "@/components/ui/skeleton";
 import { api, getUserErrorMessage } from "@/lib/api";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useI18n } from "@/lib/i18n/context";
-import { EventSourceCard, type EventSource, type EventDefinition } from "./room-event-source-card";
+import { EventSourceCard, type EventSource } from "./room-event-source-card";
 import { SectionActions } from "./section-actions";
 
 const EVENT_SOURCE_TYPES = [
@@ -28,32 +32,21 @@ interface Props {
   slug: string;
 }
 
+const NO_SOURCES: EventSource[] = [];
+
 export function TriggersWebhooksTab({ slug }: Props) {
   const { t } = useI18n();
-  const [sources, setSources] = useState<EventSource[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { copy } = useCopyToClipboard();
+  const { data, error, loading, reload: loadSources } = useResource(["event-sources", slug], async () =>
+    (await api.eventSources.list(slug)) as EventSource[],
+  );
+  const sources = data ?? NO_SOURCES;
   const [expandedSources, setExpandedSources] = useState<Record<string, boolean>>({});
   // The list endpoint deliberately omits the bearer-equivalent webhook URL
   // (see EventSource in room-event-source-card.tsx), so it is fetched on
   // demand per source — never eagerly for the whole list — and cached here.
   const [webhookUrls, setWebhookUrls] = useState<Record<string, string>>({});
   const [newSourceForm, setNewSourceForm] = useState({ name: "", sourceType: "webhook", showForm: false });
-
-  useEffect(() => {
-    loadSources();
-  }, [slug]);
-
-  async function loadSources() {
-    setLoading(true);
-    try {
-      const sources = await api.eventSources.list(slug);
-      setSources(sources as EventSource[]);
-    } catch {
-      setSources([]);
-    } finally {
-      setLoading(false);
-    }
-  }
 
   async function handleAddSource() {
     try {
@@ -65,7 +58,7 @@ export function TriggersWebhooksTab({ slug }: Props) {
       });
       toast.success(t("room.source.created"));
       setNewSourceForm({ name: "", sourceType: "webhook", showForm: false });
-      await loadSources();
+      loadSources();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("room.source.createFailed")));
     }
@@ -74,7 +67,7 @@ export function TriggersWebhooksTab({ slug }: Props) {
   async function handleToggleSourceEnabled(id: string, enabled: boolean) {
     try {
       await api.eventSources.update(slug, id, { enabled });
-      setSources((prev) => prev.map((s) => (s.id === id ? { ...s, enabled } : s)));
+      loadSources();
       toast.success(enabled ? t("common.enabled") : t("common.disabled"));
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("room.source.updateFailed")));
@@ -85,7 +78,7 @@ export function TriggersWebhooksTab({ slug }: Props) {
     try {
       await api.eventSources.delete(slug, id);
       toast.success(t("room.source.deleted"));
-      await loadSources();
+      loadSources();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("room.source.deleteFailed")));
     }
@@ -94,13 +87,8 @@ export function TriggersWebhooksTab({ slug }: Props) {
   async function handleUpdateSource(id: string, data: { name?: string; config?: Record<string, unknown> }) {
     try {
       await api.eventSources.update(slug, id, data);
-      // A config change (e.g. the auth secret) must be reloaded so the masked
-      // value reflects; a plain name edit can update optimistically.
-      if (data.config) {
-        await loadSources();
-      } else {
-        setSources((prev) => prev.map((s) => (s.id === id ? { ...s, ...data } : s)));
-      }
+      // Read again so a changed config (e.g. the auth secret) shows its masked value.
+      loadSources();
       toast.success(t("common.saved"));
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("room.source.updateFailed")));
@@ -144,7 +132,7 @@ export function TriggersWebhooksTab({ slug }: Props) {
     try {
       await api.eventSources.createDefinition(slug, sourceId, { ...data, enabled: true });
       toast.success(t("room.definition.created"));
-      await loadSources();
+      loadSources();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("room.definition.createFailed")));
     }
@@ -157,7 +145,7 @@ export function TriggersWebhooksTab({ slug }: Props) {
     try {
       await api.eventSources.updateDefinition(slug, sourceId, defId, data);
       toast.success(t("room.definition.saved"));
-      await loadSources();
+      loadSources();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("room.definition.saveFailed")));
     }
@@ -167,26 +155,23 @@ export function TriggersWebhooksTab({ slug }: Props) {
     try {
       await api.eventSources.deleteDefinition(slug, sourceId, defId);
       toast.success(t("room.definition.deleted"));
-      await loadSources();
+      loadSources();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("room.definition.deleteFailed")));
     }
   }
 
   async function copyWebhookUrl(url: string) {
-    try {
-      await navigator.clipboard.writeText(url);
-      toast.success(t("room.sources.copied"));
-    } catch {
-      toast.error(t("common.copyFailed"));
-    }
+    if (await copy(url)) toast.success(t("room.sources.copied"));
   }
 
-  if (loading) {
+  if (error && data === undefined) return <LoadFailed onRetry={loadSources} />;
+
+  if (loading && data === undefined) {
     return (
-      <div className="animate-pulse space-y-4">
-        <div className="h-32 rounded-lg bg-muted" />
-        <div className="h-24 rounded-lg bg-muted" />
+      <div className="space-y-4">
+        <Skeleton className="h-32 rounded-lg" />
+        <Skeleton className="h-24 rounded-lg" />
       </div>
     );
   }
