@@ -298,7 +298,7 @@ describe("ToolsTab", () => {
     await user.click(within(rowOf("contact")).getByRole("button", { name: "tools.open" }));
     const sheet = await screen.findByRole("dialog");
     await user.type(within(sheet).getByPlaceholderText("settings.tab.keyPlaceholder"), "sk-crm");
-    await user.click(within(sheet).getByRole("button", { name: "common.close" }));
+    await user.click(within(sheet).getAllByRole("button", { name: "common.close" })[0]);
 
     const confirm = await screen.findByRole("alertdialog");
     expect(within(confirm).getByText("unsavedChanges.title")).toBeInTheDocument();

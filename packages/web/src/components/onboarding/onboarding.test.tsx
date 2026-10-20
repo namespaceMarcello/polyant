@@ -111,6 +111,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.sessionStorage.clear();
   h.pathname.value = "/organizations/acme";
   h.tab.value = null;
   h.params.value = { workspaceSlug: "general" };
@@ -347,6 +348,49 @@ describe("the agent-tour offer", () => {
     await user.click(await screen.findByRole("button", { name: "Not now" }));
     expect(screen.queryByText("Want a tour of this page?")).not.toBeInTheDocument();
     expect(h.update).not.toHaveBeenCalled();
+  });
+
+  it("Not now keeps it hidden on the next agent page and after a reload, for the whole browser session", async () => {
+    // The break this catches: the offer coming back after "Not now" every time an agent page opened.
+    const user = userEvent.setup();
+    const first = mount();
+    await user.click(await screen.findByRole("button", { name: "Not now" }));
+    first.unmount();
+
+    h.pathname.value = "/organizations/acme/workspaces/general/instances/other";
+    mount();
+    await waitFor(() => expect(h.getInstance).toHaveBeenCalledTimes(2));
+    await act(async () => {});
+    expect(screen.queryByText("Want a tour of this page?")).not.toBeInTheDocument();
+  });
+
+  it("sits away from the bottom-right corner the toasts use", async () => {
+    mount();
+    const offer = await screen.findByRole("region", { name: "Want a tour of this page?" });
+    expect(offer.className).toContain("sm:left-1/2");
+    expect(offer.className).toContain("sm:right-auto");
+    expect(offer.className).toContain("top-16");
+    expect(offer.className).not.toContain("bottom-4");
+  });
+
+  it("waits while a side panel or dialog is open and comes back when it closes", async () => {
+    // The break this catches: the offer covering the footer of the agent try panel.
+    mount();
+    await screen.findByRole("region", { name: "Want a tour of this page?" });
+    const panel = document.createElement("div");
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("data-state", "open");
+    await act(async () => {
+      document.body.appendChild(panel);
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Want a tour of this page?" })).not.toBeInTheDocument(),
+    );
+    await act(async () => {
+      panel.setAttribute("data-state", "closed");
+    });
+    expect(await screen.findByRole("region", { name: "Want a tour of this page?" })).toBeInTheDocument();
+    panel.remove();
   });
 
   it("Don't show again records it", async () => {

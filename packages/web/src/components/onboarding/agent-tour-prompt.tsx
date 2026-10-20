@@ -12,23 +12,37 @@ import { useOnboarding } from "@/lib/onboarding/onboarding-context";
 
 /**
  * The small offer made the first time a real agent's page opens. It never starts
- * the tour by itself. "Not now" hides it for this visit only; "Don't show again"
- * records the choice.
+ * the tour by itself. "Not now" hides it for the rest of the browser session, on
+ * every agent page; "Don't show again" records the choice. It sits at the top centre,
+ * under the header, so it covers neither the toasts in the bottom-right corner nor the
+ * footer of a side panel, and it waits while a panel, sheet or dialog is open.
  */
+const OPEN_OVERLAY = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
+
+/** True while any dialog, sheet or side panel (they all expose role + data-state) is open. */
+function useOverlayOpen(): boolean {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const check = () => setOpen(document.querySelector(OPEN_OVERLAY) !== null);
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-state"] });
+    return () => observer.disconnect();
+  }, []);
+  return open;
+}
+
 export function AgentTourPrompt() {
   const { t } = useI18n();
   const pathname = usePathname();
-  const { onboarding, tour, wizard, startTour, update, agentPromptSnoozed, snoozeAgentPrompt, resetAgentPromptSnooze } =
+  const { onboarding, tour, wizard, startTour, update, agentPromptSnoozed, snoozeAgentPrompt } =
     useOnboarding();
+  const overlayOpen = useOverlayOpen();
   const slug = agentFromPath(pathname)?.agentSlug ?? null;
   // The agent the offer was verified for: the URL alone could name an agent that does not exist.
   const [verifiedSlug, setVerifiedSlug] = useState<string | null>(null);
 
   const wanted = !!slug && onboarding?.agentTour === "new";
-
-  useEffect(() => {
-    if (!slug) resetAgentPromptSnooze();
-  }, [slug, resetAgentPromptSnooze]);
 
   useEffect(() => {
     if (!wanted || !slug) return;
@@ -55,12 +69,12 @@ export function AgentTourPrompt() {
     return () => document.removeEventListener("keydown", onKey);
   }, [wanted, verifiedSlug, slug, snoozeAgentPrompt]);
 
-  if (!wanted || verifiedSlug !== slug || !slug || tour || wizard.open || agentPromptSnoozed) return null;
+  if (!wanted || verifiedSlug !== slug || !slug || tour || wizard.open || agentPromptSnoozed || overlayOpen) return null;
 
   return (
     <section
       aria-label={t("onboarding.agentPrompt.title")}
-      className="fixed bottom-4 right-4 left-4 z-[60] rounded-lg border bg-popover p-4 text-popover-foreground shadow-lg sm:left-auto sm:max-w-xs"
+      className="fixed left-4 right-4 top-16 z-[60] rounded-lg border bg-popover p-4 text-popover-foreground shadow-lg sm:left-1/2 sm:right-auto sm:w-80 sm:-translate-x-1/2"
     >
       <p className="text-sm font-medium">{t("onboarding.agentPrompt.title")}</p>
       <div className="mt-3 flex flex-wrap gap-2">

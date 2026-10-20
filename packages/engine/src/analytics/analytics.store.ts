@@ -84,6 +84,8 @@ export interface ChannelRow {
 export interface ModelRow {
   provider: string;
   model: string;
+  /** `ai_logs.call_type`: conversation, service (titles, summaries, checks) or embedding. */
+  callType: string;
   calls: number;
   tokens: number;
   cost: number;
@@ -400,6 +402,7 @@ async function getModelDistribution(
   return asRows<{
     provider: string;
     model: string;
+    call_type: string;
     calls: number;
     tokens: number;
     cost: number;
@@ -409,6 +412,7 @@ async function getModelDistribution(
       SELECT
         provider,
         model,
+        call_type,
         (COUNT(*) ${ANSWERED})::int AS calls,
         COALESCE(SUM(total_tokens), 0)::int AS tokens,
         COALESCE(SUM(estimated_cost_usd::float8), 0)::float AS cost,
@@ -416,12 +420,13 @@ async function getModelDistribution(
       FROM ai_logs
       WHERE created_at >= ${toISO(range.from)} AND created_at <= ${toISO(range.to)}
         ${instFilter} ${orgInst}
-      GROUP BY provider, model
+      GROUP BY provider, model, call_type
       ORDER BY cost DESC
     `),
   ).map((r) => ({
     provider: r.provider,
     model: r.model,
+    callType: r.call_type,
     calls: r.calls,
     tokens: r.tokens,
     cost: r.cost,

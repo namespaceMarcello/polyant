@@ -134,7 +134,20 @@ describe("request() — workspace scoping", () => {
 
     await api.me.get();
 
-    expect(headerFrom(fetchFn)).toBeUndefined();
+    // Empty, which the engine reads as absent.
+    expect(headerFrom(fetchFn)).toBeFalsy();
+  });
+
+  it("asks for the caller's tenancy without naming the tenant in the address", async () => {
+    // A mistyped workspace in the URL used to make the engine answer 403 here, which
+    // the panel showed as "you belong to no organization" instead of a 404.
+    at("/organizations/acme/workspaces/typo/instances");
+    const fetchFn = mockFetch(mockResponse({ organizations: [] }));
+
+    await api.me.get();
+
+    const headers = fetchFn.mock.calls[0][1]?.headers as Record<string, string>;
+    expect(headers["X-Workspace-Slug"]).toBe("");
   });
 
   it("decodes the segment — the header carries the raw slug", async () => {

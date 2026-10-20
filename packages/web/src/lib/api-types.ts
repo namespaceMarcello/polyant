@@ -653,6 +653,8 @@ export interface ChannelRow {
 export interface ModelRow {
   provider: string;
   model: string;
+  /** conversation, service (titles, summaries, checks) or embedding. */
+  callType: string;
   calls: number;
   tokens: number;
   cost: number;

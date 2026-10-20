@@ -27,7 +27,7 @@ import { isMaskedPlaceholder } from "./secret-mask.js";
 import { asInstanceSlug, type InstanceUuid } from "../../instances/identifiers.js";
 import { RequirePermission, Permission } from "../../authz/index.js";
 import { generateToken } from "../../crypto/index.js";
-import { buildTwilioWhatsAppWebhookUrl, buildSlackWebhookUrl } from "../webhook-url.js";
+import { buildTwilioWhatsAppWebhookUrl, buildSlackWebhookUrl, buildWebChannelEndpoint } from "../webhook-url.js";
 import { CurrentUser } from "../../auth/decorators/current-user.decorator.js";
 import type { AuthenticatedUser } from "../../auth/auth.types.js";
 import {
@@ -59,6 +59,14 @@ export class InstanceChannelsController {
   async slackWebhookUrl(@Param("slug") slug: string) {
     await findInstanceOrFail(slug);
     return { webhookUrl: await buildSlackWebhookUrl(slug) };
+  }
+
+  /** The address to call for the Web channel. No secret in it, so reading the channel is enough. */
+  @RequirePermission(Permission.CHANNEL_READ)
+  @Get(":slug/channels/web/endpoint")
+  async webEndpoint(@Param("slug") slug: string) {
+    await findInstanceOrFail(slug);
+    return buildWebChannelEndpoint();
   }
 
   @RequirePermission(Permission.CHANNEL_READ)

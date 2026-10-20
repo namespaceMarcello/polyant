@@ -1484,6 +1484,17 @@ describe("ConversationStore", () => {
   // Title normalization
   // =========================================================================
   describe("normalizeTitle", () => {
+    it("drops a leading speaker label the model echoed from the transcript", () => {
+      expect(normalizeTitle("User: Prenotare una visita")).toBe("Prenotare una visita");
+      expect(normalizeTitle("Utente: Prenotare una visita")).toBe("Prenotare una visita");
+      expect(normalizeTitle("Assistant: Orari di apertura")).toBe("Orari di apertura");
+    });
+
+    it("drops wrapping quotes, also around a speaker label", () => {
+      expect(normalizeTitle('"📊 Sales dashboard"')).toBe("📊 Sales dashboard");
+      expect(normalizeTitle('"User: Fattura errata"')).toBe("Fattura errata");
+    });
+
     it("keeps a short single-line title untouched", () => {
       expect(normalizeTitle("🐍 Tutorial gioco snake in Python")).toBe("🐍 Tutorial gioco snake in Python");
     });

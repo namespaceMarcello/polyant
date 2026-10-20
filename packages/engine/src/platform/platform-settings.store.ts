@@ -118,6 +118,16 @@ export async function getStoredPlatformSettings(): Promise<StoredPlatformSetting
 }
 
 /**
+ * Whether the installation declared its public origin: a stored platform
+ * setting, or `BASE_URL`. False means the origin in force is the localhost
+ * fallback, which only a caller on the same machine can use.
+ */
+export async function isBaseUrlConfigured(): Promise<boolean> {
+  const stored = await readStored();
+  return stored.baseUrl !== null || config.server.baseUrl !== `http://localhost:${config.server.port}`;
+}
+
+/**
  * The policies in force, and the only place the fallback is applied.
  *
  * Each value is the stored one when the installation set it, and the constant
