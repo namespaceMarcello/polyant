@@ -312,7 +312,16 @@ export const api = {
       }),
   },
   me: {
-    get: () => request<TenantContextPayload>("/api/me"),
+    // The caller's whole tenancy, whichever page asks: it must NOT carry the
+    // workspace of the address being rendered. The engine refuses a request that
+    // names a workspace it does not know, so a mistyped one in the URL answered 403
+    // here and the panel read it as "you belong to no organization" instead of
+    // "this page does not exist". An empty value overrides the header `request`
+    // derives from the URL, and the engine reads an empty header as absent.
+    get: () =>
+      request<TenantContextPayload>("/api/me", {
+        headers: { "X-Workspace-Slug": "" },
+      }),
     changePassword: (data: { currentPassword?: string; newPassword: string }) =>
       request<{ ok: boolean }>("/api/me/password", json("POST", data)),
     /** Writes the caller's own guidance state; the engine returns the merged record. */
