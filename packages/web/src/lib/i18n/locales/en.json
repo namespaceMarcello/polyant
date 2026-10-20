@@ -1676,5 +1676,6 @@
   "tools.memoryOffEnable": "Turn on memory",
   "tools.memoryOffPicker": "Memory is off: this tool cannot be added until you turn it on.",
   "conversations.column.userIdentifier": "Contact",
-  "conversations.filter.contactPlaceholder": "Find a contact (email, number...)"
+  "conversations.filter.contactPlaceholder": "Find a contact (email, number...)",
+  "onboarding.firstSteps.done": "Done"
 }

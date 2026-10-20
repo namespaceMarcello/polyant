@@ -1676,5 +1676,6 @@
   "tools.memoryOffEnable": "Attiva la memoria",
   "tools.memoryOffPicker": "La memoria è spenta: questo strumento non si può aggiungere finché non la attivi.",
   "conversations.column.userIdentifier": "Contatto",
-  "conversations.filter.contactPlaceholder": "Cerca un contatto (email, numero...)"
+  "conversations.filter.contactPlaceholder": "Cerca un contatto (email, numero...)",
+  "onboarding.firstSteps.done": "Fatto"
 }
