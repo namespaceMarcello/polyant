@@ -22,7 +22,6 @@ import type { LucideIcon } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarHeader,
   SidebarRail,
 } from "@/components/ui/sidebar";
@@ -35,7 +34,7 @@ import {
   type Destination,
 } from "@/lib/nav/destination";
 import { cn } from "@/lib/utils";
-import { NavUser, type NavUserProps } from "@/components/layout/nav-user";
+import type { NavUserProps } from "@/components/layout/nav-user";
 import { useI18n } from "@/lib/i18n/context";
 import type { TranslationKey } from "@/lib/i18n/types";
 import { navHref, resolveNavScope, type NavScope } from "@/lib/tenant/nav-href";
@@ -212,10 +211,6 @@ export function AppSidebar(
           )}
         </div>
       </SidebarContent>
-
-      <SidebarFooter>
-        {user && <NavUser user={user} />}
-      </SidebarFooter>
 
       <SidebarRail />
     </Sidebar>

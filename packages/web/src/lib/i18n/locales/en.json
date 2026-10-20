@@ -1014,6 +1014,7 @@
   "login.signingIn": "Signing in...",
   "login.invalidCredentials": "Invalid credentials",
   "user.logout": "Sign out",
+  "user.menu": "User menu",
   "users.title": "Users",
   "users.subtitle": "Manage who can access this admin panel",
   "users.create": "Add",

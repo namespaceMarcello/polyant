@@ -1014,6 +1014,7 @@
   "login.signingIn": "Accesso in corso...",
   "login.invalidCredentials": "Credenziali non valide",
   "user.logout": "Esci",
+  "user.menu": "Menu utente",
   "users.title": "Utenti",
   "users.subtitle": "Gestisci gli utenti che possono accedere al pannello",
   "users.create": "Aggiungi",
