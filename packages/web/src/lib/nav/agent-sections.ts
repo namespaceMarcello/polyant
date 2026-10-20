@@ -109,6 +109,8 @@ export const AGENT_MACROS: readonly {
 export const AGENT_SECTIONS: readonly AgentSectionDef[] = [
   // Panoramica — whether the agent is well, and what it did over a period.
   { tab: "overview", titleKey: "instances.detail.tabStatus", macro: "overview", icon: IdCard, descriptionKey: "agentSection.overview" },
+  // Right after Stato: what the agent has been saying is the second thing to look at.
+  { tab: "conversations", titleKey: "nav.conversations", macro: "overview", icon: MessagesSquare, descriptionKey: "agentSection.conversations" },
   { tab: "analytics", titleKey: "instances.detail.tabAnalytics", macro: "overview", icon: BarChart3, descriptionKey: "agentSection.analytics" },
 
   // Configurazione — what the agent IS, what runs it, and how it is reached.
@@ -153,8 +155,7 @@ export const AGENT_SECTIONS: readonly AgentSectionDef[] = [
   // Governance — what ships here is the data-privacy section.
   { tab: "privacy", titleKey: "instances.detail.tabPrivacy", macro: "governance", icon: EyeOff, descriptionKey: "agentSection.privacy" },
 
-  // Attività — what this agent has DONE.
-  { tab: "conversations", titleKey: "nav.conversations", macro: "activity", icon: MessagesSquare, descriptionKey: "agentSection.conversations" },
+  // Attività — what this agent has DONE besides its conversations.
   { tab: "memories", titleKey: "nav.memory", macro: "activity", icon: Brain, descriptionKey: "agentSection.memories" },
   { tab: "logs", titleKey: "instances.detail.tabLogs", macro: "activity", icon: History, descriptionKey: "agentSection.logs" },
 ];

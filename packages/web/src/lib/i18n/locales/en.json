@@ -1670,5 +1670,9 @@
   "prompts.section.userIdentity": "Who the user is",
   "prompts.section.userIdentity.description": "What the agent knows about the person it talks to.",
   "analytics.chart.cost": "Cost",
-  "analytics.chart.tokens": "Tokens"
+  "analytics.chart.tokens": "Tokens",
+  "playground.emptyHintAgent": "Write a message to try {name}",
+  "exportImport.export.started": "Export started: the file is downloading.",
+  "tools.memoryOffEnable": "Turn on memory",
+  "tools.memoryOffPicker": "Memory is off: this tool cannot be added until you turn it on."
 }

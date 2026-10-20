@@ -75,9 +75,9 @@ export function CreateInstanceDialog({ open, onOpenChange, onCreated }: Props) {
       // engine ignored the header and used the organization's DEFAULT workspace,
       // so creating from `/workspaces/sandbox/...` produced an agent in `general`
       // under a `sandbox` URL, which is then what gets bookmarked and shared.
-      // Land on the channels section: the new agent requires an API key, and the
-      // Web/API panel is where it is generated.
-      router.push(paths.workspace(`/instances/${encodeURIComponent(instance.slug)}?tab=channels`));
+      // Land on the prompts: what the agent says is the first thing to write for
+      // a new one.
+      router.push(paths.workspace(`/instances/${encodeURIComponent(instance.slug)}?tab=prompts`));
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("instances.create.error")));
     } finally {

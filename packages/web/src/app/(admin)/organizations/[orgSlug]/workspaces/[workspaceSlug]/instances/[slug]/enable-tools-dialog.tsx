@@ -3,6 +3,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { Check, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -50,6 +51,11 @@ interface Props {
   pluginDescription: (namespace: string) => string | null;
   /** `null` while the caller cannot tell (secrets unreadable or loading): no "will ask for" hints then. */
   isConfigured: ((key: string) => boolean) | null;
+  /**
+   * Why a tool cannot be added right now: `memory` while the agent's memory is
+   * off. A blocked tool stays listed, unselectable, with the way to fix it.
+   */
+  blocked?: (tool: ToolState) => "memory" | null;
   onEnable: (names: string[]) => void;
 }
 
@@ -66,6 +72,7 @@ export function EnableToolsDialog({
   pluginName,
   pluginDescription,
   isConfigured,
+  blocked,
   onEnable,
 }: Props) {
   const { t, locale } = useI18n();
@@ -194,6 +201,7 @@ export function EnableToolsDialog({
                   <ul>
                     {group.tools.map((tool) => {
                       const already = isEnabled(tool.name);
+                      const blockedBy = !already ? (blocked?.(tool) ?? null) : null;
                       const id = `pick-${tool.name}`;
                       const willAsk = isConfigured && !already
                         ? missingRequiredSpecs(tool, isConfigured).map((s) => secretSpecLabel(s, locale))
@@ -205,14 +213,15 @@ export function EnableToolsDialog({
                             htmlFor={id}
                             className={cn(
                               "flex gap-3 rounded-md px-2 py-2.5",
-                              already ? "cursor-default" : "cursor-pointer hover:bg-muted/60",
+                              already || blockedBy ? "cursor-default" : "cursor-pointer hover:bg-muted/60",
+                              blockedBy && "opacity-60",
                             )}
                           >
                             <Checkbox
                               id={id}
                               className="mt-0.5"
                               checked={already || selected.has(tool.name)}
-                              disabled={already}
+                              disabled={already || blockedBy !== null}
                               onCheckedChange={() => toggle(tool.name)}
                             />
                             <span className="min-w-0 flex-1">
@@ -225,6 +234,14 @@ export function EnableToolsDialog({
                               <span className="block text-sm text-muted-foreground">{capabilitySummary(tool, locale)}</span>
                               {groupBy === "category" && namespace && (
                                 <span className="block text-xs text-muted-foreground">{pluginName(namespace)}</span>
+                              )}
+                              {blockedBy === "memory" && (
+                                <span className="mt-1 block text-xs text-warning">
+                                  {t("tools.memoryOffPicker")}{" "}
+                                  <Link href="?tab=params" className="font-medium underline underline-offset-4">
+                                    {t("tools.memoryOffEnable")}
+                                  </Link>
+                                </span>
                               )}
                               {willAsk.length > 0 && (
                                 <span className="mt-1 block text-xs text-warning">

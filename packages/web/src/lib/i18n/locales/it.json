@@ -1670,5 +1670,9 @@
   "prompts.section.userIdentity": "Chi è l'utente",
   "prompts.section.userIdentity.description": "Cosa sa l'agente della persona con cui parla.",
   "analytics.chart.cost": "Costo",
-  "analytics.chart.tokens": "Token"
+  "analytics.chart.tokens": "Token",
+  "playground.emptyHintAgent": "Scrivi un messaggio per provare {name}",
+  "exportImport.export.started": "Esportazione avviata: il file si sta scaricando.",
+  "tools.memoryOffEnable": "Attiva la memoria",
+  "tools.memoryOffPicker": "La memoria è spenta: questo strumento non si può aggiungere finché non la attivi."
 }

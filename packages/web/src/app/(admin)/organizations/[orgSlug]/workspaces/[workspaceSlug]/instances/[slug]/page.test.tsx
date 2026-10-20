@@ -16,7 +16,7 @@
  *    row gone, the heading is the only thing on the page saying where you are.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import { useSyncExternalStore } from "react";
 import type { Instance } from "@/lib/api";
 
@@ -145,6 +145,7 @@ import InstanceDetailPage from "./page";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { DEFAULT_AGENT_TAB } from "@/lib/nav/agent-sections";
+import { useAgentName } from "@/lib/nav/agent-name";
 
 function makeInstance(overrides: Partial<Instance> = {}): Instance {
   return {
@@ -334,6 +335,24 @@ describe("InstanceDetailPage — sections", () => {
       expect(heading.nextElementSibling?.textContent).toMatch(new RegExp(`^agentSection\\.${value}`));
       unmount();
     }
+  });
+
+  it("shows the agent's icon left of its name, and a bot glyph when it has none", async () => {
+    mockInstancesGet.mockResolvedValue({ instance: makeInstance({ icon: "/icons/sofia.png" }) });
+    const { unmount } = render(<InstanceDetailPage />);
+    // Catches a header that names the agent but drops the picture the agents list shows.
+    expect((await screen.findByTestId("agent-icon")).tagName).toBe("IMG");
+    unmount();
+
+    mockInstancesGet.mockResolvedValue({ instance: makeInstance({ icon: null }) });
+    render(<InstanceDetailPage />);
+    expect((await screen.findByTestId("agent-icon")).tagName.toLowerCase()).toBe("svg");
+  });
+
+  it("publishes the agent's name for the sidebar", async () => {
+    render(<InstanceDetailPage />);
+    await screen.findByText("tab-body:status:provider-no-credentials");
+    expect(renderHook(() => useAgentName("test-instance")).result.current).toBe("Test Instance");
   });
 
   it("falls back to the overview for an unknown `?tab=` value", async () => {

@@ -3,6 +3,7 @@
 import { render, within } from "@testing-library/react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { I18nProvider } from "@/lib/i18n/context";
+import { setAgentName } from "@/lib/nav/agent-name";
 import { AppSidebar } from "./app-sidebar";
 import type { TenantContextValue } from "@/lib/tenant/tenant-context";
 
@@ -91,6 +92,23 @@ describe("AppSidebar — a destination takes over the sidebar", () => {
     expect(
       within(content).getByRole("link", { name: /^conversazioni$/i }).getAttribute("href"),
     ).toBe(`${AGENT}?tab=conversations`);
+  });
+
+  it("names the agent by its display name once its page has loaded, not by its slug", () => {
+    mockPathname.value = AGENT;
+    setAgentName("bot-1", "Sofia");
+    render(
+      <I18nProvider initialLocale="it">
+        <SidebarProvider>
+          <AppSidebar user={{ name: "Ada", email: "ada@example.com", isPlatformAdmin: false }} />
+        </SidebarProvider>
+      </I18nProvider>,
+    );
+
+    const content = document.querySelector<HTMLElement>('[data-sidebar="content"]')!;
+    // Catches the sidebar subject staying on the machine slug beside a header that says "Sofia".
+    expect(within(content).getByText("Sofia")).toBeInTheDocument();
+    expect(within(content).queryByText("bot-1")).not.toBeInTheDocument();
   });
 
   it("shows the daily nav, and no agent entries, everywhere else", () => {

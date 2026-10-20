@@ -5,7 +5,8 @@
 import { Suspense, useEffect, useState } from "react";
 import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { Trash2, Download, MoreHorizontal } from "lucide-react";
+import Image from "next/image";
+import { Trash2, Download, MoreHorizontal, Bot } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
@@ -28,6 +29,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { downloadBlob } from "@/lib/download";
+import { isSafeImageSrc } from "@/lib/utils";
+import { setAgentName } from "@/lib/nav/agent-name";
 import { api, getUserErrorMessage, type Instance, type ToolState, type ToolPluginInfo, type SkillState, type PromptSection } from "@/lib/api";
 import { GeneralTab } from "./general-tab";
 import { PromptsTab } from "./prompts-tab";
@@ -144,6 +147,12 @@ function InstanceDetailContent() {
     // identity is stable across renders and cannot re-trigger the fetch.
   }, [params.slug, router, t, paths]);
 
+  // The sidebar names the agent the way this header does, and follows a rename.
+  const agentName = instance?.name;
+  useEffect(() => {
+    if (agentName) setAgentName(params.slug, agentName);
+  }, [params.slug, agentName]);
+
   const handleDelete = async () => {
     try {
       await api.instances.delete(params.slug);
@@ -160,6 +169,7 @@ function InstanceDetailContent() {
       const blob = await api.exportImport.exportInstance(params.slug);
       const date = new Date().toISOString().slice(0, 10);
       downloadBlob(blob, `${params.slug}-export-${date}.json`);
+      toast.success(t("exportImport.export.started"));
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("exportImport.export.failed")));
     } finally {
@@ -188,17 +198,33 @@ function InstanceDetailContent() {
           is in the header's trail. Two breadcrumbs for one position is the same
           "both surfaces try to say where you are" problem the takeover fixed. */}
       <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">
-            {instance.name}
-          </h1>
-          <div className="mt-2 flex items-center gap-2">
-            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-              {instance.slug}
-            </code>
-            <Badge variant={instance.status === "active" ? "default" : "secondary"}>
-              {instanceStatusLabel(instance.status, t)}
-            </Badge>
+        <div className="flex items-start gap-3">
+          {/* The same icon the agents list shows, with the same fallback. */}
+          {instance.icon && isSafeImageSrc(instance.icon) ? (
+            <Image
+              src={instance.icon}
+              alt=""
+              width={40}
+              height={40}
+              className="mt-0.5 size-10 shrink-0 rounded object-cover"
+              data-testid="agent-icon"
+              unoptimized
+            />
+          ) : (
+            <Bot className="mt-1 size-9 shrink-0 text-muted-foreground" data-testid="agent-icon" aria-hidden />
+          )}
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight">
+              {instance.name}
+            </h1>
+            <div className="mt-2 flex items-center gap-2">
+              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                {instance.slug}
+              </code>
+              <Badge variant={instance.status === "active" ? "default" : "secondary"}>
+                {instanceStatusLabel(instance.status, t)}
+              </Badge>
+            </div>
           </div>
         </div>
         {/*
