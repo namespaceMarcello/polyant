@@ -159,7 +159,7 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
           placeholder={t("conversations.filter.contactPlaceholder")}
           value={contact}
           onChange={(e) => setContact(e.target.value)}
-          className="sm:w-[240px]"
+          className="sm:w-[300px]"
         />
       </div>
 
