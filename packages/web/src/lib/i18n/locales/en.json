@@ -429,6 +429,7 @@
   "analytics.charts.conversationTrend": "Conversations & Messages",
   "analytics.charts.hourlyDistribution": "Hourly Distribution",
   "analytics.charts.modelDistribution": "Model Usage",
+  "analytics.charts.serviceCalls": "Service calls (titles, summaries, checks)",
   "analytics.charts.otherModels": "Others ({count})",
   "analytics.charts.tierDistribution": "Tier Breakdown",
   "analytics.charts.toolUsage": "Top Tools",
