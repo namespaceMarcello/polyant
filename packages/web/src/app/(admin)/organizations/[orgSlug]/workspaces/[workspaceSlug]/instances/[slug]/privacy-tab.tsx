@@ -2,7 +2,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,11 +28,14 @@ import {
 import { api, getUserErrorMessage, type Instance, type OptoutContact } from "@/lib/api";
 import { useI18n } from "@/lib/i18n/context";
 import { useFormat } from "@/lib/use-format";
+import { LoadFailed } from "@/components/ui/load-failed";
+import { useResource } from "@/hooks/use-resource";
 import { usePageSaveAction } from "./page-actions-context";
+import { useDraft } from "./use-draft";
 
 interface Props {
   instance: Instance;
-  onSaved?: () => void;
+  onUpdate?: (instance: Instance) => void;
 }
 
 // Channels whose inbound gate + outbound suppression actually honor opt-out
@@ -54,58 +57,38 @@ function parseKeywords(s: string): string[] {
     .filter(Boolean);
 }
 
-function sameKeywords(input: string, base: string[]): boolean {
-  const parsed = parseKeywords(input);
-  return parsed.length === base.length && parsed.every((k, i) => k === base[i]);
-}
-
-export function PrivacyTab({ instance, onSaved }: Props) {
+export function PrivacyTab({ instance, onUpdate }: Props) {
   const { t } = useI18n();
   const fmt = useFormat();
 
   // ── Config form state ──────────────────────────────────────────────
-  const [enabled, setEnabled] = useState(instance.optoutEnabled);
-  const [stopKeywords, setStopKeywords] = useState(
-    instance.optoutStopKeywords.join(", "),
-  );
-  const [resumeKeywords, setResumeKeywords] = useState(
-    instance.optoutResumeKeywords.join(", "),
-  );
-  const [closingMsg, setClosingMsg] = useState(instance.optoutClosingMessage ?? "");
-  const [resumeMsg, setResumeMsg] = useState(instance.optoutResumeMessage ?? "");
-  const [injectHint, setInjectHint] = useState(instance.optoutInjectPromptHint);
+  const { draft, set, isDirty } = useDraft({
+    enabled: instance.optoutEnabled,
+    stopKeywords: instance.optoutStopKeywords.join(", "),
+    resumeKeywords: instance.optoutResumeKeywords.join(", "),
+    closingMsg: instance.optoutClosingMessage ?? "",
+    resumeMsg: instance.optoutResumeMessage ?? "",
+    injectHint: instance.optoutInjectPromptHint,
+  });
+  const { enabled, stopKeywords, resumeKeywords, closingMsg, resumeMsg, injectHint } = draft;
   const [saving, setSaving] = useState(false);
 
   // ── Contacts table state ───────────────────────────────────────────
-  const [contacts, setContacts] = useState<OptoutContact[]>([]);
-  const [loadingContacts, setLoadingContacts] = useState(true);
+  const { data, error: contactsError, loading: loadingContacts, reload: refreshContacts } = useResource(
+    ["optouts", instance.slug],
+    () => api.optouts.list(instance.slug, { status: "opted_out" }),
+  );
+  const contacts: OptoutContact[] = data?.optouts ?? [];
 
   // ── Opt-out-a-contact form state ───────────────────────────────────
   const [newChannelType, setNewChannelType] = useState<string>(OPTOUT_CHANNELS[0]);
   const [newChannelId, setNewChannelId] = useState("");
   const [addingContact, setAddingContact] = useState(false);
 
-  const refreshContacts = async () => {
-    setLoadingContacts(true);
-    try {
-      const res = await api.optouts.list(instance.slug, { status: "opted_out" });
-      setContacts(res.optouts);
-    } catch (err) {
-      toast.error(getUserErrorMessage(err, t("privacy.loadContactsFailed")));
-    } finally {
-      setLoadingContacts(false);
-    }
-  };
-
-  useEffect(() => {
-    void refreshContacts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instance.slug]);
-
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.instances.update(instance.slug, {
+      const { instance: updated } = await api.instances.update(instance.slug, {
         optoutEnabled: enabled,
         optoutStopKeywords: parseKeywords(stopKeywords),
         optoutResumeKeywords: parseKeywords(resumeKeywords),
@@ -113,7 +96,7 @@ export function PrivacyTab({ instance, onSaved }: Props) {
         optoutResumeMessage: resumeMsg.trim() || null,
         optoutInjectPromptHint: injectHint,
       });
-      onSaved?.();
+      onUpdate?.(updated);
       toast.success(t("privacy.saved"));
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("privacy.saveFailed")));
@@ -122,21 +105,13 @@ export function PrivacyTab({ instance, onSaved }: Props) {
     }
   };
 
-  const isDirty =
-    enabled !== instance.optoutEnabled ||
-    !sameKeywords(stopKeywords, instance.optoutStopKeywords) ||
-    !sameKeywords(resumeKeywords, instance.optoutResumeKeywords) ||
-    closingMsg.trim() !== (instance.optoutClosingMessage ?? "") ||
-    resumeMsg.trim() !== (instance.optoutResumeMessage ?? "") ||
-    injectHint !== instance.optoutInjectPromptHint;
-
   usePageSaveAction({ isDirty, saving, onSave: handleSave });
 
   const handleReEnable = async (contact: OptoutContact) => {
     try {
       await api.optouts.optIn(instance.slug, contact.channelType, contact.channelId);
       toast.success(t("privacy.reEnableSuccess"));
-      await refreshContacts();
+      refreshContacts();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("privacy.reEnableFailed")));
     }
@@ -152,7 +127,7 @@ export function PrivacyTab({ instance, onSaved }: Props) {
       toast.success(t("privacy.optOutContactSuccess"));
       setNewChannelType(OPTOUT_CHANNELS[0]);
       setNewChannelId("");
-      await refreshContacts();
+      refreshContacts();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("privacy.optOutContactFailed")));
     } finally {
@@ -174,7 +149,7 @@ export function PrivacyTab({ instance, onSaved }: Props) {
         {/* Enable toggle */}
         <div className="flex items-center justify-between border-t pt-4">
           <Label>{t("privacy.enable")}</Label>
-          <Switch checked={enabled} onCheckedChange={setEnabled} />
+          <Switch checked={enabled} onCheckedChange={(v) => set("enabled", v)} />
         </div>
 
         {enabled && (
@@ -185,7 +160,7 @@ export function PrivacyTab({ instance, onSaved }: Props) {
               <Input
                 id="stop-keywords"
                 value={stopKeywords}
-                onChange={(e) => setStopKeywords(e.target.value)}
+                onChange={(e) => set("stopKeywords", e.target.value)}
                 placeholder="STOP, UNSUBSCRIBE"
               />
               <p className="text-xs text-muted-foreground">
@@ -199,7 +174,7 @@ export function PrivacyTab({ instance, onSaved }: Props) {
               <Input
                 id="resume-keywords"
                 value={resumeKeywords}
-                onChange={(e) => setResumeKeywords(e.target.value)}
+                onChange={(e) => set("resumeKeywords", e.target.value)}
                 placeholder="START, SUBSCRIBE"
               />
             </div>
@@ -210,7 +185,7 @@ export function PrivacyTab({ instance, onSaved }: Props) {
               <Textarea
                 id="closing-msg"
                 value={closingMsg}
-                onChange={(e) => setClosingMsg(e.target.value)}
+                onChange={(e) => set("closingMsg", e.target.value)}
                 placeholder={t("privacy.closingMessagePlaceholder")}
                 rows={3}
               />
@@ -222,7 +197,7 @@ export function PrivacyTab({ instance, onSaved }: Props) {
               <Textarea
                 id="resume-msg"
                 value={resumeMsg}
-                onChange={(e) => setResumeMsg(e.target.value)}
+                onChange={(e) => set("resumeMsg", e.target.value)}
                 placeholder={t("privacy.resumeMessagePlaceholder")}
                 rows={3}
               />
@@ -238,7 +213,7 @@ export function PrivacyTab({ instance, onSaved }: Props) {
                   {t("privacy.injectHintHelp")}
                 </p>
               </div>
-              <Switch checked={injectHint} onCheckedChange={setInjectHint} />
+              <Switch checked={injectHint} onCheckedChange={(v) => set("injectHint", v)} />
             </div>
           </>
         )}
@@ -253,7 +228,9 @@ export function PrivacyTab({ instance, onSaved }: Props) {
           </p>
         </div>
 
-        {loadingContacts ? (
+        {contactsError ? (
+          <LoadFailed message={t("privacy.loadContactsFailed")} onRetry={refreshContacts} />
+        ) : loadingContacts ? (
           <div className="space-y-2">
             <Skeleton className="h-8 w-full" />
             <Skeleton className="h-8 w-full" />
