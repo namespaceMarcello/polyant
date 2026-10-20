@@ -468,23 +468,54 @@ export interface AfterResponseOptions {
 /** The tail of each conversation's summary updates; an entry lives only while one is queued or running. */
 const summaryQueue = new Map<string, Promise<void>>();
 
+/** How long one summary update may run before the conversation's next update starts without it. */
+const SUMMARY_UPDATE_TIMEOUT_MS = 60_000;
+
 /**
- * Run `job` after the conversation's previous summary update has finished.
+ * Run `job` after the conversation's previous summary update has finished or
+ * run past its deadline.
  *
  * Post-response work is fire-and-forget, so the next turn can finish while this
  * one's summary call is still out; two updates built on the same stored summary
  * would each overwrite the other's messages. One at a time per conversation,
  * each reading the summary the last one stored, keeps every message. In-process,
  * like the summary cache it reads through.
+ *
+ * `job` gets a signal that aborts at the deadline. It passes the signal to the
+ * model call and stores nothing once it has aborted: the next update may have
+ * started from the stored summary by then.
  */
-function inSummaryOrder(conversationId: string, job: () => Promise<void>): Promise<void> {
-  const run = (summaryQueue.get(conversationId) ?? Promise.resolve()).then(job);
+function inSummaryOrder(conversationId: string, job: (signal: AbortSignal) => Promise<void>): Promise<void> {
+  const run = (summaryQueue.get(conversationId) ?? Promise.resolve()).then(() => untilDeadline(job));
   const tail = run.catch(() => undefined);
   summaryQueue.set(conversationId, tail);
   void tail.then(() => {
     if (summaryQueue.get(conversationId) === tail) summaryQueue.delete(conversationId);
   });
   return run;
+}
+
+/**
+ * Run `job` with a signal that aborts after SUMMARY_UPDATE_TIMEOUT_MS, and settle
+ * when the job ends or at the deadline, whichever comes first. A job stuck where
+ * the signal cannot reach (a database call) then holds the queue for at most the
+ * deadline too.
+ */
+function untilDeadline(job: (signal: AbortSignal) => Promise<void>): Promise<void> {
+  const signal = AbortSignal.timeout(SUMMARY_UPDATE_TIMEOUT_MS);
+  let finished = false;
+  const work = job(signal).finally(() => {
+    finished = true;
+  });
+  const deadline = new Promise<void>((resolve) => {
+    signal.addEventListener("abort", () => {
+      if (!finished) {
+        log.warn("pipeline", `Summary update passed its ${SUMMARY_UPDATE_TIMEOUT_MS} ms deadline; the next one starts without it`);
+      }
+      resolve();
+    }, { once: true });
+  });
+  return Promise.race([work, deadline]);
 }
 
 export function afterResponse(opts: AfterResponseOptions): void {
@@ -589,7 +620,7 @@ export function afterResponse(opts: AfterResponseOptions): void {
 
     // 2. Update conversation summary (only when the next turn's window leaves messages out)
     const dropped = opts.droppedMessages ?? [];
-    if (dropped.length > 0) await inSummaryOrder(opts.conversationId, async () => {
+    if (dropped.length > 0) await inSummaryOrder(opts.conversationId, async (signal) => {
       const droppedText = dropped
         .map(m => {
           const label = m.role === "user" ? "User" : m.role === "system" ? "System" : "Assistant";
@@ -618,10 +649,12 @@ export function afterResponse(opts: AfterResponseOptions): void {
             role: "user",
             content: `${existing}Messages to summarize:\n${droppedText}`,
           }],
+          abortSignal: signal,
         }, { conversationId: opts.conversationId, instanceId: opts.instanceId, callType: "service" });
 
         const summary = summaryResponse.text.trim();
-        if (summary) {
+        // Past the deadline the next update may already have stored a newer summary.
+        if (summary && !signal.aborted) {
           await conversationStore.updateSummary(opts.conversationId, summary);
         }
       } catch (err) {

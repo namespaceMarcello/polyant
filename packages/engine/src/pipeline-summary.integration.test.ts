@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelMessage } from "ai";
 
 const summarizer = vi.hoisted(() => ({
@@ -27,6 +27,8 @@ const summarizer = vi.hoisted(() => ({
   /** Calls (1-based) that fail, as a provider outage would. */
   failing: new Set<number>(),
   started: 0,
+  /** The abort signal each call received, in call order. */
+  signals: [] as (AbortSignal | undefined)[],
   /** Outputs in the order the calls finished. */
   outputs: [] as string[],
 }));
@@ -35,8 +37,9 @@ vi.mock("./ai-gateway/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./ai-gateway/index.js")>();
   return {
     ...actual,
-    chat: async (req: { messages: ModelMessage[] }) => {
+    chat: async (req: { messages: ModelMessage[]; abortSignal?: AbortSignal }) => {
       const call = ++summarizer.started;
+      summarizer.signals.push(req.abortSignal);
       const input = req.messages.map((m) => (typeof m.content === "string" ? m.content : "")).join("\n");
       if (call === 1 && summarizer.holdFirst) await summarizer.holdFirst;
       if (summarizer.failing.has(call)) {
@@ -164,8 +167,13 @@ describe.skipIf(!DB_AVAILABLE)("sliding window summary (integration)", () => {
     summarizer.holdFirst = undefined;
     summarizer.failing = new Set();
     summarizer.started = 0;
+    summarizer.signals = [];
     summarizer.outputs = [];
     // The summary cache is per process; each test uses a fresh conversation id.
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("should_let_the_next_turn_see_every_earlier_message_in_the_window_or_the_summary", async () => {
@@ -199,6 +207,40 @@ describe.skipIf(!DB_AVAILABLE)("sliding window summary (integration)", () => {
     const next = await read(conversationId);
     const seen = visible(next);
     expect(facts(1, 20).filter((f) => !seen.includes(f))).toEqual([]);
+  });
+
+  it("should_start_the_next_summary_update_when_one_runs_past_its_deadline_and_never_store_the_late_one", async () => {
+    // A 200 ms deadline instead of the real one. The first call ignores the
+    // abort and answers only when released, as a stuck transport would.
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => timeout(200));
+    const stderr = vi.spyOn(process.stderr, "write");
+    const deadlineWarnings = () => stderr.mock.calls.filter(([line]) => String(line).includes("passed its")).length;
+    const conversationId = await seed(16);
+    let release!: () => void;
+    summarizer.holdFirst = new Promise<void>((resolve) => (release = resolve));
+
+    await finish(await read(conversationId), fact(17), fact(18));
+    await vi.waitFor(async () => expect(await messageCount(conversationId)).toBe(18), { timeout: 5_000 });
+    await finish(await read(conversationId), fact(19), fact(20));
+
+    // The second update does not wait for the stuck one past its deadline.
+    await vi.waitFor(async () => {
+      expect(summarizer.outputs).toHaveLength(1);
+      expect(await storedSummary(conversationId)).toBe(summarizer.outputs[0]);
+    }, { timeout: 5_000 });
+    const stored = summarizer.outputs[0];
+    expect(summarizer.signals[0]?.aborted).toBe(true);
+
+    // The stuck call answers late: its summary must not replace the newer one.
+    release();
+    await vi.waitFor(() => expect(summarizer.outputs).toHaveLength(2), { timeout: 5_000 });
+    // Long enough for the late write to land and for the second update's own deadline to pass.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(summarizer.outputs[1]).not.toBe(stored);
+    expect(await storedSummary(conversationId)).toBe(stored);
+    // Only the stuck update is reported; the one that finished in time is not.
+    expect(deadlineWarnings()).toBe(1);
   });
 
   it("should_have_the_summary_ready_on_the_first_turn_that_overflows", async () => {
