@@ -12,23 +12,20 @@ import { useOnboarding } from "@/lib/onboarding/onboarding-context";
 
 /**
  * The small offer made the first time a real agent's page opens. It never starts
- * the tour by itself. "Not now" hides it for this visit only; "Don't show again"
- * records the choice.
+ * the tour by itself. "Not now" hides it for the rest of the browser session, on
+ * every agent page; "Don't show again" records the choice. It sits at the bottom
+ * centre, away from the corner the toasts use.
  */
 export function AgentTourPrompt() {
   const { t } = useI18n();
   const pathname = usePathname();
-  const { onboarding, tour, wizard, startTour, update, agentPromptSnoozed, snoozeAgentPrompt, resetAgentPromptSnooze } =
+  const { onboarding, tour, wizard, startTour, update, agentPromptSnoozed, snoozeAgentPrompt } =
     useOnboarding();
   const slug = agentFromPath(pathname)?.agentSlug ?? null;
   // The agent the offer was verified for: the URL alone could name an agent that does not exist.
   const [verifiedSlug, setVerifiedSlug] = useState<string | null>(null);
 
   const wanted = !!slug && onboarding?.agentTour === "new";
-
-  useEffect(() => {
-    if (!slug) resetAgentPromptSnooze();
-  }, [slug, resetAgentPromptSnooze]);
 
   useEffect(() => {
     if (!wanted || !slug) return;
@@ -60,7 +57,7 @@ export function AgentTourPrompt() {
   return (
     <section
       aria-label={t("onboarding.agentPrompt.title")}
-      className="fixed bottom-4 right-4 left-4 z-[60] rounded-lg border bg-popover p-4 text-popover-foreground shadow-lg sm:left-auto sm:max-w-xs"
+      className="fixed left-4 right-4 top-16 z-[60] rounded-lg border bg-popover p-4 text-popover-foreground shadow-lg sm:top-auto sm:bottom-4 sm:left-1/2 sm:right-auto sm:w-80 sm:-translate-x-1/2"
     >
       <p className="text-sm font-medium">{t("onboarding.agentPrompt.title")}</p>
       <div className="mt-3 flex flex-wrap gap-2">
