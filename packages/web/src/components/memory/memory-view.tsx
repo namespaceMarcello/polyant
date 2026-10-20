@@ -65,7 +65,16 @@ export function MemoryView({ lockedInstanceId }: { lockedInstanceId?: string }) 
     if (lockedInstanceId) return;
     setInstanceFilter("");
     setPage(1);
-    api.instances.list().then(({ instances }) => setInstances(instances)).catch(() => {});
+    api.instances
+      .list()
+      .then(({ instances }) => {
+        setInstances(instances);
+        // Memory is read per agent, so the page used to open blank until one was
+        // picked. Preselect the first, once per workspace: a person who then
+        // clears the picker on purpose is left alone.
+        if (instances[0]) setInstanceFilter(instances[0].slug);
+      })
+      .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceSlug]);
 

@@ -3,7 +3,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import { Trash2, Loader2, FileText, Mic, SearchCode, Database, Webhook, Link2, Pencil, ArrowLeft, Copy, MoreHorizontal } from "lucide-react";
@@ -53,6 +53,7 @@ import { DebugSheet, type DebugSheetTarget } from "@/components/messages/debug-s
 import { ContextStoreSheet } from "@/components/messages/context-store-sheet";
 import { formatActivityTimestamp, parseUTC } from "@/lib/format";
 import { useI18n } from "@/lib/i18n/context";
+import { agentConversationsSubpath, FROM_AGENT_PARAM, FROM_AGENT_VALUE } from "@/lib/conversations/from-agent";
 import { useTenantPaths } from "@/lib/tenant/use-tenant-paths";
 import { useFormat } from "@/lib/use-format";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
@@ -134,6 +135,7 @@ export default function ConversationDetailPage() {
   const fmt = useFormat();
   const params = useParams<{ conversationId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const paths = useTenantPaths();
   const conversationId = decodeURIComponent(params.conversationId);
   // Every conversation id is `<instanceSlug>:<channelType>:<channelId>` — see
@@ -141,6 +143,10 @@ export default function ConversationDetailPage() {
   // itself; the backend rejects requests that don't carry an explicit
   // ?instanceId= (cross-tenant IDOR guard).
   const instanceId = conversationId.split(":")[0] ?? "";
+  // Opened from an agent's Conversations section: «Indietro» returns to that
+  // section instead of the workspace list (the list's links carry no `from`).
+  const fromAgent = searchParams.get(FROM_AGENT_PARAM) === FROM_AGENT_VALUE;
+  const backHref = fromAgent ? paths.workspace(agentConversationsSubpath(instanceId)) : paths.workspace("/conversations");
 
   const [conversation, setConversation] = useState<ConversationListItem | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
@@ -204,10 +210,10 @@ export default function ConversationDetailPage() {
       })
       .catch(() => {
         toast.error(t("conversations.detail.notFound"));
-        router.push(paths.workspace("/conversations"));
+        router.push(backHref);
       })
       .finally(() => setLoading(false));
-  }, [conversationId, router, t]);
+  }, [conversationId, router, t, backHref]);
 
   const handleLoadOlder = async () => {
     if (loadingMoreRef.current) return;
@@ -397,7 +403,11 @@ export default function ConversationDetailPage() {
       setRenameOpen(false);
       if (nextId !== conversationId) {
         // The id changed → the current route is stale; navigate to the new one.
-        router.push(paths.workspace(`/conversations/${encodeURIComponent(nextId)}`));
+        router.push(
+          paths.workspace(
+            `/conversations/${encodeURIComponent(nextId)}${fromAgent ? `?${FROM_AGENT_PARAM}=${FROM_AGENT_VALUE}` : ""}`,
+          ),
+        );
       } else {
         setConversation((c) => (c ? { ...c, title: nextTitle } : c));
       }
@@ -412,7 +422,7 @@ export default function ConversationDetailPage() {
     try {
       await api.conversations.delete(conversationId, instanceId);
       toast.success(t("conversations.detail.deleted"));
-      router.push(paths.workspace("/conversations"));
+      router.push(backHref);
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("conversations.detail.deleteFailed")));
     }
@@ -438,7 +448,7 @@ export default function ConversationDetailPage() {
   return (
     <div className="flex h-[calc(100svh-3.5rem-3rem)] flex-col">
       <Link
-        href={paths.workspace("/conversations")}
+        href={backHref}
         className="inline-flex w-fit items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
       >
         <ArrowLeft className="h-4 w-4" />

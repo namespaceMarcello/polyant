@@ -32,7 +32,7 @@
   "conversations.title": "Conversations",
   "conversations.subtitle": "Browse and search conversation history.",
   "conversations.allInstances": "All agents",
-  "conversations.searchPlaceholder": "Search messages or conversation ID...",
+  "conversations.searchPlaceholder": "Search messages, conversation ID or contact...",
   "conversations.empty.title": "No conversations yet",
   "conversations.empty.description": "Conversations will appear here as users interact with your AI assistants.",
   "conversations.empty.searchTitle": "No matching conversations",
@@ -1674,5 +1674,7 @@
   "playground.emptyHintAgent": "Write a message to try {name}",
   "exportImport.export.started": "Export started: the file is downloading.",
   "tools.memoryOffEnable": "Turn on memory",
-  "tools.memoryOffPicker": "Memory is off: this tool cannot be added until you turn it on."
+  "tools.memoryOffPicker": "Memory is off: this tool cannot be added until you turn it on.",
+  "conversations.column.userIdentifier": "Contact",
+  "conversations.filter.contactPlaceholder": "Find a contact (email, number...)"
 }

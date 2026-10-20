@@ -35,6 +35,7 @@ import {
 import { ChannelIcon } from "@/components/channel-icon";
 import { useI18n } from "@/lib/i18n/context";
 import { truncate } from "@/lib/format";
+import { FROM_AGENT_PARAM, FROM_AGENT_VALUE } from "@/lib/conversations/from-agent";
 import { useTenantPaths } from "@/lib/tenant/use-tenant-paths";
 import { useWorkspaceSlug } from "@/lib/tenant/use-workspace-slug";
 import { useFormat } from "@/lib/use-format";
@@ -70,6 +71,17 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
   const [instances, setInstances] = useState<Instance[]>([]);
   const [loading, setLoading] = useState(true);
   const [instanceFilter, setInstanceFilter] = useState(lockedInstanceId ?? "");
+  // The contact filter: typed freely, applied after a pause like the search box.
+  const [contact, setContact] = useState("");
+  const [debouncedContact, setDebouncedContact] = useState("");
+  useEffect(() => {
+    if (contact === debouncedContact) return;
+    const timer = setTimeout(() => {
+      setDebouncedContact(contact);
+      setPage(1);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [contact, debouncedContact, setPage]);
 
   // Fetch instances for filter dropdown — re-fetch when workspace changes.
   // Also reset the stale instance filter so the user doesn't see an empty list.
@@ -90,6 +102,7 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
       const result = await api.conversations.list({
         instanceId: instanceFilter || undefined,
         search: debouncedSearch || undefined,
+        userIdentifier: debouncedContact.trim() || undefined,
         limit: PAGE_SIZE,
         offset,
       });
@@ -100,7 +113,7 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
     } finally {
       setLoading(false);
     }
-  }, [instanceFilter, debouncedSearch, offset, setTotal, t]);
+  }, [instanceFilter, debouncedSearch, debouncedContact, offset, setTotal, t]);
 
   useEffect(() => {
     fetchConversations();
@@ -140,6 +153,14 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
             className="pl-9"
           />
         </div>
+        <Input
+          type="search"
+          aria-label={t("conversations.filter.contactPlaceholder")}
+          placeholder={t("conversations.filter.contactPlaceholder")}
+          value={contact}
+          onChange={(e) => setContact(e.target.value)}
+          className="sm:w-[240px]"
+        />
       </div>
 
       <div className="mt-6">
@@ -153,12 +174,12 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
               <MessageSquare className="h-8 w-8 text-muted-foreground" />
             </div>
             <h3 className="mt-4 text-lg font-medium">
-              {debouncedSearch
+              {debouncedSearch || debouncedContact
                 ? t("conversations.empty.searchTitle")
                 : t("conversations.empty.title")}
             </h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              {debouncedSearch
+              {debouncedSearch || debouncedContact
                 ? t("conversations.empty.searchDescription")
                 : t("conversations.empty.description")}
             </p>
@@ -168,22 +189,25 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
             <Table className="table-fixed">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[35%]">{t("conversations.table.conversation")}</TableHead>
+                  <TableHead className="w-[27%]">{t("conversations.table.conversation")}</TableHead>
                   {!lockedInstanceId && (
                     <TableHead className="hidden md:table-cell w-[13%]">
                       {t("conversations.table.instance")}
                     </TableHead>
                   )}
-                  <TableHead className="w-[7%] text-center">
+                  <TableHead className="hidden md:table-cell w-[14%]">
+                    {t("conversations.column.userIdentifier")}
+                  </TableHead>
+                  <TableHead className="w-[6%] text-center">
                     {t("conversations.table.channel")}
                   </TableHead>
-                  <TableHead className="hidden md:table-cell w-[8%]">
+                  <TableHead className="hidden md:table-cell w-[7%]">
                     {t("conversations.table.messages")}
                   </TableHead>
-                  <TableHead className="hidden md:table-cell w-[13%]">
+                  <TableHead className="hidden md:table-cell w-[12%]">
                     {t("conversations.table.tokens")}
                   </TableHead>
-                  <TableHead className="hidden md:table-cell w-[13%]">
+                  <TableHead className="hidden md:table-cell w-[11%]">
                     {t("conversations.table.cost")}
                   </TableHead>
                   <TableHead className="text-right w-[11%]">
@@ -199,7 +223,7 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
                         href={paths.workspace(
                           `/conversations/${encodeURIComponent(conv.conversationId)}${
                             lockedInstanceId
-                              ? `?instanceId=${encodeURIComponent(lockedInstanceId)}`
+                              ? `?instanceId=${encodeURIComponent(lockedInstanceId)}&${FROM_AGENT_PARAM}=${FROM_AGENT_VALUE}`
                               : ""
                           }`,
                         )}
@@ -242,6 +266,15 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
                         )}
                       </TableCell>
                     )}
+                    <TableCell className="hidden md:table-cell max-w-0">
+                      {conv.userIdentifier ? (
+                        <span className="block truncate" title={conv.userIdentifier}>
+                          {conv.userIdentifier}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">&mdash;</span>
+                      )}
+                    </TableCell>
                     <TableCell className="text-center">
                       {conv.channel ? (
                         <span

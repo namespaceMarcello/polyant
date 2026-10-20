@@ -74,6 +74,11 @@ export function normalizeTitle(title: string): string {
     : collapsed.slice(0, MAX_TITLE_CHARS - 1).trimEnd() + "…";
 }
 
+/** A title as shown: older rows still carry the transcript label the model once echoed ("User: "). */
+function displayTitle(title: string | null): string | null {
+  return title === null || title === undefined ? null : title.replace(SPEAKER_LABEL_RE, "");
+}
+
 function stripNulDeep<T>(value: T): T {
   if (typeof value === "string") return stripNulString(value) as unknown as T;
   if (Array.isArray(value)) return value.map((v) => stripNulDeep(v)) as unknown as T;
@@ -110,6 +115,8 @@ export interface ConversationListItem {
   title: string | null;
   summary: string | null;
   channel: string | null;
+  /** The contact exactly as stored (email, phone number, channel handle), when the channel gave one. */
+  userIdentifier: string | null;
   instanceId: InstanceSlug | null;
   instanceName: string | null;
   messageCount: number;
@@ -547,6 +554,8 @@ export class ConversationStore {
   async listConversations(options: {
     instanceId?: InstanceSlug;
     source?: string;
+    /** Case-insensitive substring of the contact (email, phone number, channel handle). */
+    userIdentifier?: string;
     updatedSince?: Date;
     updatedUntil?: Date;
     limit?: number;
@@ -559,6 +568,9 @@ export class ConversationStore {
     const conditions: ReturnType<typeof sql>[] = [];
     if (options.instanceId) conditions.push(sql`c.instance_id = ${options.instanceId}`);
     if (options.source) conditions.push(sql`c.source = ${options.source}`);
+    if (options.userIdentifier) {
+      conditions.push(sql`c.user_identifier ILIKE ${`%${escapeLikePattern(options.userIdentifier)}%`}`);
+    }
     if (options.updatedSince) conditions.push(sql`c.updated_at >= ${options.updatedSince.toISOString()}::timestamptz`);
     if (options.updatedUntil) conditions.push(sql`c.updated_at < ${options.updatedUntil.toISOString()}::timestamptz`);
     // Cross-org gate: an aggregate list (no instanceId) returns only caller-org
@@ -582,6 +594,7 @@ export class ConversationStore {
           c.title,
           c.summary,
           c.channel,
+          c.user_identifier,
           c.instance_id,
           i.name AS instance_name,
           c.message_count AS message_count,
@@ -624,9 +637,10 @@ export class ConversationStore {
       conversations: (rows as unknown as Array<Record<string, unknown>>).map((r) => ({
         id: r.id as string,
         conversationId: r.conversation_id as string,
-        title: (r.title as string) ?? null,
+        title: displayTitle(r.title as string | null),
         summary: (r.summary as string) ?? null,
         channel: (r.channel as string) ?? null,
+        userIdentifier: (r.user_identifier as string) ?? null,
         instanceId: r.instance_id ? asInstanceSlug(r.instance_id as string) : null,
         instanceName: (r.instance_name as string) ?? null,
         messageCount: (r.message_count as number) ?? 0,
@@ -667,6 +681,7 @@ export class ConversationStore {
         c.title,
         c.summary,
         c.channel,
+        c.user_identifier,
         c.instance_id,
         i.name AS instance_name,
         c.message_count AS message_count,
@@ -703,9 +718,10 @@ export class ConversationStore {
     return {
       id: r.id as string,
       conversationId: r.conversation_id as string,
-      title: (r.title as string) ?? null,
+      title: displayTitle(r.title as string | null),
       summary: (r.summary as string) ?? null,
       channel: (r.channel as string) ?? null,
+      userIdentifier: (r.user_identifier as string) ?? null,
       instanceId: r.instance_id ? asInstanceSlug(r.instance_id as string) : null,
       instanceName: (r.instance_name as string) ?? null,
       messageCount: (r.message_count as number) ?? 0,
@@ -799,12 +815,12 @@ export class ConversationStore {
   }
 
   /**
-   * Search conversations by message content (FTS) or by conversation id
-   * substring (case-insensitive). Returns conversation-level results.
+   * Search conversations by message content (FTS), by conversation id or by
+   * contact substring (case-insensitive). Returns conversation-level results.
    */
   async searchConversations(
     query: string,
-    options: { scope: TenantScope; instanceId?: InstanceSlug; limit?: number; offset?: number },
+    options: { scope: TenantScope; instanceId?: InstanceSlug; userIdentifier?: string; limit?: number; offset?: number },
   ): Promise<{ conversations: ConversationSearchResult[]; total: number }> {
     const limit = options.limit ?? 20;
     const offset = options.offset ?? 0;
@@ -814,12 +830,16 @@ export class ConversationStore {
     // Cross-org gate: a search with no instanceId stays scoped to the caller-org
     // rows; a foreign-org instanceId param yields zero rows.
     const orgFilter = buildOrgScopedAgentFilterFragment(options.scope, "c.instance_id");
+    const contactFilter = options.userIdentifier
+      ? sql`AND c.user_identifier ILIKE ${`%${escapeLikePattern(options.userIdentifier)}%`}`
+      : sql``;
     const instanceFilter = options.instanceId
-      ? sql`AND c.instance_id = ${options.instanceId} ${orgFilter}`
-      : orgFilter;
+      ? sql`AND c.instance_id = ${options.instanceId} ${orgFilter} ${contactFilter}`
+      : sql`${orgFilter} ${contactFilter}`;
 
     const matchFilter = sql`(
       c.conversation_id ILIKE ${idPattern}
+      OR c.user_identifier ILIKE ${idPattern}
       OR EXISTS (
         SELECT 1 FROM conversation_messages cmx
         WHERE cmx.conversation_id = c.conversation_id
@@ -835,6 +855,7 @@ export class ConversationStore {
           c.title,
           c.summary,
           c.channel,
+          c.user_identifier,
           c.instance_id,
           i.name AS instance_name,
           COUNT(cm.id)::int AS match_count,
@@ -889,9 +910,10 @@ export class ConversationStore {
       conversations: (rows as unknown as Array<Record<string, unknown>>).map((r) => ({
         id: r.id as string,
         conversationId: r.conversation_id as string,
-        title: (r.title as string) ?? null,
+        title: displayTitle(r.title as string | null),
         summary: (r.summary as string) ?? null,
         channel: (r.channel as string) ?? null,
+        userIdentifier: (r.user_identifier as string) ?? null,
         instanceId: r.instance_id ? asInstanceSlug(r.instance_id as string) : null,
         instanceName: (r.instance_name as string) ?? null,
         matchCount: (r.match_count as number) ?? 0,

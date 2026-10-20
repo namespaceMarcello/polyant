@@ -32,7 +32,7 @@
   "conversations.title": "Conversazioni",
   "conversations.subtitle": "Cerca e sfoglia la cronologia delle conversazioni.",
   "conversations.allInstances": "Tutti gli agenti",
-  "conversations.searchPlaceholder": "Cerca nei messaggi o per ID conversazione...",
+  "conversations.searchPlaceholder": "Cerca nei messaggi, per ID conversazione o contatto...",
   "conversations.empty.title": "Nessuna conversazione",
   "conversations.empty.description": "Le conversazioni appariranno qui quando gli utenti interagiranno con i tuoi assistenti AI.",
   "conversations.empty.searchTitle": "Nessuna conversazione trovata",
@@ -1674,5 +1674,7 @@
   "playground.emptyHintAgent": "Scrivi un messaggio per provare {name}",
   "exportImport.export.started": "Esportazione avviata: il file si sta scaricando.",
   "tools.memoryOffEnable": "Attiva la memoria",
-  "tools.memoryOffPicker": "La memoria è spenta: questo strumento non si può aggiungere finché non la attivi."
+  "tools.memoryOffPicker": "La memoria è spenta: questo strumento non si può aggiungere finché non la attivi.",
+  "conversations.column.userIdentifier": "Contatto",
+  "conversations.filter.contactPlaceholder": "Cerca un contatto (email, numero...)"
 }
