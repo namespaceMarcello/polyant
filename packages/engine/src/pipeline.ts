@@ -17,6 +17,7 @@ import { buildHistoryWithToolResults } from "./conversations/tool-history.js";
 import { rowsToModelMessages, type MessageRow } from "./conversations/store.js";
 import { extractMemories } from "./memory/index.js";
 import { pipelineLog } from "./utils/pipeline-logger.js";
+import { contactConversationId } from "./channels/outbound-conversation.js";
 import { generateConversationTitle } from "./utils/title-generator.js";
 import { resolveInstanceConfig, type InstanceConfig } from "./instances/config-resolver.js";
 import { traceStore } from "./analytics/trace.store.js";
@@ -33,6 +34,9 @@ import { getEnabledHooks } from "./hooks/hooks.store.js";
 import { getHookRegistry } from "./hooks/hook-registry.js";
 import type { ResponseGeneratedOutcome } from "./hooks/response-replay.js";
 import { resolveDatetimeSettings, UNSET_AGENT_SETTINGS } from "./instances/agent-settings.js";
+import { createLogger } from "./utils/create-logger.js";
+
+const log = createLogger();
 
 /**
  * Channel types that should NOT produce `category: "inbound"` events:
@@ -168,7 +172,7 @@ export async function preparePipeline(
   pipelineLog.request(msg.channelType, instanceId, msg.text);
 
   const conversationId = conversationIdOverride
-    ?? `${instanceId}:${msg.channelType}:${msg.channelId}`;
+    ?? contactConversationId(instanceId, msg.channelType, msg.channelId);
   const isAutoTaskTurn = isAutoTask(msg.text);
 
   // Skip conversation creation for automated tasks (e.g. Open WebUI title/tag generation)
@@ -181,7 +185,7 @@ export async function preparePipeline(
         source,
       })
       .catch((err) => {
-        console.error(`Failed to ensure conversation ${conversationId}:`, err);
+        log.error("pipeline", `Failed to ensure conversation ${conversationId}`, err);
         return { created: false };
       });
 
@@ -253,7 +257,7 @@ export async function preparePipeline(
       isAutoTaskTurn
         ? Promise.resolve(undefined)
         : ConversationStateBuffer.load(conversationId, instanceId).catch((err) => {
-            console.error(`Failed to load conversation state for ${conversationId}:`, err);
+            log.error("pipeline", `Failed to load conversation state for ${conversationId}`, err);
             return new ConversationStateBuffer(conversationId, instanceId);
           }),
     ]);
@@ -507,7 +511,7 @@ export function afterResponse(opts: AfterResponseOptions): void {
       if (novel.length > 0) {
         await conversationStore
           .appendMessages(opts.conversationId, novel)
-          .catch((err) => console.error(`Failed to persist system messages for ${opts.conversationId}:`, err));
+          .catch((err) => log.error("pipeline", `Failed to persist system messages for ${opts.conversationId}`, err));
       }
     }
 
@@ -531,10 +535,9 @@ export function afterResponse(opts: AfterResponseOptions): void {
                 instanceId: opts.instanceId,
                 conversationId: opts.conversationId,
               }).catch((err: unknown) => {
-                console.warn(
-                  'Attachment upload failed for agent "%s" (%s); the turn is saved without it',
-                  opts.instanceId,
-                  err instanceof Error ? err.name : "unknown error",
+                log.warn(
+                  "pipeline",
+                  `Attachment upload failed for agent "${opts.instanceId}" (${err instanceof Error ? err.name : "unknown error"}); the turn is saved without it`,
                 );
                 return null;
               })
@@ -622,19 +625,19 @@ export function afterResponse(opts: AfterResponseOptions): void {
           await conversationStore.updateSummary(opts.conversationId, summary);
         }
       } catch (err) {
-        console.error("Summary generation failed:", err);
+        log.error("pipeline", "Summary generation failed", err);
       }
     });
 
     // 3. Automatic memory extraction (fire-and-forget within fire-and-forget)
     if (opts.memoryEnabled !== false) {
       extractMemories(opts.conversationId, opts.instanceId, opts.apiKeys, opts.provider, opts.langsmith).catch((err) =>
-        console.error("Memory extraction failed:", err),
+        log.error("pipeline", "Memory extraction failed", err),
       );
     }
   };
 
-  work().catch((err: unknown) => console.error("afterResponse error:", err));
+  work().catch((err: unknown) => log.error("pipeline", "afterResponse error", err));
 }
 
 // ---------------------------------------------------------------------------
@@ -845,7 +848,7 @@ export async function runPipelinePost(opts: PipelinePostOptions): Promise<Pipeli
     try {
       await ctx.stateBuffer.flush();
     } catch (err) {
-      console.error(`Failed to flush conversation state for ${ctx.conversationId}:`, err);
+      log.error("pipeline", `Failed to flush conversation state for ${ctx.conversationId}`, err);
     }
   }
 
@@ -885,7 +888,7 @@ export async function runPipelinePost(opts: PipelinePostOptions): Promise<Pipeli
     // Fire-and-forget — errors logged, not propagated.
     if (ctx.contextPrompt) {
       conversationStore.clearContextPrompt(ctx.conversationId).catch((err) =>
-        console.error(`Failed to clear contextPrompt for ${ctx.conversationId}:`, err),
+        log.error("pipeline", `Failed to clear contextPrompt for ${ctx.conversationId}`, err),
       );
     }
   }
@@ -900,7 +903,7 @@ export async function runPipelinePost(opts: PipelinePostOptions): Promise<Pipeli
       try {
         await ctx.stateBuffer.flush();
       } catch (err) {
-        console.error(`Failed to flush hook state for ${ctx.conversationId}:`, err);
+        log.error("pipeline", `Failed to flush hook state for ${ctx.conversationId}`, err);
       }
     }
   }

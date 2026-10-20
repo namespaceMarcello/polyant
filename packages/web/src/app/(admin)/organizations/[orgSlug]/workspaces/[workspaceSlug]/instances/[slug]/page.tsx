@@ -27,6 +27,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { downloadBlob } from "@/lib/download";
 import { api, getUserErrorMessage, type Instance, type ToolState, type ToolPluginInfo, type SkillState, type PromptSection } from "@/lib/api";
 import { GeneralTab } from "./general-tab";
 import { PromptsTab } from "./prompts-tab";
@@ -156,15 +157,8 @@ function InstanceDetailContent() {
     setExporting(true);
     try {
       const blob = await api.exportImport.exportInstance(params.slug);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
       const date = new Date().toISOString().slice(0, 10);
-      a.download = `${params.slug}-export-${date}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `${params.slug}-export-${date}.json`);
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("exportImport.export.failed")));
     } finally {
@@ -253,7 +247,7 @@ function InstanceDetailContent() {
               </AlertDialogHeader>
               <AlertDialogFooter>
                 <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-                <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                <AlertDialogAction onClick={handleDelete} variant="destructive">
                   {t("common.delete")}
                 </AlertDialogAction>
               </AlertDialogFooter>
@@ -372,15 +366,7 @@ function InstanceDetailContent() {
         {/* Governance — the gates, the compliance artifacts and the retention
             policy are not part of this build; what ships here is the opt-out. */}
         <TabsContent value="privacy" data-tour="agent-privacy">
-          <PrivacyTab
-            instance={instance}
-            onSaved={() => {
-              api.instances
-                .get(params.slug)
-                .then((r) => setInstance(r.instance))
-                .catch(() => {});
-            }}
-          />
+          <PrivacyTab instance={instance} onUpdate={setInstance} />
         </TabsContent>
 
         {/* Attività — what this agent has done, not how it is configured. */}
