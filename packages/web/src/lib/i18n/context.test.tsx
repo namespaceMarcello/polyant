@@ -152,6 +152,10 @@ describe("useI18n outside provider", () => {
       expect(translate("en", "conversations.detail.messages", { count: 1 })).toBe("1 message");
     });
 
+    it("reads a count passed as a string too", () => {
+      expect(translate("it", "conversations.detail.messages", { count: "1" })).toBe("1 messaggio");
+    });
+
     it("falls back to the plain key when no _one form exists", () => {
       expect(translate("it", "tools.pickerCount", { count: 1 })).toBe("Strumenti: 1");
     });

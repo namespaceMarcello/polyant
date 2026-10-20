@@ -32,7 +32,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
 /**
  * Looks a key up and fills its `{placeholders}`.
  *
- * Plurals: when `params.count` is a number and the file also holds `<key>_one`
+ * Plurals: when `params.count` is a number (or its string form) and the file also holds `<key>_one`
  * (or `_zero`, `_two`, `_few`, `_many` for locales that need them), the form the
  * locale's plural rules pick for that count is used. The plain key stays the
  * general form, so a string only needs a `_one` sibling where its singular reads
@@ -45,8 +45,10 @@ export function translate(
 ): string {
   const table = TRANSLATIONS[locale] as Record<string, string>;
   let value: string | undefined;
-  if (typeof params?.count === "number") {
-    const category = new Intl.PluralRules(locale).select(params.count);
+  // `count` arrives as a number or, from older call sites, as its string form.
+  const count = params?.count === undefined || params.count === "" ? Number.NaN : Number(params.count);
+  if (Number.isFinite(count)) {
+    const category = new Intl.PluralRules(locale).select(count);
     if (category !== "other") value = table[`${key}_${category}`];
   }
   value ??= table[key] ?? key;
