@@ -370,6 +370,27 @@ describe("the agent-tour offer", () => {
     expect(offer.className).toContain("sm:left-1/2");
     expect(offer.className).toContain("sm:right-auto");
     expect(offer.className).toContain("top-16");
+    expect(offer.className).not.toContain("bottom-4");
+  });
+
+  it("waits while a side panel or dialog is open and comes back when it closes", async () => {
+    // The break this catches: the offer covering the footer of the agent try panel.
+    mount();
+    await screen.findByRole("region", { name: "Want a tour of this page?" });
+    const panel = document.createElement("div");
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("data-state", "open");
+    await act(async () => {
+      document.body.appendChild(panel);
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Want a tour of this page?" })).not.toBeInTheDocument(),
+    );
+    await act(async () => {
+      panel.setAttribute("data-state", "closed");
+    });
+    expect(await screen.findByRole("region", { name: "Want a tour of this page?" })).toBeInTheDocument();
+    panel.remove();
   });
 
   it("Don't show again records it", async () => {
