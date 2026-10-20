@@ -11,33 +11,53 @@
  * got the first answer, and the history stored the first message twice next to
  * an answer nobody received.
  *
- * Real coordinator, real post-response phase, real database. Only the hook
- * bodies and the title generator (an LLM call) are replaced; the handler stands
- * in for the pre/LLM phases, which have nothing to do with the commit point.
- * Self-skips without a database; CI_REQUIRE_DB makes an absent one a failure.
+ * Real coordinator, real post-response phase, real hook runner, real database.
+ * Only the hook lookup and bodies and the title generator (an LLM call) are
+ * replaced; the handler stands in for the pre/LLM phases, which have nothing to
+ * do with the commit point. Self-skips without a database; CI_REQUIRE_DB makes
+ * an absent one a failure.
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { HookEvent, HookEventPayload, HookExecutionSummary, HookRunContext } from "../hooks/hook-types.js";
+import type { HookEvent, HookEventPayload, HookRunContext, InstanceHookRow } from "../hooks/hook-types.js";
 
 const hooks = vi.hoisted(() => ({
-  responseSent: undefined as undefined | (() => Promise<void>),
+  /** Body of every `response_sent` hook: the hook's id, the user message of the turn, the context it ran with. */
+  responseSent: undefined as undefined | ((id: string, text: string, ctx: HookRunContext) => Promise<void>),
 }));
 
-vi.mock("../hooks/hook-runner.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../hooks/hook-runner.js")>();
+/** An enabled `function` hook row; only the fields the runner reads matter. */
+function hookRow(id: string, event: HookEvent, position: number): InstanceHookRow {
+  return {
+    id,
+    instanceId: "itest-commit-point",
+    event,
+    actionType: "function",
+    actionConfig: { functionName: `itest-${id}` },
+    enabled: true,
+    position,
+    timeoutMs: 10_000,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  };
+}
+
+vi.mock("../hooks/hooks.store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../hooks/hooks.store.js")>();
   return {
     ...actual,
-    runHooks: async (
-      event: HookEvent,
-      _payload: HookEventPayload,
-      _ctx: HookRunContext,
-    ): Promise<HookExecutionSummary[]> => {
-      if (event === "response_sent") await hooks.responseSent?.();
-      return [];
-    },
+    getEnabledHooks: async (_instance: string, event: HookEvent) =>
+      event === "response_sent" ? [hookRow("a", event, 0), hookRow("b", event, 1)] : [],
   };
 });
+vi.mock("../hooks/actions/function-action.js", () => ({
+  functionActionExecutor: {
+    execute: async (hook: InstanceHookRow, payload: HookEventPayload, ctx: HookRunContext) => {
+      await hooks.responseSent?.(hook.id, payload.message.text, ctx);
+    },
+  },
+}));
+vi.mock("../hooks/hook-executions.store.js", () => ({ recordHookExecution: async () => undefined }));
 vi.mock("../utils/title-generator.js", () => ({ generateConversationTitle: async () => undefined }));
 
 import { queryClient } from "../database/client.js";
@@ -126,18 +146,23 @@ describe.skipIf(!DB_AVAILABLE)("message coordinator × commit point (integration
 
   afterAll(teardown);
 
-  it("delivers a committed reply and does not replay its fragment when a new one arrives during response_sent", async () => {
+  it("delivers a committed reply, runs all its response_sent hooks and does not replay its fragment when a new one arrives during them", async () => {
     let enteredResponseSent!: () => void;
     const inResponseSent = new Promise<void>((resolve) => (enteredResponseSent = resolve));
     let release!: () => void;
     const released = new Promise<void>((resolve) => (release = resolve));
-    let responseSentCalls = 0;
-    hooks.responseSent = async () => {
-      responseSentCalls++;
-      if (responseSentCalls === 1) {
+    const ran: string[] = [];
+    const abortedWhenDone: string[] = [];
+    hooks.responseSent = async (id, text, ctx) => {
+      ran.push(`${id}:${text}`);
+      if (id === "a" && text === "first") {
         enteredResponseSent();
         await released;
       }
+      // Each hook leaves a mark in the conversation state, written after the
+      // second fragment has arrived for hook a of the first turn.
+      ctx.state?.set(`${id}:${text}`, true);
+      if (ctx.abortSignal?.aborted) abortedWhenDone.push(`${id}:${text}`);
     };
 
     const sent: string[] = [];
@@ -152,7 +177,7 @@ describe.skipIf(!DB_AVAILABLE)("message coordinator × commit point (integration
     try {
       await coordinator.onMessage(fragment("first"));
       // Turn 1 is past its last abort gate: its messages are being written and
-      // its response_sent hooks are running.
+      // its first response_sent hook is running.
       await inResponseSent;
       await coordinator.onMessage(fragment("second"));
       release();
@@ -168,6 +193,11 @@ describe.skipIf(!DB_AVAILABLE)("message coordinator × commit point (integration
         "assistant: echo: second",
       ]);
       expect(sent).toEqual(["echo: first", "echo: second"]);
+      // The committed turn's hooks all ran once, to the end, and their state writes were kept.
+      expect(ran).toEqual(["a:first", "b:first", "a:second", "b:second"]);
+      expect(abortedWhenDone).toEqual([]);
+      const state = (await ConversationStateBuffer.load(CONVERSATION_ID, AGENT)).snapshot();
+      expect(state).toMatchObject({ "a:first": true, "b:first": true, "a:second": true, "b:second": true });
     } finally {
       coordinator.shutdown();
     }

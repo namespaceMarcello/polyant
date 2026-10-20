@@ -326,6 +326,26 @@ describe("runPipelinePost persistence gate", () => {
     expect(committed).toBe(true);
     await vi.waitFor(() => expect(conversationStore.appendMessages).toHaveBeenCalled());
   });
+
+  /** The context `runHooks` received for `event`. */
+  const hookContextOf = (event: string) => vi.mocked(runHooks).mock.calls.find(([e]) => e === event)?.[2];
+
+  it("runs the response_sent hooks of a saved turn without the run's abort signal, so a late abort cannot cut them", async () => {
+    const ac = new AbortController();
+
+    await runPipelinePost({ ...postOptions(ctxWith({})), abortSignal: ac.signal });
+
+    expect(hookContextOf("response_generated")?.abortSignal).toBe(ac.signal);
+    expect(runHooks).toHaveBeenCalledWith("response_sent", expect.anything(), expect.objectContaining({ abortSignal: undefined }));
+  });
+
+  it("keeps the run's abort signal for the response_sent hooks of a turn that is not saved", async () => {
+    const ac = new AbortController();
+
+    await runPipelinePost({ ...postOptions(ctxWith({})), persist: false, abortSignal: ac.signal });
+
+    expect(hookContextOf("response_sent")?.abortSignal).toBe(ac.signal);
+  });
 });
 
 describe("missing provider key turn", () => {

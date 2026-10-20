@@ -863,8 +863,13 @@ export async function runPipelinePost(opts: PipelinePostOptions): Promise<Pipeli
   // to the channel (the pipeline never observes physical delivery — see the
   // hooks design doc). The main flush already ran, so persist any state these
   // hooks wrote with a second flush (no-op when nothing changed).
+  // A committed turn is final, so its hooks run without the run's abort signal:
+  // a late abort (a new fragment on a debounced channel) no longer skips the
+  // hooks not yet started or refuses their state writes. Each hook keeps its
+  // own timeout. A turn that is not saved keeps the signal.
   if (hookPayload && hookCtx) {
-    hookExecutions.push(...(await runHooks("response_sent", hookPayload, hookCtx)));
+    const sentCtx = persist ? buildHookRunContext(ctx) : hookCtx;
+    hookExecutions.push(...(await runHooks("response_sent", hookPayload, sentCtx)));
     if (persist && ctx.stateBuffer) {
       try {
         await ctx.stateBuffer.flush();
