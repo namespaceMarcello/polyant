@@ -276,10 +276,10 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
                       )}
                     </TableCell>
                     <TableCell className="hidden md:table-cell text-muted-foreground">
-                      ${conv.conversationCost.toFixed(4)}
+                      {fmt.currency(conv.conversationCost)}
                       {conv.serviceCost > 0 && (
                         <span className="text-xs text-muted-foreground/60 ml-1">
-                          (+${conv.serviceCost.toFixed(4)})
+                          (+{fmt.currency(conv.serviceCost)})
                         </span>
                       )}
                     </TableCell>

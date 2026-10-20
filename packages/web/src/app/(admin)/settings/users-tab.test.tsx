@@ -120,7 +120,7 @@ describe("UsersTab", () => {
     mockReset.mockResolvedValue({ user: ADA, generatedPassword: ONE_TIME_SECRET });
     await renderTab();
 
-    await u.click(within(rowOf("ada@example.com")).getByRole("button", { name: "Reset password" }));
+    await u.click(within(rowOf("ada@example.com")).getByRole("button", { name: "Reimposta password" }));
     const dialog = await screen.findByRole("dialog");
     expect(mockReset).not.toHaveBeenCalled();
     expect(within(dialog).queryByText("Temp-Pass-123")).not.toBeInTheDocument();
@@ -136,13 +136,13 @@ describe("UsersTab", () => {
     mockReset.mockResolvedValue({ user: ADA, generatedPassword: ONE_TIME_SECRET });
     await renderTab();
 
-    await u.click(within(rowOf("ada@example.com")).getByRole("button", { name: "Reset password" }));
+    await u.click(within(rowOf("ada@example.com")).getByRole("button", { name: "Reimposta password" }));
     await u.click(await screen.findByRole("button", { name: "Genera nuova password" }));
     await screen.findByText("Temp-Pass-123");
     await u.click(screen.getByRole("button", { name: "OK" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 
-    await u.click(within(rowOf("ada@example.com")).getByRole("button", { name: "Reset password" }));
+    await u.click(within(rowOf("ada@example.com")).getByRole("button", { name: "Reimposta password" }));
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).queryByText("Temp-Pass-123")).not.toBeInTheDocument();
@@ -153,7 +153,7 @@ describe("UsersTab", () => {
     const u = userEvent.setup();
     await renderTab();
 
-    await u.click(within(rowOf("ada@example.com")).getByRole("button", { name: "Reset password" }));
+    await u.click(within(rowOf("ada@example.com")).getByRole("button", { name: "Reimposta password" }));
     await u.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Annulla" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -184,7 +184,7 @@ describe("UsersTab", () => {
     await renderTab();
 
     expect(screen.getByText("1-25 di 30")).toBeInTheDocument();
-    await u.click(screen.getByRole("button", { name: "Successiva" }));
+    await u.click(screen.getByRole("button", { name: "Successivo" }));
 
     await waitFor(() => expect(mockList).toHaveBeenLastCalledWith({ limit: 25, offset: 25 }));
   });

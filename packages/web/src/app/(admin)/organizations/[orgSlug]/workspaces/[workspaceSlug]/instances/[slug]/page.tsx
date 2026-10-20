@@ -50,6 +50,7 @@ import { HooksTab } from "./hooks-tab";
 import { PrivacyTab } from "./privacy-tab";
 import { PageActionsProvider, usePageActions } from "./page-actions-context";
 import { useI18n } from "@/lib/i18n/context";
+import { instanceStatusLabel } from "@/lib/instance-status";
 import { agentSection, agentSectionsByMacro, resolveAgentTab } from "@/lib/nav/agent-sections";
 import { SectionActionsSlot } from "./section-actions";
 import { useTenantPaths } from "@/lib/tenant/use-tenant-paths";
@@ -196,7 +197,7 @@ function InstanceDetailContent() {
               {instance.slug}
             </code>
             <Badge variant={instance.status === "active" ? "default" : "secondary"}>
-              {instance.status}
+              {instanceStatusLabel(instance.status, t)}
             </Badge>
           </div>
         </div>

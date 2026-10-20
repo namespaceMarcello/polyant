@@ -35,6 +35,7 @@ vi.mock("@/lib/format", () => ({
   formatDateTime: vi.fn((iso: string) => iso),
   formatTime: vi.fn((iso: string) => iso),
   formatNumber: vi.fn((value: number) => String(value)),
+  formatCurrency: vi.fn((value: number) => `$${value.toFixed(4)}`),
 }));
 
 const mockPaginationFns = vi.hoisted(() => ({

@@ -499,12 +499,12 @@ export default function ConversationDetailPage() {
                   <Tooltip key="cost">
                     <TooltipTrigger asChild>
                       <span tabIndex={0} className="cursor-help tabular-nums underline decoration-dotted underline-offset-4">
-                        {fmt.usd(conversation.totalCost)}
+                        {fmt.currency(conversation.totalCost)}
                       </span>
                     </TooltipTrigger>
                     <TooltipContent>
-                      <p>{t("conversations.detail.conversationCost")}: {fmt.usd(conversation.conversationCost)}</p>
-                      <p className="text-muted-foreground">{t("conversations.detail.serviceCost")}: {fmt.usd(conversation.serviceCost)}</p>
+                      <p>{t("conversations.detail.conversationCost")}: {fmt.currency(conversation.conversationCost)}</p>
+                      <p className="text-muted-foreground">{t("conversations.detail.serviceCost")}: {fmt.currency(conversation.serviceCost)}</p>
                     </TooltipContent>
                   </Tooltip>
                 ),

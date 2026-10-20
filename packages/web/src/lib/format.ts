@@ -130,6 +130,39 @@ export function formatUsd(value: number, locale: string): string {
 }
 
 /**
+ * Cost with "more decimals under $1" so a sub-cent cost does not round to "$0.00",
+ * and the digit grouping/decimal separator follows the UI's locale (1.234,50 vs
+ * 1,234.50). `useFormat().currency` binds this to the locale the user picked;
+ * components reach for that instead of a hardcoded `.toFixed(n)`.
+ */
+export function formatCurrency(value: number, locale: string): string {
+  const digits = Math.abs(value) < 1 ? 4 : 2;
+  const formatted = Math.abs(value).toLocaleString(locale, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  // The sign goes BEFORE the symbol: prefixing `$` to an already-signed number
+  // produced "$-1.50".
+  return `${value < 0 ? "-" : ""}$${formatted}`;
+}
+
+/**
+ * A cost on a chart axis. Ticks are round numbers the chart library picked, so
+ * the trailing zeros of `formatCurrency` are noise there, and a tick like 5.5e-8
+ * must never print in exponent form: significant digits keep the number plain
+ * at any scale, and the separators follow the UI locale like every other cost.
+ */
+export function formatCurrencyTick(value: number, locale: string): string {
+  const formatted = Math.abs(value).toLocaleString(
+    locale,
+    Math.abs(value) < 1
+      ? { maximumSignificantDigits: 3 }
+      : { maximumFractionDigits: 2 },
+  );
+  return `${value < 0 ? "-" : ""}$${formatted}`;
+}
+
+/**
  * Shared by every analytics comparison table (instance, organization): more
  * decimal places under $1 so a sub-cent cost does not round to "$0.00".
  */

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { formatRelativeTime, formatUsd, lastDays, toIsoDay, truncate } from "./format";
+import { formatCurrency, formatCurrencyTick, formatRelativeTime, formatUsd, lastDays, toIsoDay, truncate } from "./format";
 
 // Simple translation mock
 const t = (key: string, params?: Record<string, string | number>) => {
@@ -96,5 +96,30 @@ describe("formatUsd", () => {
 
   it("writes the amount in the UI's locale", () => {
     expect(formatUsd(12345.5, "it")).toBe("$12.345,5000");
+  });
+});
+
+describe("formatCurrency", () => {
+  it("puts the minus sign before the currency symbol", () => {
+    expect(formatCurrency(-1.5, "en-US")).toBe("-$1.50");
+  });
+
+  it("keeps four digits for sub-unit amounts and the locale separators", () => {
+    expect(formatCurrency(0.0125, "en-US")).toBe("$0.0125");
+    expect(formatCurrency(12345.5, "it")).toBe("$12.345,50");
+  });
+});
+
+describe("formatCurrencyTick", () => {
+  it("never prints a tiny axis value in exponent form", () => {
+    // Catches "$5.5e-8" on the cost axis when a day costs a fraction of a cent.
+    expect(formatCurrencyTick(5.5e-8, "en-US")).toBe("$0.000000055");
+    expect(formatCurrencyTick(5.5e-8, "it")).toBe("$0,000000055");
+  });
+
+  it("uses the locale separators and no trailing zeros", () => {
+    expect(formatCurrencyTick(0.002, "it")).toBe("$0,002");
+    expect(formatCurrencyTick(1.5, "it")).toBe("$1,5");
+    expect(formatCurrencyTick(0, "en-US")).toBe("$0");
   });
 });

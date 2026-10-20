@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api, type ChannelConfig, type Instance, type SkillState, type ToolState } from "@/lib/api";
 import { useResource } from "@/hooks/use-resource";
 import { useI18n } from "@/lib/i18n/context";
+import { instanceStatusLabel } from "@/lib/instance-status";
 import type { TranslationKey } from "@/lib/i18n/types";
 import { StatusChecks } from "./status-checks-list";
 import type { StatusChecksState } from "./use-status-checks";
@@ -82,7 +83,7 @@ export function StatusTab({
             </Row>
             <Row label={t("status.current.status")}>
               <Badge variant={instance.status === "active" ? "default" : "secondary"}>
-                {instance.status}
+                {instanceStatusLabel(instance.status, t)}
               </Badge>
             </Row>
           </Block>
