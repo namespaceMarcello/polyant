@@ -56,10 +56,10 @@ export function NavUser({ user }: NavUserProps) {
           <Button
             variant="ghost"
             size="icon"
-            className="size-8 rounded-full"
-            aria-label={user.name ?? user.email ?? t("user.menu")}
+            className="size-8 rounded-full p-0 hover:ring-2 hover:ring-ring/40 data-[state=open]:ring-2 data-[state=open]:ring-ring/40"
+            aria-label={t("user.menu")}
           >
-            <Avatar size="sm">
+            <Avatar className="size-8 ring-1 ring-border">
               {user.image && <AvatarImage src={user.image} alt="" />}
               <AvatarFallback>{initials(user.name)}</AvatarFallback>
             </Avatar>

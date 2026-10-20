@@ -16,7 +16,7 @@ describe("NavUser", () => {
   it("opens a menu with the name, the email and a way out", async () => {
     render(<NavUser user={{ name: "Ada Lovelace", email: "ada@example.com" }} />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Ada Lovelace" }));
+    await userEvent.click(screen.getByRole("button", { name: "user.menu" }));
 
     expect(screen.getByText("ada@example.com")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("menuitem", { name: "user.logout" }));
