@@ -14,7 +14,8 @@ function SaveButton() {
   return <button onClick={() => saveAction.onSave()}>common.save</button>;
 }
 
-const { mockSecretsList, mockSecretsSet, mockInstanceUpdate, mockToastError, mockChannelsList, mockChannelsSet } = vi.hoisted(() => ({
+const { mockSecretsList, mockSecretsSet, mockInstanceUpdate, mockToastError, mockChannelsList, mockChannelsSet, mockWebEndpoint } = vi.hoisted(() => ({
+  mockWebEndpoint: vi.fn(),
   mockChannelsList: vi.fn(),
   mockChannelsSet: vi.fn(),
   mockSecretsList: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock("@/lib/api", () => ({
     channels: {
       list: (...a: unknown[]) => mockChannelsList(...a),
       set: (...a: unknown[]) => mockChannelsSet(...a),
+      webEndpoint: (...a: unknown[]) => mockWebEndpoint(...a),
     },
   },
   getUserErrorMessage: (_e: unknown, d: string) => d,
@@ -72,6 +74,7 @@ beforeEach(() => {
   mockSecretsSet.mockResolvedValue({ secrets: [] });
   mockChannelsList.mockResolvedValue({ channels: [] });
   mockChannelsSet.mockResolvedValue({ channel: null });
+  mockWebEndpoint.mockResolvedValue({ endpointUrl: "https://agents.example.com/v1/chat/completions", baseUrlConfigured: true });
   mockInstanceUpdate.mockResolvedValue({ instance: agent({ authEnabled: true }) });
 });
 
@@ -294,6 +297,40 @@ describe("ChannelWebTab", () => {
 
       await waitFor(() => expect(mockInstanceUpdate).toHaveBeenCalled());
       expect(mockChannelsSet).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("publishing the endpoint", () => {
+    const WEB_ON = { channels: [{ channelType: "web", enabled: true, config: {} }] };
+
+    it("should_show_no_endpoint_while_the_channel_is_off", async () => {
+      renderTab(agent({ authEnabled: true }));
+      await waitFor(() => expect(mockChannelsList).toHaveBeenCalled());
+      expect(screen.queryByTestId("web-endpoint")).toBeNull();
+    });
+
+    it("should_show_the_address_and_keyed_examples_with_a_placeholder_never_a_secret", async () => {
+      mockChannelsList.mockResolvedValue(WEB_ON);
+      renderTab(agent({ authEnabled: true }));
+      expect(await screen.findByText("https://agents.example.com/v1/chat/completions")).toBeInTheDocument();
+      const examples = screen.getAllByText(/Authorization/, { selector: "code" });
+      expect(examples).toHaveLength(2);
+      expect(examples[0].textContent).toContain("Bearer LA_TUA_API_KEY");
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("should_warn_and_drop_the_header_when_authentication_is_off", async () => {
+      mockChannelsList.mockResolvedValue(WEB_ON);
+      renderTab(agent({ authEnabled: false }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("channels.tab.webEndpointOpenWarning");
+      expect(screen.queryByText(/Authorization/, { selector: "code" })).toBeNull();
+    });
+
+    it("should_say_where_to_set_the_public_address_when_it_is_the_localhost_fallback", async () => {
+      mockChannelsList.mockResolvedValue(WEB_ON);
+      mockWebEndpoint.mockResolvedValue({ endpointUrl: "http://localhost:4000/v1/chat/completions", baseUrlConfigured: false });
+      renderTab(agent({ authEnabled: true }));
+      expect(await screen.findByText("channels.tab.webEndpointNoBaseUrlLink")).toBeInTheDocument();
     });
   });
 });

@@ -24,6 +24,7 @@ import { api, getUserErrorMessage, type ChannelConfig, type Instance } from "@/l
 import { useI18n } from "@/lib/i18n/context";
 import { usePageSaveAction } from "./page-actions-context";
 import { useDraft } from "./use-draft";
+import { WebEndpointCard } from "./web-endpoint-card";
 import { FieldMappingEditor, mappingFromRows, type MappingRow, rowsFromMapping } from "./field-mapping-editor";
 
 /** Same mapping regardless of key order: the engine stores an object, the editor a list. */
@@ -213,6 +214,14 @@ export function ChannelWebTab({ instance, onUpdate, channels, onChannelsChanged 
           </div>
         )}
       </section>
+
+      {savedWebEnabled && (
+        <WebEndpointCard
+          slug={instance.slug}
+          keyRequired={instance.authEnabled || Object.keys(savedMapping).length > 0}
+          authOff={!instance.authEnabled}
+        />
+      )}
 
       <section className="space-y-2 rounded-lg border p-4">
         <Label className="text-base font-medium">{t("channels.tab.webContextMapping")}</Label>
