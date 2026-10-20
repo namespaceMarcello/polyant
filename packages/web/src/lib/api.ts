@@ -481,6 +481,9 @@ export const api = {
       request<{ channels: ChannelConfig[] }>(urlPath`/api/instances/${slug}/channels`),
     slackWebhookUrl: (slug: string) =>
       request<{ webhookUrl: string }>(urlPath`/api/instances/${slug}/channels/slack/webhook-url`),
+    /** Where a caller reaches the Web channel; `baseUrlConfigured` false means the localhost fallback. */
+    webEndpoint: (slug: string) =>
+      request<{ endpointUrl: string; baseUrlConfigured: boolean }>(urlPath`/api/instances/${slug}/channels/web/endpoint`),
     set: (slug: string, channelType: string, config: Record<string, unknown>, enabled: boolean) =>
       // `webhookUrl` is present only when the saved channel ends up in
       // Twilio API Key mode (see the engine's `buildChannelResponse`).
