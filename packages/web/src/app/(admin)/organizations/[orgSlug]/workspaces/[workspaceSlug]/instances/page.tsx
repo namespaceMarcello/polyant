@@ -33,6 +33,7 @@ import { CreateInstanceDialog } from "./create-instance-dialog";
 import { useFormat } from "@/lib/use-format";
 import { isSafeImageSrc } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n/context";
+import { instanceStatusLabel } from "@/lib/instance-status";
 import type { TranslationKey } from "@/lib/i18n/types";
 import { useTenantPaths, type TenantPaths } from "@/lib/tenant/use-tenant-paths";
 
@@ -44,6 +45,7 @@ const parseViewMode = (raw: string): ViewMode | undefined => (raw === "list" || 
 const parseBool = (raw: string): boolean | undefined => (raw === "true" ? true : raw === "false" ? false : undefined);
 
 function InstanceGrid({ instances, paths }: { instances: Instance[]; paths: TenantPaths }) {
+  const { t } = useI18n();
   return (
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
       {instances.map((inst) => (
@@ -74,7 +76,7 @@ function InstanceGrid({ instances, paths }: { instances: Instance[]; paths: Tena
               variant={inst.status === "active" ? "default" : "secondary"}
               className="mt-1 text-[10px]"
             >
-              {inst.status}
+              {instanceStatusLabel(inst.status, t)}
             </Badge>
           </div>
         </Link>
@@ -137,7 +139,7 @@ function InstanceList({ instances, t, paths }: {
                   inst.status === "active" ? "default" : "secondary"
                 }
               >
-                {inst.status}
+                {instanceStatusLabel(inst.status, t)}
               </Badge>
             </TableCell>
             <TableCell className="hidden max-w-xs truncate md:table-cell text-muted-foreground">

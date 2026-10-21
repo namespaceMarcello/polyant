@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ConversationListItem, Instance } from "@/lib/api";
 
 // ── Mocks ────────────────────────────────────────────────────────────
@@ -35,6 +36,7 @@ vi.mock("@/lib/format", () => ({
   formatDateTime: vi.fn((iso: string) => iso),
   formatTime: vi.fn((iso: string) => iso),
   formatNumber: vi.fn((value: number) => String(value)),
+  formatCurrency: vi.fn((value: number) => `$${value.toFixed(4)}`),
 }));
 
 const mockPaginationFns = vi.hoisted(() => ({
@@ -92,6 +94,7 @@ function makeConversation(overrides: Partial<ConversationListItem> = {}): Conver
     title: "Test Conversation",
     summary: "A summary",
     channel: "telegram",
+    userIdentifier: null,
     instanceId: "inst-1",
     instanceName: "My Instance",
     messageCount: 5,
@@ -320,5 +323,35 @@ describe("ConversationsPage", () => {
     await waitFor(() => {
       expect(screen.getByText("conversations.newChat")).toBeInTheDocument();
     });
+  });
+
+  it("shows the contact in its own column, and a dash for a conversation without one", async () => {
+    mockConversationsList.mockResolvedValue({
+      conversations: [
+        makeConversation({ id: "c1", conversationId: "a", title: "With contact", userIdentifier: "anna@example.com" }),
+        makeConversation({ id: "c2", conversationId: "b", title: "No contact", userIdentifier: null }),
+      ],
+      total: 2,
+      limit: 20,
+      offset: 0,
+    });
+
+    render(<ConversationsPage />);
+
+    // Catches the contact being stored by the engine but never reaching the screen.
+    expect(await screen.findByText("anna@example.com")).toBeInTheDocument();
+    expect(screen.getByText("conversations.column.userIdentifier")).toBeInTheDocument();
+  });
+
+  it("filters by contact after a pause, sending only the trimmed text", async () => {
+    render(<ConversationsPage />);
+    await waitFor(() => expect(mockConversationsList).toHaveBeenCalled());
+
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText("conversations.filter.contactPlaceholder"), " anna ");
+
+    await waitFor(() =>
+      expect(mockConversationsList).toHaveBeenLastCalledWith(expect.objectContaining({ userIdentifier: "anna" })),
+    );
   });
 });

@@ -101,7 +101,7 @@ function UsageSection({ target }: { target: DebugSheetTarget }) {
 
   if (!target.model && prompt === 0 && completion === 0) return null;
 
-  const fmtCost = (usd: number | undefined) => (usd != null ? `$${usd.toFixed(4)}` : "—");
+  const fmtCost = (usd: number | undefined) => (usd != null ? fmt.currency(usd) : "—");
   const rows: Array<{ label: string; tokens: number; cost: number | undefined }> = [
     { label: t("conversations.detail.pills.input"), tokens: regularInput, cost: cost?.input },
     ...(cacheRead > 0

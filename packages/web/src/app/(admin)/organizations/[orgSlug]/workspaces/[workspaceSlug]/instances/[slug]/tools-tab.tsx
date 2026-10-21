@@ -3,6 +3,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { AlertTriangle, MinusCircle, Plus, Search, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -167,6 +168,12 @@ export function ToolsTab({
   const rows = listed.filter(matches).sort((a, b) => a.name.localeCompare(b.name));
   const systemRows = alwaysOn.filter(matches);
 
+  /**
+   * A memory tool does nothing while the agent's memory is off, and the agent
+   * drops it silently. It is listed as inert, with the way to the memory card
+   * (Avanzate) beside it, and the picker will not add one.
+   */
+  const memoryOff = (tool: ToolState) => !memoryEnabled && tool.category === "memory";
   /** Why an enabled tool does nothing even while enabled: a layer it depends on is off. */
   const lockReason = (tool: ToolState): string | null => {
     if (!memoryEnabled && tool.category === "memory") return t("tools.memoryDisabledHint");
@@ -383,7 +390,7 @@ export function ToolsTab({
                           .join(" · ");
                   const open = removing ? undefined : () => setOpenTool(tool.name);
                   return (
-                    <ListRow key={tool.name} onOpen={open} selected={openTool === tool.name} muted={Boolean(removing)} accent={Boolean(adding)}>
+                    <ListRow key={tool.name} onOpen={open} selected={openTool === tool.name} muted={Boolean(removing) || (memoryOff(tool) && !adding)} accent={Boolean(adding)}>
                       <ListNameCell
                         name={toolDisplayName(tool.name)}
                         onOpen={open}
@@ -391,6 +398,18 @@ export function ToolsTab({
                         summary={
                           <span className={cn("block truncate", adding || removing ? "text-xs font-medium" : "text-xs text-muted-foreground")}>
                             {subtitle}
+                            {memoryOff(tool) && !removing && (
+                              <>
+                                {" · "}
+                                <Link
+                                  href="?tab=params"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="font-medium text-foreground underline underline-offset-4"
+                                >
+                                  {t("tools.memoryOffEnable")}
+                                </Link>
+                              </>
+                            )}
                           </span>
                         }
                       />
@@ -506,6 +525,7 @@ export function ToolsTab({
         pluginName={nameOfPlugin}
         pluginDescription={aboutPlugin}
         isConfigured={params.loading || !params.canRead ? null : params.isConfigured}
+        blocked={(tool) => (memoryOff(tool) ? "memory" : null)}
         onEnable={enableTools}
       />
 

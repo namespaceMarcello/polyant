@@ -47,6 +47,12 @@ describe("resolveDestination", () => {
     expect(d?.backHref).toBe("/organizations/acme/workspaces/vendite/instances");
   });
 
+  it("puts Conversazioni right after Stato, under the same heading", () => {
+    // Catches the agent's conversations sitting in a different group, far from its status.
+    const overview = resolveDestination(AGENT)?.groups.find((g) => g.key === "overview");
+    expect(overview?.items.map((item) => item.key).slice(0, 2)).toEqual(["overview", "conversations"]);
+  });
+
   it("places one Automazione row in Comportamento before Avanzate", () => {
     const groups = resolveDestination(AGENT)!.groups;
     const behaviour = groups.find((group) => group.key === "behaviour")!;

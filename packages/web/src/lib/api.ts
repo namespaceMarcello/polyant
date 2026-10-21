@@ -591,6 +591,8 @@ export const api = {
       instanceId?: string;
       source?: string;
       search?: string;
+      /** Substring of the contact (email, phone number, channel handle). */
+      userIdentifier?: string;
       limit?: number;
       offset?: number;
     }) => {

@@ -3,7 +3,7 @@
 "use client";
 
 import { Fragment, useState, type ReactNode } from "react";
-import { Bell, CheckCircle2, ChevronDown, ChevronRight, Clock, Loader2, XCircle } from "lucide-react";
+import { Bell, Bot, CheckCircle2, ChevronDown, ChevronRight, Clock, Loader2, XCircle } from "lucide-react";
 import { isSafeImageSrc } from "@/lib/utils";
 import { ChannelIcon } from "@/components/channel-icon";
 import { narrate } from "@/lib/activity-stream/narrative";
@@ -33,8 +33,6 @@ interface Props {
   isFresh: boolean;
   labels: RowLabels;
 }
-
-const FALLBACK_INSTANCE_ICON = "🤖";
 
 // Renderable instance icons may have been stored by another user, so we
 // only trust two well-known safe shapes: explicit `https://...` URLs or
@@ -284,7 +282,19 @@ function CategoryMeta({ ev, labels }: { ev: FeedEvent; labels: RowLabels }) {
 }
 
 function InstanceAvatar({ icon, name }: { icon: string | null; name: string }) {
-  const safeIcon = icon || FALLBACK_INSTANCE_ICON;
+  // An agent without an icon gets the same bot glyph the agents list uses.
+  if (!icon) {
+    return (
+      <span
+        aria-hidden
+        title={name}
+        className="flex size-10 items-center justify-center rounded-md bg-muted text-muted-foreground shrink-0"
+      >
+        <Bot className="size-5" />
+      </span>
+    );
+  }
+  const safeIcon = icon;
   if (isImageIcon(safeIcon)) {
     return (
       // eslint-disable-next-line @next/next/no-img-element

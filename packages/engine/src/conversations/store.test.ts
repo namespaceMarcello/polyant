@@ -769,6 +769,23 @@ describe("ConversationStore", () => {
       );
     });
 
+    it("returns the contact and shows a title without the transcript label an older row still carries", async () => {
+      mockDb.execute
+        .mockResolvedValueOnce([
+          { id: "u1", conversation_id: "c1", title: "User: Prenotare una visita", user_identifier: "anna@example.com" },
+          { id: "u2", conversation_id: "c2", title: "Assistente: Orari", user_identifier: null },
+        ])
+        .mockResolvedValueOnce([{ total: 2 }]);
+
+      const result = await conversationStore.listConversations({ scope: SCOPE });
+
+      // Catches the contact column staying empty and the label leaking into the list.
+      expect(result.conversations[0]).toEqual(
+        expect.objectContaining({ title: "Prenotare una visita", userIdentifier: "anna@example.com" }),
+      );
+      expect(result.conversations[1]).toEqual(expect.objectContaining({ title: "Orari", userIdentifier: null }));
+    });
+
     it("uses default limit 20 and offset 0", async () => {
       mockDb.execute
         .mockResolvedValueOnce([])
@@ -921,6 +938,18 @@ describe("ConversationStore", () => {
           messageCount: 7,
         }),
       );
+    });
+
+    it("returns the contact of a search hit", async () => {
+      mockDb.execute
+        .mockResolvedValueOnce([
+          { id: "u1", conversation_id: "c1", title: "Visita", user_identifier: "+393331234567", match_count: 0, best_snippet: null },
+        ])
+        .mockResolvedValueOnce([{ total: 1 }]);
+
+      const result = await conversationStore.searchConversations("3331234", { scope: SCOPE, userIdentifier: "+39" });
+
+      expect(result.conversations[0]).toEqual(expect.objectContaining({ userIdentifier: "+393331234567" }));
     });
 
     it("maps ID-only matches (no FTS hit) with empty snippet and matchCount 0", async () => {

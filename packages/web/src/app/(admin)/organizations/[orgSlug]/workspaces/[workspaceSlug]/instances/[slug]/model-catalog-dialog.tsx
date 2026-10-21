@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { ModelsResponse } from "@/lib/api";
 import { useI18n } from "@/lib/i18n/context";
+import { useFormat } from "@/lib/use-format";
 import type { TranslationKey } from "@/lib/i18n/types";
 import { BRAND_NAMES } from "@/lib/provider-secrets";
 import { cn } from "@/lib/utils";
@@ -54,6 +55,7 @@ interface Props {
  */
 export function ModelCatalogDialog({ modelsData, providerNames, selectedProvider, selectedModel, onSelect }: Props) {
   const { t } = useI18n();
+  const fmt = useFormat();
   // Model catalog dialog: search + provider filter + column sort over a single
   // flattened table (was one table per provider, which overflowed).
   const [pricingOpen, setPricingOpen] = useState(false);
@@ -197,7 +199,7 @@ export function ModelCatalogDialog({ modelsData, providerNames, selectedProvider
                   // "—" instead of a figure that implies a saving.
                   const fmtCache = (v: number | undefined) => {
                     const val = v ?? m.costInput;
-                    return val === 0 || val === m.costInput ? "—" : `$${val.toFixed(2)}`;
+                    return val === 0 || val === m.costInput ? "—" : fmt.currency(val);
                   };
                   return (
                     <TableRow
@@ -225,17 +227,17 @@ export function ModelCatalogDialog({ modelsData, providerNames, selectedProvider
                           <span className="mt-1 block text-[10px] text-muted-foreground">
                             {t("settings.tab.catalogLongPrompt", {
                               above: Math.round(m.costLongPrompt.above / 1000),
-                              input: m.costLongPrompt.costInput.toFixed(2),
-                              output: m.costLongPrompt.costOutput.toFixed(2),
+                              input: fmt.currency(m.costLongPrompt.costInput),
+                              output: fmt.currency(m.costLongPrompt.costOutput),
                             })}
                           </span>
                         )}
                       </TableCell>
                       <TableCell className="text-right text-xs tabular-nums">
-                        ${m.costInput.toFixed(2)}
+                        {fmt.currency(m.costInput)}
                       </TableCell>
                       <TableCell className="text-right text-xs tabular-nums">
-                        ${m.costOutput.toFixed(2)}
+                        {fmt.currency(m.costOutput)}
                       </TableCell>
                       <TableCell className="text-right text-xs tabular-nums text-muted-foreground">
                         {fmtCache(m.costCacheRead)}

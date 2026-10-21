@@ -253,6 +253,33 @@ describe("ToolsTab", () => {
     expect(within(rowOf("saveMemory")).getByRole("img", { name: "tools.memoryDisabledHint" })).toBeInTheDocument();
   });
 
+  /**
+   * The supervisor drops a memory tool silently while memory is off, so the row
+   * says so in words and carries the way to the memory card (Avanzate).
+   */
+  it("offers to turn memory on beside a memory tool, linking to the Advanced section", () => {
+    renderTab({ memoryEnabled: false });
+
+    expect(within(rowOf("saveMemory")).getByRole("link", { name: "tools.memoryOffEnable" })).toHaveAttribute("href", "?tab=params");
+    expect(within(rowOf("readFile")).queryByRole("link", { name: "tools.memoryOffEnable" })).not.toBeInTheDocument();
+  });
+
+  it("does not let the picker add a memory tool while memory is off", async () => {
+    const user = userEvent.setup();
+    renderTab({
+      memoryEnabled: false,
+      tools: [...makeTools(), { name: "recallMemory", description: "Recall facts", category: "memory", enabled: false }],
+    });
+
+    await user.click(screen.getByRole("button", { name: "tools.enable" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByRole("textbox"), "recall");
+
+    expect(within(dialog).getByRole("checkbox", { name: /recallMemory/ })).toBeDisabled();
+    expect(within(dialog).getByText(/tools\.memoryOffPicker/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("link", { name: "tools.memoryOffEnable" })).toHaveAttribute("href", "?tab=params");
+  });
+
   it("opens a tool's panel: cleartext prefilled, secrets masked, provider keys pointed to the Model section", async () => {
     const user = userEvent.setup();
     renderTab();

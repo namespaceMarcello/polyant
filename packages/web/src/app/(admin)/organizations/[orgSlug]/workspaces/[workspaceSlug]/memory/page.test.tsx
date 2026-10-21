@@ -134,6 +134,16 @@ describe("MemoryPage", () => {
     expect(mockMemoriesList).not.toHaveBeenCalled();
   });
 
+  it("preselects the first agent instead of opening on an empty page", async () => {
+    mockInstancesList.mockResolvedValue({ instances: [{ slug: "alpha", name: "Alpha" }, { slug: "beta", name: "Beta" }] });
+    render(<MemoryPage />);
+
+    // Catches the page opening blank and waiting for a pick before showing anything.
+    await waitFor(() => expect(mockMemoriesList).toHaveBeenCalled());
+    expect(mockMemoriesList.mock.calls[0][0]).toMatchObject({ instanceId: "alpha" });
+    expect(screen.queryByText("memory.selectInstancePrompt")).not.toBeInTheDocument();
+  });
+
   it("fetches instances on mount for the filter dropdown", async () => {
     render(<MemoryPage />);
 

@@ -477,6 +477,8 @@ export interface ConversationListItem {
   title: string | null;
   summary: string | null;
   channel: string | null;
+  /** The contact exactly as stored (email, phone number, channel handle), when the channel gave one. */
+  userIdentifier: string | null;
   instanceId: string | null;
   instanceName: string | null;
   messageCount: number;

@@ -18,6 +18,7 @@ import { ACTIVE_ROW_CLASS } from "@/components/layout/nav-main";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n/context";
 import type { TranslationKey } from "@/lib/i18n/types";
+import { useAgentName } from "@/lib/nav/agent-name";
 import {
   isDestinationItemActive,
   type Destination,
@@ -42,6 +43,8 @@ export function NavDestination({ destination }: { destination: Destination }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const currentTab = searchParams.get("tab");
+  // The agent's name once its page has loaded; the slug until then.
+  const agentName = useAgentName(destination.kind === "agent" ? destination.subject : null);
 
   return (
     <>
@@ -60,7 +63,7 @@ export function NavDestination({ destination }: { destination: Destination }) {
             icons, like the product name in the header: there is no glyph for it. */}
         {destination.subject && (
           <p className="mt-1 truncate px-2 text-sm font-medium group-data-[collapsible=icon]:hidden">
-            {destination.subject}
+            {agentName ?? destination.subject}
           </p>
         )}
       </SidebarGroup>
