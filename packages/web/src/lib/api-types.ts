@@ -758,6 +758,8 @@ export interface KnowledgeDocument {
   status: "uploading" | "processing" | "ready" | "error";
   chunkCount: number;
   errorMessage: string | null;
+  /** Off: stored, but retrieval skips it. */
+  enabled: boolean;
   createdAt: string | null;
   updatedAt: string | null;
 }

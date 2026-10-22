@@ -637,6 +637,7 @@
   "channels.tab.a2aHelp": "Exposes this agent over HTTP through the Agent2Agent protocol: a discovery agent card and a JSON-RPC endpoint. Off, those endpoints answer 404. The JSON-RPC endpoint authenticates with this agent's API key — with API authentication off, anyone who can reach it can drive full turns.",
   "instances.detail.tabKnowledge": "Knowledge",
   "knowledge.tab.description": "Manage the knowledge base documents for this assistant. Documents are automatically chunked and embedded for RAG search.",
+  "knowledge.tab.docEnabled": "Enabled: {name}",
   "knowledge.tab.enableTitle": "Document retrieval",
   "knowledge.tab.enableHelp": "The assistant reads the documents below and answers from the passages that match.",
   "knowledge.tab.disabledNotice": "Retrieval is off: the documents are kept but the assistant does not consult them.",

@@ -637,6 +637,7 @@
   "channels.tab.a2aHelp": "Espone questo agente via HTTP con il protocollo Agent2Agent: una agent card di discovery e un endpoint JSON-RPC. Da spento quegli endpoint rispondono 404. Il JSON-RPC è autenticato con la chiave API di questo agente: se l'autenticazione API è disattivata, chiunque raggiunga l'endpoint può far eseguire turni completi.",
   "instances.detail.tabKnowledge": "Knowledge",
   "knowledge.tab.description": "Gestisci i documenti della knowledge base di questo assistente. I documenti vengono automaticamente suddivisi e indicizzati per la ricerca RAG.",
+  "knowledge.tab.docEnabled": "Attivo: {name}",
   "knowledge.tab.enableTitle": "Ricerca nei documenti",
   "knowledge.tab.enableHelp": "L'assistente consulta i documenti qui sotto e usa i passaggi pertinenti per rispondere.",
   "knowledge.tab.disabledNotice": "Ricerca disattivata: i documenti restano salvati ma l'assistente non li consulta.",

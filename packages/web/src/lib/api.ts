@@ -565,6 +565,12 @@ export const api = {
         urlPath`/api/instances/${slug}/knowledge`,
         json("POST", data),
       ),
+    /** Off keeps the document stored; retrieval skips it until it is switched on. */
+    setEnabled: (slug: string, docId: string, enabled: boolean) =>
+      request<{ id: string; enabled: boolean }>(
+        urlPath`/api/instances/${slug}/knowledge/${docId}`,
+        json("PATCH", { enabled }),
+      ),
     delete: (slug: string, docId: string) =>
       request<{ deleted: boolean }>(
         urlPath`/api/instances/${slug}/knowledge/${docId}`,
@@ -574,9 +580,9 @@ export const api = {
       request<{
         version: number;
         instanceSlug: string;
-        documents: { filename: string; content: string; mimeType: string; source: string; contentHash: string }[];
+        documents: { filename: string; content: string; mimeType: string; source: string; contentHash: string; enabled: boolean }[];
       }>(urlPath`/api/instances/${slug}/knowledge/export`),
-    import: (slug: string, data: { version?: number; documents: { filename: string; content: string }[] }) =>
+    import: (slug: string, data: { version?: number; documents: { filename: string; content: string; enabled?: boolean }[] }) =>
       request<{ imported: number; documents: { filename: string; renamedFrom?: string }[] }>(
         urlPath`/api/instances/${slug}/knowledge/import`,
         json("POST", data),

@@ -135,6 +135,32 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
   const { data, error, loading, reload: load } = useResource(["knowledge", slug], () => api.knowledge.list(slug));
   const documents: KnowledgeDocument[] = data?.documents ?? [];
   const [deleting, setDeleting] = useState<KnowledgeDocument | null>(null);
+  // Document switches ride the page's Save like the two switches above them: the
+  // changes made but not yet saved, by document id.
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [savingDocs, setSavingDocs] = useState(false);
+  const isOn = (doc: KnowledgeDocument) => pending[doc.id] ?? doc.enabled;
+  const setDocEnabled = (doc: KnowledgeDocument, enabled: boolean) =>
+    setPending((prev) => {
+      const next = { ...prev };
+      if (enabled === doc.enabled) delete next[doc.id];
+      else next[doc.id] = enabled;
+      return next;
+    });
+  const saveDocSwitches = async () => {
+    setSavingDocs(true);
+    try {
+      await Promise.all(Object.entries(pending).map(([id, enabled]) => api.knowledge.setEnabled(slug, id, enabled)));
+      setPending({});
+      load();
+      toast.success(t("general.saved"));
+    } catch (err) {
+      toast.error(getUserErrorMessage(err, t("general.saveFailed")));
+    } finally {
+      setSavingDocs(false);
+    }
+  };
+  usePageSaveAction({ isDirty: Object.keys(pending).length > 0, saving: savingDocs, onSave: saveDocSwitches });
   const [viewDocId, setViewDocId] = useState<string | null>(null);
   const [viewContent, setViewContent] = useState<string>("");
   const [viewFilename, setViewFilename] = useState<string>("");
@@ -365,7 +391,7 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
                 <FileText className="size-5 shrink-0 text-muted-foreground" />
                 <div className="space-y-0.5 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm truncate">
+                    <span className={`font-medium text-sm truncate ${isOn(doc) ? "" : "text-muted-foreground"}`}>
                       {doc.filename}
                     </span>
                     <KnowledgeStatusBadge status={doc.status} t={t} />
@@ -383,6 +409,14 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
                 </div>
               </div>
               <div className="flex items-center gap-1 shrink-0 ml-2">
+                {/* A real switch on the row. Clicking it never opens the document. */}
+                <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} className="mr-2">
+                  <Switch
+                    checked={isOn(doc)}
+                    onCheckedChange={(v) => setDocEnabled(doc, v)}
+                    aria-label={t("knowledge.tab.docEnabled", { name: doc.filename })}
+                  />
+                </div>
                 <Button
                   variant="ghost"
                   size="sm"
