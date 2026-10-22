@@ -184,12 +184,23 @@ export function MonitorDetailSheet({
                 </section>
               )}
 
-              {detail?.sections.map((section) => (
-                <section key={section.key} className="space-y-2">
-                  <h3 className="text-sm font-medium">{labels.section(section.key)}</h3>
-                  <SectionBody section={section} />
-                </section>
-              ))}
+              {detail?.sections.map((section) =>
+                section.key === "metadata" ? (
+                  // The stored record of a change (codes, ids, raw keys): there for whoever has to
+                  // trace it, closed so the drawer opens on who did what to what.
+                  <details key={section.key} className="space-y-2" data-testid="monitor-technical">
+                    <summary className="cursor-pointer select-none text-sm font-medium">{labels.section(section.key)}</summary>
+                    <div className="pt-2">
+                      <SectionBody section={section} />
+                    </div>
+                  </details>
+                ) : (
+                  <section key={section.key} className="space-y-2">
+                    <h3 className="text-sm font-medium">{labels.section(section.key)}</h3>
+                    <SectionBody section={section} />
+                  </section>
+                ),
+              )}
             </div>
 
             <p className="border-t p-4 text-xs text-muted-foreground">
