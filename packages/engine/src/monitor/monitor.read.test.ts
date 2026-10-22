@@ -10,7 +10,7 @@ import { allTenantsScope } from "../authz/scope-filter.js";
 import { Permission } from "../authz/permissions.js";
 import { decodeCursor, encodeCursor, readMonitor, readMonitorDetail } from "./monitor.read.js";
 import { registerMonitorSource } from "./monitor.registry.js";
-import type { MonitorItem, MonitorSource, MonitorSourceQuery } from "./monitor.types.js";
+import { DEFAULT_MONITOR_LEVEL, type MonitorItem, type MonitorSource, type MonitorSourceQuery } from "./monitor.types.js";
 
 const scope = allTenantsScope("test");
 const ID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -117,6 +117,53 @@ describe("readMonitor", () => {
     expect(page.types.find((t) => t.type === "t_i")?.retentionDays).toBeNull();
     registerMonitorSource(fakeSource("t_j", Permission.AUDIT_LOG_READ, []));
     expect((await readMonitor({ ...base, types: ["t_j"], telemetryRetentionDays: 30 })).types.find((t) => t.type === "t_j")?.retentionDays).toBe(30);
+  });
+});
+
+describe("levels", () => {
+  const leveled = (type: string, levels: MonitorSource["levels"], permissionAt?: MonitorSource["permissionAt"]) =>
+    ({ ...fakeSource(type, Permission.AUDIT_LOG_READ, [item(type, 1, 1)]), levels, permissionAt }) as MonitorSource & { seen: MonitorSourceQuery[] };
+
+  it("lists a type only in the Monitors it declares, the default one when it declares none", async () => {
+    registerMonitorSource(leveled("l_default", undefined));
+    registerMonitorSource(leveled("l_wide", ["wide"]));
+    registerMonitorSource(leveled("l_all", [DEFAULT_MONITOR_LEVEL, "wide", "widest"]));
+    const types = async (level: string) =>
+      (await readMonitor({ ...base, level, types: ["l_default", "l_wide", "l_all"] })).types.map((t) => t.type).filter((t) => t.startsWith("l_"));
+    expect(await types(DEFAULT_MONITOR_LEVEL)).toEqual(["l_default", "l_all"]);
+    expect(await types("wide")).toEqual(["l_wide", "l_all"]);
+    expect(await types("widest")).toEqual(["l_all"]);
+    // No level named is the default Monitor.
+    expect((await readMonitor({ ...base, types: ["l_default"] })).types.map((t) => t.type)).toContain("l_default");
+  });
+
+  it("asks for the permission a type names at that level, and its own elsewhere", async () => {
+    registerMonitorSource(leveled("l_perm", [DEFAULT_MONITOR_LEVEL, "wide"], { wide: Permission.TASK_READ }));
+    const asked: string[] = [];
+    const canRead = async (p: string) => (asked.push(p), p === Permission.TASK_READ);
+    expect((await readMonitor({ ...base, level: "wide", canRead, types: ["l_perm"] })).items).toHaveLength(1);
+    expect((await readMonitor({ ...base, level: DEFAULT_MONITOR_LEVEL, canRead, types: ["l_perm"] })).items).toHaveLength(0);
+    expect(asked).toContain(Permission.TASK_READ);
+    expect(asked).toContain(Permission.AUDIT_LOG_READ);
+  });
+
+  it("tells each source which level it is read at", async () => {
+    const source = leveled("l_seen", ["wide"]);
+    registerMonitorSource(source);
+    await readMonitor({ ...base, level: "wide", types: ["l_seen"] });
+    expect(source.seen[0]).toMatchObject({ level: "wide" });
+  });
+
+  it("does not look up an agent for a row about no agent", async () => {
+    registerMonitorSource(fakeSource("l_noagent", Permission.AUDIT_LOG_READ, [item("l_noagent", 1, 1, "")]));
+    const page = await readMonitor({ ...base, types: ["l_noagent"] });
+    expect(page.items[0]?.agent).toEqual({ slug: "", name: "" });
+  });
+
+  it("answers a detail null at a level the type is not in", async () => {
+    registerMonitorSource(leveled("l_detail", ["wide"]));
+    expect(await readMonitorDetail("l_detail", ID(1), scope, allowAll, "wide")).not.toBeNull();
+    expect(await readMonitorDetail("l_detail", ID(1), scope, allowAll, DEFAULT_MONITOR_LEVEL)).toBeNull();
   });
 });
 

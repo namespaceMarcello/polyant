@@ -4,10 +4,12 @@ import type { PermissionKey } from "../authz/permissions.js";
 import type { TenantScope } from "../authz/scope-filter.js";
 import { resolveInstanceMeta } from "../instances/instance-meta.js";
 import { findMonitorSource, listMonitorSources } from "./monitor.registry.js";
+import { DEFAULT_MONITOR_LEVEL } from "./monitor.types.js";
 import type {
   MonitorCursor,
   MonitorDetail,
   MonitorItem,
+  MonitorLevel,
   MonitorOutcome,
   MonitorSource,
 } from "./monitor.types.js";
@@ -20,6 +22,8 @@ export type CanRead = (permission: PermissionKey) => Promise<boolean>;
 
 export interface MonitorReadRequest {
   scope: TenantScope;
+  /** Which Monitor is read. Defaults to {@link DEFAULT_MONITOR_LEVEL}. */
+  level?: MonitorLevel;
   canRead: CanRead;
   /** Only these types. Empty or absent means every type the caller can read. */
   types?: readonly string[];
@@ -76,15 +80,22 @@ export function decodeCursor(raw: string): MonitorCursor | undefined {
   }
 }
 
-async function readableSources(canRead: CanRead): Promise<MonitorSource[]> {
-  const all = listMonitorSources();
-  const flags = await Promise.all(all.map((s) => canRead(s.permission)));
+/** The permission that guards a source at a level: its own, unless it names another for that level. */
+function permissionFor(source: MonitorSource, level: MonitorLevel): PermissionKey {
+  return source.permissionAt?.[level] ?? source.permission;
+}
+
+/** The sources that appear at a level and that the caller can read there. */
+async function readableSources(canRead: CanRead, level: MonitorLevel): Promise<MonitorSource[]> {
+  const all = listMonitorSources().filter((s) => (s.levels ?? [DEFAULT_MONITOR_LEVEL]).includes(level));
+  const flags = await Promise.all(all.map((s) => canRead(permissionFor(s, level))));
   return all.filter((_, i) => flags[i]);
 }
 
 /** Agent names for the slugs on one page, resolved once each. An unknown slug keeps its slug as the name. */
 async function nameAgents(items: MonitorItem[]): Promise<MonitorItem[]> {
-  const slugs = [...new Set(items.map((i) => i.agent.slug))];
+  // A row about no agent carries an empty slug.
+  const slugs = [...new Set(items.map((i) => i.agent.slug).filter(Boolean))];
   const names = new Map(
     await Promise.all(slugs.map(async (slug) => [slug, (await resolveInstanceMeta(slug))?.name ?? slug] as const)),
   );
@@ -101,7 +112,8 @@ async function nameAgents(items: MonitorItem[]): Promise<MonitorItem[]> {
  */
 export async function readMonitor(req: MonitorReadRequest): Promise<MonitorPage> {
   const limit = Math.min(Math.max(req.limit ?? MONITOR_DEFAULT_LIMIT, 1), MONITOR_MAX_LIMIT);
-  const readable = await readableSources(req.canRead);
+  const level = req.level ?? DEFAULT_MONITOR_LEVEL;
+  const readable = await readableSources(req.canRead, level);
   const types = readable.map((s) => ({
     type: s.type,
     group: s.group,
@@ -115,6 +127,7 @@ export async function readMonitor(req: MonitorReadRequest): Promise<MonitorPage>
     selected.map((s) =>
       s.list({
         scope: req.scope,
+        level,
         agent: req.agent,
         outcome: req.outcome,
         from: req.from,
@@ -140,10 +153,12 @@ export async function readMonitorDetail(
   id: string,
   scope: TenantScope,
   canRead: CanRead,
+  level: MonitorLevel = DEFAULT_MONITOR_LEVEL,
 ): Promise<MonitorDetail | null> {
   const source = findMonitorSource(type);
-  if (!source || !(await canRead(source.permission))) return null;
-  const detail = await source.detail(id, scope);
+  if (!source || !(source.levels ?? [DEFAULT_MONITOR_LEVEL]).includes(level)) return null;
+  if (!(await canRead(permissionFor(source, level)))) return null;
+  const detail = await source.detail(id, scope, level);
   if (!detail) return null;
   const [named] = await nameAgents([detail]);
   return { ...detail, agent: named?.agent ?? detail.agent };
