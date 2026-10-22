@@ -15,13 +15,46 @@ import { useFormat } from "@/lib/use-format";
 import { isLive, type AnyMonitorItem } from "@/lib/monitor/live";
 import { isKeptWithConversation, OutcomePill, TypePill, useMonitorLabels } from "./monitor-labels";
 
-/** Pretty-print text that holds JSON; anything else is shown as it is. */
-function readable(text: string): string {
+/** A plain object with at least one key: what the drawer shows as labelled rows instead of raw JSON. */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** A section's value as data: text that holds a JSON object is read, anything else stays as it is. */
+function parsed(value: unknown): unknown {
+  if (typeof value !== "string") return value;
   try {
-    return JSON.stringify(JSON.parse(text), null, 2);
+    return JSON.parse(value);
   } catch {
-    return text;
+    return value;
   }
+}
+
+/** `customerEmail` and `customer_email` both read as "Customer email". */
+function keyLabel(key: string): string {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function RowValue({ value }: { value: unknown }) {
+  const { t } = useI18n();
+  if (value === null || value === undefined || value === "") return <span className="text-muted-foreground">{"—"}</span>;
+  if (typeof value === "boolean") return <>{t(value ? "monitor.detail.yes" : "monitor.detail.no")}</>;
+  if (typeof value === "object") {
+    // Nested values keep their shape: a formatted block is easier to read than a flattened one.
+    return (
+      <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-2 text-left text-xs">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    );
+  }
+  return <span className="break-words">{String(value)}</span>;
 }
 
 function SectionBody({ section }: { section: MonitorSection }) {
@@ -30,8 +63,20 @@ function SectionBody({ section }: { section: MonitorSection }) {
     const key = section.value === "manual" ? "monitor.trigger.manual" : "monitor.trigger.scheduled";
     return <p className="text-sm">{t(key)}</p>;
   }
-  const text =
-    section.kind === "json" ? JSON.stringify(section.value, null, 2) : typeof section.value === "string" ? readable(section.value) : JSON.stringify(section.value);
+  const data = parsed(section.value);
+  const record = asRecord(data);
+  if (record) {
+    return (
+      <dl className="space-y-2">
+        {Object.entries(record).map(([key, value]) => (
+          <Field key={key} label={keyLabel(key)}>
+            <RowValue value={value} />
+          </Field>
+        ))}
+      </dl>
+    );
+  }
+  const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
   if (section.kind === "text" && text.length < 80 && !text.includes("\n")) return <p className="text-sm">{text}</p>;
   return (
     <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs">{text}</pre>

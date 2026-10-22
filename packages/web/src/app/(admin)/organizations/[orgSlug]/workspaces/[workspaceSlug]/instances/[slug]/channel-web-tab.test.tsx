@@ -315,7 +315,9 @@ describe("ChannelWebTab", () => {
       expect(await screen.findByText("https://agents.example.com/v1/chat/completions")).toBeInTheDocument();
       const examples = screen.getAllByText(/Authorization/, { selector: "code" });
       expect(examples).toHaveLength(2);
-      expect(examples[0].textContent).toContain("Bearer LA_TUA_API_KEY");
+      expect(examples[0].textContent).toContain("Bearer $AGENT_API_KEY");
+      expect(examples[1].textContent).toContain("process.env.AGENT_API_KEY");
+      expect(screen.getByText("channels.tab.webEndpointKeyNeverInPage")).toBeInTheDocument();
       expect(screen.queryByRole("alert")).toBeNull();
     });
 
@@ -326,11 +328,13 @@ describe("ChannelWebTab", () => {
       expect(screen.queryByText(/Authorization/, { selector: "code" })).toBeNull();
     });
 
-    it("should_say_where_to_set_the_public_address_when_it_is_the_localhost_fallback", async () => {
+    it("should_not_link_to_a_page_the_reader_cannot_open_when_the_public_address_is_missing", async () => {
       mockChannelsList.mockResolvedValue(WEB_ON);
       mockWebEndpoint.mockResolvedValue({ endpointUrl: "http://localhost:4000/v1/chat/completions", baseUrlConfigured: false });
       renderTab(agent({ authEnabled: true }));
-      expect(await screen.findByText("channels.tab.webEndpointNoBaseUrlLink")).toBeInTheDocument();
+      expect(await screen.findByText("channels.tab.webEndpointNoBaseUrl")).toBeInTheDocument();
+      expect(screen.getByText("channels.tab.webEndpointLocalAddress")).toBeInTheDocument();
+      expect(screen.queryByRole("link")).toBeNull();
     });
   });
 });
