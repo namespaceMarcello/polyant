@@ -143,7 +143,7 @@ describe("MonitorView", () => {
       ...item({}),
       error: null,
       sections: [
-        { key: "arguments", kind: "json", value: { email: "a@example.com" } },
+        { key: "arguments", kind: "json", value: { customerEmail: "a@example.com", dryRun: false, tags: ["x"] } },
         { key: "output", kind: "text", value: "created" },
       ],
     });
@@ -153,6 +153,11 @@ describe("MonitorView", () => {
     expect(detail).toHaveBeenCalledWith("tool_call", "00000000-0000-4000-8000-000000000001");
     expect(await within(drawer).findByText(/a@example\.com/)).toBeInTheDocument();
     expect(within(drawer).getByText("Argomenti")).toBeInTheDocument();
+    // Known sections read as labelled rows, not as raw JSON.
+    expect(within(drawer).getByText("Customer email")).toBeInTheDocument();
+    expect(within(drawer).getByText("Dry run")).toBeInTheDocument();
+    expect(within(drawer).getByText("No")).toBeInTheDocument();
+    expect(within(drawer).queryByText(/"customerEmail"/)).toBeNull();
     expect(within(drawer).getByText("created")).toBeInTheDocument();
     expect(within(drawer).getByText("12ms")).toBeInTheDocument();
     expect(within(drawer).getByText("Conservata per 90 giorni.")).toBeInTheDocument();

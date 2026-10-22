@@ -2,7 +2,6 @@
 
 "use client";
 
-import Link from "next/link";
 import { TriangleAlert } from "lucide-react";
 import { CopyButton } from "@/components/ui/copy-button";
 import { Label } from "@/components/ui/label";
@@ -10,7 +9,8 @@ import { api } from "@/lib/api";
 import { useResource } from "@/hooks/use-resource";
 import { useI18n } from "@/lib/i18n/context";
 
-const KEY_PLACEHOLDER = "LA_TUA_API_KEY";
+/** The shell variable and the Node variable the examples read the key from; the key itself is never printed. */
+const KEY_ENV = "AGENT_API_KEY";
 
 /** Shell-quote with single quotes; the only character that needs care inside them is the quote itself. */
 function shellQuote(value: string): string {
@@ -20,14 +20,14 @@ function shellQuote(value: string): string {
 export function buildCurlExample(url: string, slug: string, withKey: boolean): string {
   const body = JSON.stringify({ model: slug, messages: [{ role: "user", content: "Ciao" }] });
   const lines = [`curl ${shellQuote(url)}`, `  -H 'Content-Type: application/json'`];
-  if (withKey) lines.push(`  -H 'Authorization: Bearer ${KEY_PLACEHOLDER}'`);
+  if (withKey) lines.push(`  -H "Authorization: Bearer $${KEY_ENV}"`);
   lines.push(`  -d ${shellQuote(body)}`);
   return lines.join(" \\\n");
 }
 
 export function buildFetchExample(url: string, slug: string, withKey: boolean): string {
   const headers = [`    "Content-Type": "application/json",`];
-  if (withKey) headers.push(`    Authorization: "Bearer ${KEY_PLACEHOLDER}",`);
+  if (withKey) headers.push("    Authorization: `Bearer ${process.env." + KEY_ENV + "}`,");
   return [
     `const res = await fetch(${JSON.stringify(url)}, {`,
     `  method: "POST",`,
@@ -69,8 +69,8 @@ interface Props {
 /**
  * What a person needs to put the agent on their own site: the address to call,
  * which header to send, and an example to paste. Shown only once the Web channel
- * is on. The key itself is never printed: the examples carry a placeholder and
- * the field above is where the key is set.
+ * is on. The key itself is never printed: the examples read it from an environment
+ * variable of the caller's server, and the field above is where the key is set.
  */
 export function WebEndpointCard({ slug, keyRequired, authOff }: Props) {
   const { t } = useI18n();
@@ -95,12 +95,7 @@ export function WebEndpointCard({ slug, keyRequired, authOff }: Props) {
       ) : data ? (
         <>
           {!data.baseUrlConfigured && (
-            <p className="text-sm text-muted-foreground">
-              {t("channels.tab.webEndpointNoBaseUrl")}{" "}
-              <Link href="/settings" className="underline">
-                {t("channels.tab.webEndpointNoBaseUrlLink")}
-              </Link>
-            </p>
+            <p className="text-sm text-muted-foreground">{t("channels.tab.webEndpointNoBaseUrl")}</p>
           )}
           <div className="space-y-1">
             <Label>{t("channels.tab.webEndpointUrl")}</Label>
@@ -108,12 +103,16 @@ export function WebEndpointCard({ slug, keyRequired, authOff }: Props) {
               <code className="block flex-1 break-all rounded bg-muted px-2 py-1 text-xs">{data.endpointUrl}</code>
               <CopyButton value={data.endpointUrl} variant="outline" />
             </div>
+            {!data.baseUrlConfigured && (
+              <p className="text-xs text-muted-foreground">{t("channels.tab.webEndpointLocalAddress")}</p>
+            )}
           </div>
           <p className="text-sm text-muted-foreground">
             {keyRequired
               ? t("channels.tab.webEndpointHeaderKey")
               : t("channels.tab.webEndpointHeaderNone")}
           </p>
+          {keyRequired && <p className="text-sm text-muted-foreground">{t("channels.tab.webEndpointKeyNeverInPage")}</p>}
           <Snippet label={t("channels.tab.webEndpointCurl")} code={buildCurlExample(data.endpointUrl, slug, keyRequired)} />
           <Snippet label={t("channels.tab.webEndpointFetch")} code={buildFetchExample(data.endpointUrl, slug, keyRequired)} />
         </>
