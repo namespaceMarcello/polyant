@@ -17,7 +17,10 @@ import { buildSkillMetadata, parseSkillMetadata } from "./skill-metadata.js";
 import { isUniqueViolation } from "../utils/db-errors.js";
 
 export interface SkillSummary {
+  /** The skill's slug: how agents and URLs address it. It never changes after creation. */
   name: string;
+  /** The name people read, editable. Distinct from `name`, which is the slug. */
+  displayName: string;
   description: string;
   category?: string;
   requiredEnv?: Array<{ name: string; description?: string; sensitive: boolean }>;
@@ -80,6 +83,8 @@ export class SkillsService {
   async updateSkill(
     slug: string,
     data: {
+      /** Replaces the display name; the slug is not an input and cannot change. */
+      displayName?: string;
       description: string;
       content: string;
       requiredEnv?: Array<{ name: string; description?: string; sensitive: boolean }>;
@@ -90,6 +95,7 @@ export class SkillsService {
     const metadata = buildSkillMetadata(data);
 
     const input: UpdateSkillInput = {
+      name: data.displayName,
       description: data.description,
       content: data.content,
       metadata,
@@ -119,6 +125,7 @@ export class SkillsService {
     const meta = parseSkillMetadata(row.currentVersion?.metadata) as Pick<SkillSummary, "requiredEnv" | "requiredTools">;
     const summary: SkillSummary = {
       name: row.slug,
+      displayName: row.name,
       description: row.description,
       category: row.category,
     };
