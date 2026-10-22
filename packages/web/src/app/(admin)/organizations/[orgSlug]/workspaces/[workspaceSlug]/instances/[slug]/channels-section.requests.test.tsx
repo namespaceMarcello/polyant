@@ -34,7 +34,7 @@ describe("ChannelsSection — how many times the channel list is read", () => {
         <ChannelsSection instance={instance} onUpdate={vi.fn()} />
       </PageActionsProvider>,
     );
-    await waitFor(() => expect(screen.getByLabelText("channels.tab.webEnabled")).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "common.on" })).not.toBeDisabled());
 
     for (const channel of ["telegram", "slack", "whatsapp", "agent", "web"]) {
       await user.click(screen.getByRole("button", { name: `channels.tab.${channel}` }));

@@ -565,8 +565,6 @@
   "channels.tab.empty": "No channels configured yet.",
   "channels.tab.web": "Web/API",
   "channels.tab.webHelp": "The agent's public HTTP endpoints: the OpenAI-compatible endpoint, the native streaming endpoint and the CLI. Your own application uses this channel. It is off until you switch it on; the Playground does not depend on it.",
-  "channels.tab.webEnabled": "Web channel enabled",
-  "channels.tab.webEnabledHelp": "While it is off, these endpoints answer 404 as if the agent did not exist. Turning it on requires the agent's API key unless you turn authentication off.",
   "channels.tab.webAuthHelp": "It governs EVERY api route of this agent, not just one: with it off, anyone who can reach the engine can make it talk.",
   "channels.tab.webContextMapping": "Context fields (conversation state)",
   "channels.tab.webContextMappingHelp": "Map a field of a request's 'context' object (right, dotted paths allowed: customer.id) to a conversation state key (left), loaded before the turn. This is how a voice or web app hands its tools who is on the other end. A request with context needs chat_id. Once a field is mapped, every request to this agent needs its API key, even with authentication off: later turns of a conversation read the identity its context set.",

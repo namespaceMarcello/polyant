@@ -73,7 +73,7 @@ export function MonitorDetailSheet({
 
   return (
     <Sheet open={item !== null} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent side="right" className="w-full gap-0 sm:max-w-lg">
+      <SheetContent side="right" className="gap-0">
         {item && (
           <>
             <SheetHeader className="gap-2 border-b p-5 pr-12">

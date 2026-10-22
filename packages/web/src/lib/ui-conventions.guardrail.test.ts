@@ -69,4 +69,13 @@ describe("UI conventions", () => {
       .map(({ file }) => file);
     expect(offenders).toEqual([]);
   });
+
+  it("should_give_every_side_drawer_the_one_width_the_sheet_primitive_sets", () => {
+    // Drawers are as wide as `components/ui/sheet.tsx` says (twice the old `md`); a
+    // per-use `max-w-*` is how they drifted apart.
+    const offenders = sources()
+      .filter(({ text }) => openingTags(text, ["SheetContent"]).some((attributes) => /\bmax-w-/.test(attributes)))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
 });

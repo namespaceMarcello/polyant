@@ -232,16 +232,16 @@ describe("ChannelWebTab", () => {
   describe("the Web channel switch", () => {
     it("starts off when the agent has no web row, and is not dirty", async () => {
       renderTab(agent({ authEnabled: true }));
-      const sw = await screen.findByLabelText("channels.tab.webEnabled");
+      const sw = await screen.findByRole("button", { name: "common.on" });
       await waitFor(() => expect(sw).not.toBeDisabled());
-      expect(sw).not.toBeChecked();
+      expect(screen.getByRole("button", { name: "common.off" })).toHaveAttribute("aria-pressed", "true");
       expect(screen.queryByText("common.save")).not.toBeInTheDocument();
     });
 
     it("reads the stored state", async () => {
       mockChannelsList.mockResolvedValue({ channels: [{ channelType: "web", enabled: true, config: {} }] });
       renderTab(agent({ authEnabled: true }));
-      await waitFor(() => expect(screen.getByLabelText("channels.tab.webEnabled")).toBeChecked());
+      await waitFor(() => expect(screen.getByRole("button", { name: "common.on" })).toHaveAttribute("aria-pressed", "true"));
     });
 
     it("saves the key, then the agent, then switches the channel on", async () => {
@@ -251,7 +251,7 @@ describe("ChannelWebTab", () => {
       mockChannelsSet.mockImplementation(async () => { order.push("channel"); return { channel: null }; });
 
       renderTab(agent({ authEnabled: true }));
-      const sw = await screen.findByLabelText("channels.tab.webEnabled");
+      const sw = await screen.findByRole("button", { name: "common.on" });
       await waitFor(() => expect(sw).not.toBeDisabled());
       await userEvent.click(sw);
       await userEvent.click(await screen.findByText("channels.tab.webKeyGenerate"));
@@ -265,7 +265,7 @@ describe("ChannelWebTab", () => {
 
     it("does not switch Web on while authentication is on and no key exists", async () => {
       renderTab(agent({ authEnabled: true }));
-      const sw = await screen.findByLabelText("channels.tab.webEnabled");
+      const sw = await screen.findByRole("button", { name: "common.on" });
       await waitFor(() => expect(sw).not.toBeDisabled());
       await userEvent.click(sw);
       await userEvent.click(screen.getByText("common.save"));
@@ -276,7 +276,7 @@ describe("ChannelWebTab", () => {
 
     it("asks for the risk notice before saving Web on with authentication turned off", async () => {
       renderTab(agent({ authEnabled: true }));
-      const sw = await screen.findByLabelText("channels.tab.webEnabled");
+      const sw = await screen.findByRole("button", { name: "common.on" });
       await waitFor(() => expect(sw).not.toBeDisabled());
       await userEvent.click(sw);
       await userEvent.click(screen.getByLabelText("settings.tab.authEnabled"));

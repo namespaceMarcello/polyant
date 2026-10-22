@@ -551,7 +551,7 @@ export function ModelTaskSheet({
   return (
     <>
       <Sheet open onOpenChange={(open) => !open && requestClose()}>
-        <SheetContent side="right" className="w-full gap-0 sm:max-w-md">
+        <SheetContent side="right" className="gap-0">
           <SheetHeader className="gap-1.5 border-b p-5 pr-12">
             <SheetTitle className="text-base">{t(TASK_TITLE[task])}</SheetTitle>
             <SheetDescription>{t(TASK_HELP[task])}</SheetDescription>
