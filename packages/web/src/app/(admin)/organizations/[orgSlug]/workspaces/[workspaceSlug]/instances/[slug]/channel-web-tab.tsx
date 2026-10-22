@@ -147,7 +147,7 @@ export function ChannelWebTab({ instance, onUpdate, channels, onChannelsChanged 
   return (
     <div className="space-y-8">
       <section className="space-y-4 rounded-lg border p-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-start justify-between gap-4">
           <p className="text-sm text-muted-foreground">{t("channels.tab.webHelp")}</p>
           <ChannelEnabledToggle enabled={webEnabled} disabled={!webLoaded} onChange={(v) => setWebDraft("enabled", v)} />
         </div>

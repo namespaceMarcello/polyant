@@ -38,7 +38,8 @@ function renderWithProvider(ui: ReactElement) {
   );
 }
 
-const { mockList, mockUpdate, mockToastSuccess, mockToastError } = vi.hoisted(() => ({
+const { mockGet, mockList, mockUpdate, mockToastSuccess, mockToastError } = vi.hoisted(() => ({
+  mockGet: vi.fn(),
   mockList: vi.fn(),
   mockUpdate: vi.fn(),
   mockToastSuccess: vi.fn(),
@@ -67,7 +68,7 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/lib/api", () => ({
   api: {
-    knowledge: { list: (...args: unknown[]) => mockList(...args) },
+    knowledge: { list: (...args: unknown[]) => mockList(...args), get: (...args: unknown[]) => mockGet(...args) },
     instances: { update: (...args: unknown[]) => mockUpdate(...args) },
   },
   getUserErrorMessage: vi.fn((_e: unknown, d: string) => d),
@@ -295,5 +296,46 @@ describe("KnowledgeTab — document sizes", () => {
 
     await waitFor(() => expect(screen.getByText(/3 GB/)).toBeInTheDocument());
     expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
+  });
+});
+
+describe("KnowledgeTab — opening a document", () => {
+  const docs = [
+    { id: "d1", filename: "guide.md", sizeBytes: 10, status: "ready", chunkCount: 2, createdAt: "2026-01-01T00:00:00Z" },
+    { id: "d2", filename: "later.md", sizeBytes: 10, status: "processing", chunkCount: 0, createdAt: "2026-01-01T00:00:00Z" },
+  ];
+  beforeEach(() => {
+    mockList.mockResolvedValue({ documents: docs });
+    mockGet.mockResolvedValue({ document: { rawContent: "# Guide body" } });
+  });
+
+  it("opens the drawer when the row is clicked, with no eye button in the list", async () => {
+    renderWithProvider(<KnowledgeTab slug="a1" instance={makeInstance()} onUpdate={vi.fn()} />);
+    const row = await screen.findByRole("button", { name: /guide\.md/ });
+    await userEvent.click(row);
+    expect(await screen.findByText("# Guide body")).toBeInTheDocument();
+    expect(mockGet).toHaveBeenCalledWith("a1", "d1");
+  });
+
+  it("opens from the keyboard with Enter", async () => {
+    renderWithProvider(<KnowledgeTab slug="a1" instance={makeInstance()} onUpdate={vi.fn()} />);
+    const row = await screen.findByRole("button", { name: /guide\.md/ });
+    row.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(await screen.findByText("# Guide body")).toBeInTheDocument();
+  });
+
+  it("does not open a document that is still processing", async () => {
+    renderWithProvider(<KnowledgeTab slug="a1" instance={makeInstance()} onUpdate={vi.fn()} />);
+    await screen.findByText("later.md");
+    expect(screen.queryByRole("button", { name: /later\.md/ })).not.toBeInTheDocument();
+  });
+
+  it("asks to delete from the row without opening the document", async () => {
+    renderWithProvider(<KnowledgeTab slug="a1" instance={makeInstance()} onUpdate={vi.fn()} />);
+    await screen.findByText("guide.md");
+    await userEvent.click(screen.getAllByRole("button", { name: "common.delete" })[0]!);
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(await screen.findByText(/knowledge\.tab\.deleteDescription/)).toBeInTheDocument();
   });
 });

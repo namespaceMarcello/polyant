@@ -21,7 +21,7 @@ export function ChannelEnabledToggle({
 }) {
   const { t } = useI18n();
   return (
-    <div role="group" aria-label={t("channels.enabledLabel")} className="inline-flex overflow-hidden rounded-md border">
+    <div role="group" aria-label={t("channels.enabledLabel")} className="inline-flex shrink-0 overflow-hidden rounded-md border">
       {[true, false].map((on) => (
         <button
           key={String(on)}
