@@ -68,7 +68,8 @@ describe("MonitorView", () => {
     renderWithProviders(<Harness />);
     expect(await screen.findByText("crm: create_contact")).toBeInTheDocument();
     expect(screen.getByText("Nightly")).toBeInTheDocument();
-    expect(screen.getAllByText("Strumenti").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Tools").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Strumenti")).not.toBeInTheDocument();
     expect(screen.getByText("Errore")).toBeInTheDocument();
   });
 
@@ -113,6 +114,8 @@ describe("MonitorView", () => {
     await screen.findByText("crm: create_contact");
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ agent: "sales" }));
     expect(screen.queryByRole("combobox", { name: "Agente" })).not.toBeInTheDocument();
+    // Same columns as everywhere else: the agent column stays.
+    expect(screen.getByRole("columnheader", { name: "Agente" })).toBeInTheDocument();
   });
 
   it("loads the next page with the cursor the engine gave", async () => {

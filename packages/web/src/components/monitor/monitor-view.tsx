@@ -235,7 +235,7 @@ export function MonitorView({
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[170px]">{t("monitor.table.time")}</TableHead>
-                  {!lockedAgent && <TableHead className="hidden md:table-cell">{t("monitor.table.agent")}</TableHead>}
+                  <TableHead className="hidden md:table-cell">{t("monitor.table.agent")}</TableHead>
                   <TableHead className="w-[130px]">{t("monitor.table.type")}</TableHead>
                   <TableHead>{t("monitor.table.summary")}</TableHead>
                   <TableHead className="w-[130px]">{t("monitor.table.outcome")}</TableHead>
@@ -256,7 +256,7 @@ export function MonitorView({
                     }}
                   >
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{fmt.dateTime(row.time)}</TableCell>
-                    {!lockedAgent && <TableCell className="hidden md:table-cell">{row.agent.name}</TableCell>}
+                    <TableCell className="hidden md:table-cell">{row.agent.name}</TableCell>
                     <TableCell>
                       <TypePill type={row.type} />
                     </TableCell>
