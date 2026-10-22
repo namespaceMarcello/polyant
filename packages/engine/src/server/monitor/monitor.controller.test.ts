@@ -89,9 +89,16 @@ describe("MonitorController authorization", () => {
 
   it("rejects an unknown outcome, a forged cursor and an inverted range with 400", async () => {
     const c = controller([Permission.CONVERSATION_READ]);
-    await expect(c.list(user, undefined, undefined, "exploded")).rejects.toMatchObject({ status: 400 });
-    await expect(c.list(user, undefined, undefined, undefined, undefined, undefined, undefined, "forged")).rejects.toMatchObject({ status: 400 });
-    await expect(c.list(user, undefined, undefined, undefined, "2026-02-01", "2026-01-01")).rejects.toMatchObject({ status: 400 });
+    await expect(c.list(user, undefined, undefined, undefined, "exploded")).rejects.toMatchObject({ status: 400 });
+    await expect(c.list(user, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "forged")).rejects.toMatchObject({ status: 400 });
+    await expect(c.list(user, undefined, undefined, undefined, undefined, "2026-02-01", "2026-01-01")).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("narrows to one group, the chips of the panel", async () => {
+    const c = controller([Permission.AUDIT_LOG_READ, Permission.CONVERSATION_READ, Permission.TASK_READ]);
+    const page = await c.list(user, undefined, "automations");
+    expect(page.items.map((i) => i.type).sort()).toEqual(["scheduled_run", "webhook"]);
+    expect(page.types).toHaveLength(4);
   });
 
   it("accepts the type filter as a comma list and as repeated keys", async () => {

@@ -62,6 +62,7 @@ export class MonitorController {
   async list(
     @CurrentUser() user: AuthenticatedUser,
     @Query("types") types?: unknown,
+    @Query("group") group?: unknown,
     @Query("agent") agent?: unknown,
     @Query("outcome") outcome?: unknown,
     @Query("from") from?: unknown,
@@ -92,6 +93,7 @@ export class MonitorController {
       scope,
       canRead: await this.canRead(user, scope),
       types: stringList("types", types),
+      group: singleString("group", group),
       agent: singleString("agent", agent),
       outcome: outcomeText as MonitorOutcome | undefined,
       from: fromDate,

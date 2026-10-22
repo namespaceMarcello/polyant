@@ -23,6 +23,8 @@ export interface MonitorReadRequest {
   canRead: CanRead;
   /** Only these types. Empty or absent means every type the caller can read. */
   types?: readonly string[];
+  /** Only the types under this group (a chip of the panel). Combined with `types`, both must match. */
+  group?: string;
   agent?: string;
   outcome?: MonitorOutcome;
   from?: Date;
@@ -107,7 +109,7 @@ export async function readMonitor(req: MonitorReadRequest): Promise<MonitorPage>
   }));
 
   const wanted = req.types && req.types.length > 0 ? new Set(req.types) : undefined;
-  const selected = wanted ? readable.filter((s) => wanted.has(s.type)) : readable;
+  const selected = readable.filter((s) => (!wanted || wanted.has(s.type)) && (!req.group || s.group === req.group));
 
   const lists = await Promise.all(
     selected.map((s) =>
