@@ -55,6 +55,7 @@ export default function SkillDetailPage() {
   const [saving, setSaving] = useState(false);
 
   // Content tab state
+  const [displayName, setDisplayName] = useState("");
   const [description, setDescription] = useState("");
   const [content, setContent] = useState("");
   const [changelog, setChangelog] = useState("");
@@ -81,6 +82,7 @@ export default function SkillDetailPage() {
           api.tools.catalog(),
         ]);
         setSkill(data);
+        setDisplayName(data.displayName);
         setDescription(data.description);
         setContent(data.content);
         setEnvVars(toEnvVarDefs(data.requiredEnv));
@@ -117,6 +119,7 @@ export default function SkillDetailPage() {
       const reqEnv = toRequiredEnv(envVars);
 
       const updated = await api.skillLibrary.update(params.name, {
+        displayName: displayName.trim(),
         description,
         content,
         requiredEnv: reqEnv,
@@ -125,6 +128,7 @@ export default function SkillDetailPage() {
       });
 
       setSkill(updated);
+      setDisplayName(updated.displayName);
       setChangelog("");
       toast.success(t("common.saved"));
     } catch (err) {
@@ -196,7 +200,7 @@ export default function SkillDetailPage() {
   return (
     <div>
       <PageHeader
-        title={skill.name}
+        title={skill.displayName}
         actions={
           <>
             <Button
@@ -209,7 +213,7 @@ export default function SkillDetailPage() {
               <Download className="h-4 w-4" />
               {exporting ? t("exportImport.export.downloading") : t("exportImport.export.button")}
             </Button>
-            <Button onClick={handleSave} disabled={saving}>
+            <Button onClick={handleSave} disabled={saving || displayName.trim() === ""}>
               {saving ? t("common.saving") : t("common.saveSingle")}
             </Button>
           </>
@@ -231,13 +235,19 @@ export default function SkillDetailPage() {
               <>
           <div className="mt-4 space-y-6 max-w-2xl">
             <div className="space-y-2">
-              <Label htmlFor="name">{t("skills.form.name")}</Label>
+              <Label htmlFor="displayName">{t("skills.form.name")}</Label>
               <Input
-                id="name"
-                value={skill.name}
-                readOnly
-                className="opacity-60"
+                id="displayName"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                maxLength={255}
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="slug">{t("skills.form.slug")}</Label>
+              <Input id="slug" value={skill.name} readOnly className="font-mono opacity-60" />
+              <p className="text-xs text-muted-foreground">{t("skills.form.slugHint")}</p>
             </div>
 
             <div className="space-y-2">

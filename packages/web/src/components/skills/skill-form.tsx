@@ -16,7 +16,10 @@ import { EnvVarsEditor, toEnvVarDefs, toRequiredEnv, type EnvVarDef } from "./en
 interface SkillFormProps {
   mode: "create" | "edit";
   initialData?: {
+    /** The slug. */
     name: string;
+    /** The name people read; falls back to the slug. */
+    displayName?: string;
     description: string;
     requiredEnv?: RequiredEnvEntry[];
     content: string;
@@ -28,12 +31,15 @@ export function SkillForm({ mode, initialData }: SkillFormProps) {
   const { t } = useI18n();
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState(initialData?.name ?? "");
+  const [displayName, setDisplayName] = useState(initialData?.displayName ?? initialData?.name ?? "");
   const [description, setDescription] = useState(initialData?.description ?? "");
   const [envVars, setEnvVars] = useState<EnvVarDef[]>(toEnvVarDefs(initialData?.requiredEnv));
   const [content, setContent] = useState(initialData?.content ?? "");
 
   const isValid =
-    mode === "edit" || (name.trim().length > 0 && content.trim().length > 0);
+    mode === "edit"
+      ? displayName.trim().length > 0
+      : name.trim().length > 0 && content.trim().length > 0;
 
   const handleSave = async () => {
     setSaving(true);
@@ -49,6 +55,7 @@ export function SkillForm({ mode, initialData }: SkillFormProps) {
         });
       } else {
         await api.skillLibrary.update(initialData!.name, {
+          displayName: displayName.trim(),
           description,
           content,
           requiredEnv: reqEnv,
@@ -67,7 +74,7 @@ export function SkillForm({ mode, initialData }: SkillFormProps) {
     <div>
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-semibold tracking-tight">
-          {mode === "create" ? t("skills.form.newTitle") : initialData?.name}
+          {mode === "create" ? t("skills.form.newTitle") : displayName || initialData?.name}
         </h1>
         <Button onClick={handleSave} disabled={saving || !isValid}>
           {saving ? t("common.saving") : t("common.saveSingle")}
@@ -75,19 +82,31 @@ export function SkillForm({ mode, initialData }: SkillFormProps) {
       </div>
 
       <div className="mt-6 space-y-6 max-w-2xl">
-        <div className="space-y-2">
-          <Label htmlFor="name">{t("skills.form.name")}</Label>
-          <Input
-            id="name"
-            value={name}
-            onChange={(e) =>
-              setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"))
-            }
-            placeholder={t("skills.form.namePlaceholder")}
-            readOnly={mode === "edit"}
-            className={mode === "edit" ? "opacity-60" : ""}
-          />
-        </div>
+        {mode === "create" ? (
+          <div className="space-y-2">
+            <Label htmlFor="name">{t("skills.form.name")}</Label>
+            <Input
+              id="name"
+              value={name}
+              onChange={(e) =>
+                setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"))
+              }
+              placeholder={t("skills.form.namePlaceholder")}
+            />
+          </div>
+        ) : (
+          <>
+            <div className="space-y-2">
+              <Label htmlFor="displayName">{t("skills.form.name")}</Label>
+              <Input id="displayName" value={displayName} onChange={(e) => setDisplayName(e.target.value)} maxLength={255} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="slug">{t("skills.form.slug")}</Label>
+              <Input id="slug" value={name} readOnly className="font-mono opacity-60" />
+              <p className="text-xs text-muted-foreground">{t("skills.form.slugHint")}</p>
+            </div>
+          </>
+        )}
 
         <div className="space-y-2">
           <Label htmlFor="description">{t("skills.form.description")}</Label>

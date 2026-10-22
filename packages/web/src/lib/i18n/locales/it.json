@@ -352,6 +352,8 @@
   "skills.form.newTitle": "Nuova Skill",
   "skills.form.name": "Nome",
   "skills.form.namePlaceholder": "mia-skill",
+  "skills.form.slug": "Identificativo",
+  "skills.form.slugHint": "Gli agenti leggono la skill con questo identificativo: non cambia.",
   "skills.form.description": "Descrizione",
   "skills.form.descriptionPlaceholder": "Breve descrizione di cosa fa questa skill",
   "skills.form.requiredEnv": "Variabili d'Ambiente Richieste",

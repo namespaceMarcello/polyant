@@ -352,6 +352,8 @@
   "skills.form.newTitle": "New Skill",
   "skills.form.name": "Name",
   "skills.form.namePlaceholder": "my-skill",
+  "skills.form.slug": "Identifier",
+  "skills.form.slugHint": "Agents read the skill by this identifier, so it does not change.",
   "skills.form.description": "Description",
   "skills.form.descriptionPlaceholder": "Brief description of what this skill does",
   "skills.form.requiredEnv": "Required Env Variables",

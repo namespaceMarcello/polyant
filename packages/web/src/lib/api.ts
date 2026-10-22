@@ -701,6 +701,8 @@ export const api = {
     }) =>
       request<LibrarySkillDetail>("/api/skills", json("POST", data)),
     update: (name: string, data: {
+      /** Renames the skill for people; the slug in `name` is unchanged. */
+      displayName?: string;
       description: string;
       content: string;
       requiredEnv?: { name: string; description?: string; sensitive: boolean }[];

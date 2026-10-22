@@ -388,7 +388,10 @@ export interface SkillEnvStatus {
 // ── Skill Library (global) ───────────────────────────────────────────
 
 export interface LibrarySkillSummary {
+  /** The slug: how URLs and agents address the skill. It never changes. */
   name: string;
+  /** The name people read; editable. */
+  displayName: string;
   description: string;
   category?: string;
   requiredEnv?: RequiredEnvEntry[];
@@ -396,7 +399,10 @@ export interface LibrarySkillSummary {
 }
 
 export interface LibrarySkillDetail {
+  /** The slug: how URLs and agents address the skill. It never changes. */
   name: string;
+  /** The name people read; editable. */
+  displayName: string;
   description: string;
   category?: string;
   requiredEnv?: RequiredEnvEntry[];

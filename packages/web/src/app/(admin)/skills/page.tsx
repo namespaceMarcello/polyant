@@ -144,8 +144,11 @@ export default function SkillsPage() {
                       href={`/skills/${skill.name}`}
                       className="underline underline-offset-4 hover:text-accent-strong"
                     >
-                      {skill.name}
+                      {skill.displayName}
                     </Link>
+                    {skill.displayName !== skill.name && (
+                      <span className="block truncate font-mono text-xs font-normal text-muted-foreground">{skill.name}</span>
+                    )}
                   </TableCell>
                   <TableCell>
                     {skill.category ? (
@@ -178,7 +181,7 @@ export default function SkillsPage() {
                               {t("skills.deleteTitle")}
                             </AlertDialogTitle>
                             <AlertDialogDescription>
-                              {t("skills.deleteDescription", { name: skill.name })}
+                              {t("skills.deleteDescription", { name: skill.displayName })}
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
