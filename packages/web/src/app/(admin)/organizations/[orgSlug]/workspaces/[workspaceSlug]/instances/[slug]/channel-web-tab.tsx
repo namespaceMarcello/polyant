@@ -17,6 +17,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Switch } from "@/components/ui/switch";
+import { ChannelEnabledToggle } from "./channel-enabled-toggle";
 import { SecretField } from "@/components/instance-secret/secret-field";
 import { useInstanceSecret } from "@/components/instance-secret/use-instance-secret";
 import { SECRET_KEYS } from "@/lib/provider-secrets";
@@ -146,22 +147,9 @@ export function ChannelWebTab({ instance, onUpdate, channels, onChannelsChanged 
   return (
     <div className="space-y-8">
       <section className="space-y-4 rounded-lg border p-4">
-        <div>
-          <Label className="text-base font-medium">{t("channels.tab.web")}</Label>
+        <div className="flex items-start justify-between gap-4">
           <p className="text-sm text-muted-foreground">{t("channels.tab.webHelp")}</p>
-        </div>
-
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <Label htmlFor="web-channel-enabled">{t("channels.tab.webEnabled")}</Label>
-            <p className="text-sm text-muted-foreground">{t("channels.tab.webEnabledHelp")}</p>
-          </div>
-          <Switch
-            id="web-channel-enabled"
-            checked={webEnabled}
-            disabled={!webLoaded}
-            onCheckedChange={(v) => setWebDraft("enabled", v)}
-          />
+          <ChannelEnabledToggle enabled={webEnabled} disabled={!webLoaded} onChange={(v) => setWebDraft("enabled", v)} />
         </div>
 
         <div className="flex items-center justify-between" data-tour="web-auth">

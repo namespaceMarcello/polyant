@@ -40,6 +40,8 @@ export interface KnowledgeDocument {
   status: string;
   chunkCount: number;
   errorMessage: string | null;
+  /** Off: stored, but retrieval skips it. */
+  enabled: boolean;
   createdAt: Date | null;
   updatedAt: Date | null;
 }
@@ -62,6 +64,7 @@ export async function createDocument(input: {
   rawContent: string;
   contentHash: string;
   source?: string;
+  enabled?: boolean;
 }): Promise<KnowledgeDocument> {
   const [doc] = await db
     .insert(knowledgeDocuments)
@@ -73,6 +76,7 @@ export async function createDocument(input: {
       rawContent: input.rawContent,
       contentHash: input.contentHash,
       source: input.source ?? "upload",
+      enabled: input.enabled ?? true,
       status: "processing",
     })
     .returning();
@@ -109,6 +113,7 @@ export async function listDocuments(instanceId: InstanceSlug): Promise<Omit<Know
       status: knowledgeDocuments.status,
       chunkCount: knowledgeDocuments.chunkCount,
       errorMessage: knowledgeDocuments.errorMessage,
+      enabled: knowledgeDocuments.enabled,
       createdAt: knowledgeDocuments.createdAt,
       updatedAt: knowledgeDocuments.updatedAt,
     })
@@ -116,6 +121,19 @@ export async function listDocuments(instanceId: InstanceSlug): Promise<Omit<Know
     .where(eq(knowledgeDocuments.instanceId, instanceId))
     .orderBy(desc(knowledgeDocuments.createdAt));
   return rows as Omit<KnowledgeDocument, "rawContent">[];
+}
+
+/**
+ * Turn a document on or off for retrieval. Scoped to the agent: a document of
+ * another agent is not found. Returns whether a row changed.
+ */
+export async function setDocumentEnabled(docId: string, instanceId: InstanceSlug, enabled: boolean): Promise<boolean> {
+  const rows = await db
+    .update(knowledgeDocuments)
+    .set({ enabled, updatedAt: new Date() })
+    .where(and(eq(knowledgeDocuments.id, docId), eq(knowledgeDocuments.instanceId, instanceId)))
+    .returning({ id: knowledgeDocuments.id });
+  return rows.length > 0;
 }
 
 /** Get full document including rawContent. */
@@ -173,6 +191,7 @@ export interface ExportedDocument {
   mimeType: string;
   source: string;
   contentHash: string;
+  enabled: boolean;
 }
 
 /**
@@ -187,6 +206,7 @@ export async function getKnowledgeForExport(instanceId: InstanceSlug): Promise<E
       mimeType: knowledgeDocuments.mimeType,
       source: knowledgeDocuments.source,
       contentHash: knowledgeDocuments.contentHash,
+      enabled: knowledgeDocuments.enabled,
     })
     .from(knowledgeDocuments)
     .where(eq(knowledgeDocuments.instanceId, instanceId))
@@ -504,7 +524,7 @@ export async function searchByVector(
     // Exclude rows whose active vector column is NULL: their cosine distance is
     // NULL → `1 - NULL` = NaN, which would otherwise leak a NaN score into the
     // knowledge search results when fewer than `limit` rows match.
-    .where(and(eq(knowledgeChunks.instanceId, instanceId), isNotNull(activeCol)))
+    .where(and(eq(knowledgeChunks.instanceId, instanceId), eq(knowledgeDocuments.enabled, true), isNotNull(activeCol)))
     .orderBy(distance)
     .limit(limit);
 
@@ -538,6 +558,7 @@ export async function searchByKeyword(
     FROM knowledge_chunks kc
     INNER JOIN knowledge_documents kd ON kd.id = kc.document_id
     WHERE kc.instance_id = ${instanceId}
+      AND kd.enabled
       AND kc.content_tsv @@ websearch_to_tsquery('simple', ${query})
     ORDER BY rank DESC
     LIMIT ${limit}

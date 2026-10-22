@@ -132,6 +132,7 @@ describe("SkillForm", () => {
   describe("edit mode", () => {
     const initialData = {
       name: "existing-skill",
+      displayName: "Existing Skill",
       description: "A description",
       requiredEnv: [
         { name: "API_KEY", description: "The key", sensitive: true },
@@ -142,30 +143,41 @@ describe("SkillForm", () => {
     it("renders with initial data", () => {
       render(<SkillForm mode="edit" initialData={initialData} />);
 
-      expect(screen.getByText("existing-skill")).toBeInTheDocument();
-      expect(screen.getByLabelText("skills.form.name")).toHaveValue("existing-skill");
+      expect(screen.getByRole("heading", { name: "Existing Skill" })).toBeInTheDocument();
+      expect(screen.getByLabelText("skills.form.name")).toHaveValue("Existing Skill");
+      expect(screen.getByLabelText("skills.form.slug")).toHaveValue("existing-skill");
       expect(screen.getByLabelText("skills.form.description")).toHaveValue("A description");
       expect(screen.getByLabelText("skills.form.content")).toHaveValue("# Existing content");
     });
 
-    it("makes name input readonly in edit mode", () => {
+    it("keeps the slug read-only and the name editable in edit mode", () => {
       render(<SkillForm mode="edit" initialData={initialData} />);
 
-      const nameInput = screen.getByLabelText("skills.form.name");
-      expect(nameInput).toHaveAttribute("readonly");
+      expect(screen.getByLabelText("skills.form.slug")).toHaveAttribute("readonly");
+      expect(screen.getByLabelText("skills.form.name")).not.toHaveAttribute("readonly");
     });
 
-    it("save button is enabled in edit mode even when name is empty (validates differently)", () => {
-      render(
-        <SkillForm
-          mode="edit"
-          initialData={{ ...initialData, name: "" }}
-        />,
-      );
+    it("cannot save a blank name in edit mode", async () => {
+      const user = userEvent.setup();
+      render(<SkillForm mode="edit" initialData={initialData} />);
 
-      const saveBtn = screen.getByRole("button", { name: "common.saveSingle" });
-      // In edit mode isValid = true always (mode === "edit")
-      expect(saveBtn).toBeEnabled();
+      await user.clear(screen.getByLabelText("skills.form.name"));
+
+      expect(screen.getByRole("button", { name: "common.saveSingle" })).toBeDisabled();
+    });
+
+    it("sends the edited name under the unchanged slug", async () => {
+      const user = userEvent.setup();
+      updateMock.mockResolvedValueOnce({ name: "existing-skill" });
+      render(<SkillForm mode="edit" initialData={initialData} />);
+
+      await user.clear(screen.getByLabelText("skills.form.name"));
+      await user.type(screen.getByLabelText("skills.form.name"), "  Research the web ");
+      await user.click(screen.getByRole("button", { name: "common.saveSingle" }));
+
+      await waitFor(() => {
+        expect(updateMock).toHaveBeenCalledWith("existing-skill", expect.objectContaining({ displayName: "Research the web" }));
+      });
     });
 
     it("renders existing env vars from initialData", () => {

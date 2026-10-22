@@ -5,6 +5,7 @@ import {
   Get,
   Post,
   Delete,
+  Patch,
   Param,
   Body,
   NotFoundException,
@@ -18,6 +19,7 @@ import {
   listDocuments,
   getDocument,
   deleteDocument,
+  setDocumentEnabled,
   hashContent,
   countDocuments,
   getKnowledgeForExport,
@@ -53,6 +55,7 @@ export class InstanceKnowledgeController {
         status: d.status,
         chunkCount: d.chunkCount,
         errorMessage: d.errorMessage,
+        enabled: d.enabled,
         createdAt: d.createdAt?.toISOString() ?? null,
         updatedAt: d.updatedAt?.toISOString() ?? null,
       })),
@@ -98,6 +101,7 @@ export class InstanceKnowledgeController {
         status: doc.status,
         chunkCount: doc.chunkCount,
         errorMessage: doc.errorMessage,
+        enabled: doc.enabled,
         createdAt: doc.createdAt?.toISOString() ?? null,
         updatedAt: doc.updatedAt?.toISOString() ?? null,
       },
@@ -222,6 +226,7 @@ export class InstanceKnowledgeController {
         rawContent: doc.content,
         contentHash: hashContent(doc.content),
         source: "import",
+        enabled: doc.document.enabled !== false,
       });
 
       // Re-embed with the instance's current embedder (fire-and-forget, like upload).
@@ -233,6 +238,22 @@ export class InstanceKnowledgeController {
     }
 
     return { imported: imported.length, documents: imported };
+  }
+
+  /**
+   * PATCH /api/instances/:slug/knowledge/:docId — turn a document on or off for
+   * retrieval. Off keeps it stored and listed; searches skip it and its chunks.
+   */
+  @RequirePermission(Permission.KNOWLEDGE_WRITE)
+  @Patch(":docId")
+  async setEnabled(@Param("slug") slug: string, @Param("docId") docId: string, @Body() body: { enabled?: unknown }) {
+    if (typeof body?.enabled !== "boolean") {
+      throw new BadRequestException("'enabled' must be a boolean");
+    }
+    const instance = await findInstanceOrFail(slug);
+    const changed = await setDocumentEnabled(docId, instance.slug, body.enabled);
+    if (!changed) throw new NotFoundException(`Document "${docId}" not found`);
+    return { id: docId, enabled: body.enabled };
   }
 
   /** DELETE /api/instances/:slug/knowledge/:docId */

@@ -60,10 +60,12 @@ vi.mock("@/hooks/use-pagination", () => ({
   })),
 }));
 
+const mockSearchParams = vi.hoisted(() => ({ value: "" }));
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
   useParams: () => ({ orgSlug: "default", workspaceSlug: "general" }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(mockSearchParams.value),
   usePathname: () => "/organizations/default/workspaces/general/conversations",
 }));
 
@@ -162,6 +164,7 @@ function makeInstance(overrides: Partial<Instance> = {}): Instance {
 
 describe("ConversationsPage", () => {
   beforeEach(() => {
+    mockSearchParams.value = "";
     vi.clearAllMocks();
     mockInstancesList.mockResolvedValue({ instances: [] });
     mockConversationsList.mockResolvedValue({
@@ -343,13 +346,15 @@ describe("ConversationsPage", () => {
     expect(screen.getByText("conversations.column.userIdentifier")).toBeInTheDocument();
   });
 
-  it("filters by contact after a pause, sending only the trimmed text", async () => {
+  it("has a single search box, and no separate contact field", async () => {
     render(<ConversationsPage />);
     await waitFor(() => expect(mockConversationsList).toHaveBeenCalled());
+    expect(screen.getAllByRole("searchbox")).toHaveLength(1);
+  });
 
-    const user = userEvent.setup();
-    await user.type(screen.getByPlaceholderText("conversations.filter.contactPlaceholder"), " anna ");
-
+  it("still narrows to a contact given by a direct link", async () => {
+    mockSearchParams.value = "contact=anna";
+    render(<ConversationsPage />);
     await waitFor(() =>
       expect(mockConversationsList).toHaveBeenLastCalledWith(expect.objectContaining({ userIdentifier: "anna" })),
     );

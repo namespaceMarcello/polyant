@@ -30,7 +30,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { downloadBlob } from "@/lib/download";
 import { isSafeImageSrc } from "@/lib/utils";
-import { setAgentName } from "@/lib/nav/agent-name";
 import { api, getUserErrorMessage, type Instance, type ToolState, type ToolPluginInfo, type SkillState, type PromptSection } from "@/lib/api";
 import { GeneralTab } from "./general-tab";
 import { PromptsTab } from "./prompts-tab";
@@ -147,12 +146,6 @@ function InstanceDetailContent() {
     // identity is stable across renders and cannot re-trigger the fetch.
   }, [params.slug, router, t, paths]);
 
-  // The sidebar names the agent the way this header does, and follows a rename.
-  const agentName = instance?.name;
-  useEffect(() => {
-    if (agentName) setAgentName(params.slug, agentName);
-  }, [params.slug, agentName]);
-
   const handleDelete = async () => {
     try {
       await api.instances.delete(params.slug);
@@ -197,34 +190,36 @@ function InstanceDetailContent() {
           and the subject beneath it — and the organization/workspace above them
           is in the header's trail. Two breadcrumbs for one position is the same
           "both surfaces try to say where you are" problem the takeover fixed. */}
-      <div className="flex items-start justify-between">
-        <div className="flex items-start gap-3">
-          {/* The same icon the agents list shows, with the same fallback. */}
-          {instance.icon && isSafeImageSrc(instance.icon) ? (
-            <Image
-              src={instance.icon}
-              alt=""
-              width={40}
-              height={40}
-              className="mt-0.5 size-10 shrink-0 rounded object-cover"
-              data-testid="agent-icon"
-              unoptimized
-            />
-          ) : (
-            <Bot className="mt-1 size-9 shrink-0 text-muted-foreground" data-testid="agent-icon" aria-hidden />
-          )}
-          <div>
-            <h1 className="text-3xl font-semibold tracking-tight">
+      <div className="flex items-center justify-between gap-4">
+        {/* One line: icon, name, slug, status, all centred on it. On a narrow
+            screen the slug and status wrap beneath, and the icon stays with the name. */}
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="flex min-w-0 items-center gap-3">
+            {/* The same icon the agents list shows, with the same fallback. */}
+            {instance.icon && isSafeImageSrc(instance.icon) ? (
+              <Image
+                src={instance.icon}
+                alt=""
+                width={40}
+                height={40}
+                className="size-10 shrink-0 rounded object-cover"
+                data-testid="agent-icon"
+                unoptimized
+              />
+            ) : (
+              <Bot className="size-9 shrink-0 text-muted-foreground" data-testid="agent-icon" aria-hidden />
+            )}
+            <h1 className="min-w-0 truncate text-3xl font-semibold tracking-tight">
               {instance.name}
             </h1>
-            <div className="mt-2 flex items-center gap-2">
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                {instance.slug}
-              </code>
-              <Badge variant={instance.status === "active" ? "default" : "secondary"}>
-                {instanceStatusLabel(instance.status, t)}
-              </Badge>
-            </div>
+          </div>
+          <div className="flex items-center gap-2" data-testid="agent-header-meta">
+            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+              {instance.slug}
+            </code>
+            <Badge variant={instance.status === "active" ? "default" : "secondary"}>
+              {instanceStatusLabel(instance.status, t)}
+            </Badge>
           </div>
         </div>
         {/*

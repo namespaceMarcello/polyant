@@ -9,7 +9,6 @@ import {
   Trash2,
   RefreshCw,
   Loader2,
-  Eye,
   Download,
   Upload,
   AlertTriangle,
@@ -17,14 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { api, getUserErrorMessage, type Instance, type KnowledgeDocument } from "@/lib/api";
@@ -143,6 +135,32 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
   const { data, error, loading, reload: load } = useResource(["knowledge", slug], () => api.knowledge.list(slug));
   const documents: KnowledgeDocument[] = data?.documents ?? [];
   const [deleting, setDeleting] = useState<KnowledgeDocument | null>(null);
+  // Document switches ride the page's Save like the two switches above them: the
+  // changes made but not yet saved, by document id.
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [savingDocs, setSavingDocs] = useState(false);
+  const isOn = (doc: KnowledgeDocument) => pending[doc.id] ?? doc.enabled;
+  const setDocEnabled = (doc: KnowledgeDocument, enabled: boolean) =>
+    setPending((prev) => {
+      const next = { ...prev };
+      if (enabled === doc.enabled) delete next[doc.id];
+      else next[doc.id] = enabled;
+      return next;
+    });
+  const saveDocSwitches = async () => {
+    setSavingDocs(true);
+    try {
+      await Promise.all(Object.entries(pending).map(([id, enabled]) => api.knowledge.setEnabled(slug, id, enabled)));
+      setPending({});
+      load();
+      toast.success(t("general.saved"));
+    } catch (err) {
+      toast.error(getUserErrorMessage(err, t("general.saveFailed")));
+    } finally {
+      setSavingDocs(false);
+    }
+  };
+  usePageSaveAction({ isDirty: Object.keys(pending).length > 0, saving: savingDocs, onSave: saveDocSwitches });
   const [viewDocId, setViewDocId] = useState<string | null>(null);
   const [viewContent, setViewContent] = useState<string>("");
   const [viewFilename, setViewFilename] = useState<string>("");
@@ -349,13 +367,31 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
           {documents.map((doc) => (
             <div
               key={doc.id}
-              className="flex items-center justify-between rounded-lg border p-4"
+              // The whole row opens the document: a ready one is a button for the
+              // keyboard too (Enter or Space); one still processing has nothing to open.
+              {...(doc.status === "ready"
+                ? {
+                    role: "button",
+                    tabIndex: 0,
+                    onClick: () => handleView(doc.id, doc.filename),
+                    onKeyDown: (e: React.KeyboardEvent) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        handleView(doc.id, doc.filename);
+                      }
+                    },
+                  }
+                : {})}
+              className={`flex items-center justify-between rounded-lg border p-4 ${
+                doc.status === "ready" ? "cursor-pointer hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : ""
+              }`}
             >
               <div className="flex items-center gap-4 min-w-0 flex-1">
                 <FileText className="size-5 shrink-0 text-muted-foreground" />
                 <div className="space-y-0.5 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm truncate">
+                    <span className={`font-medium text-sm truncate ${isOn(doc) ? "" : "text-muted-foreground"}`}>
                       {doc.filename}
                     </span>
                     <KnowledgeStatusBadge status={doc.status} t={t} />
@@ -373,15 +409,24 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
                 </div>
               </div>
               <div className="flex items-center gap-1 shrink-0 ml-2">
+                {/* A real switch on the row. Clicking it never opens the document. */}
+                <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} className="mr-2">
+                  <Switch
+                    checked={isOn(doc)}
+                    onCheckedChange={(v) => setDocEnabled(doc, v)}
+                    aria-label={t("knowledge.tab.docEnabled", { name: doc.filename })}
+                  />
+                </div>
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => handleView(doc.id, doc.filename)}
-                  disabled={doc.status !== "ready"}
+                  className="text-destructive"
+                  aria-label={t("common.delete")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDeleting(doc);
+                  }}
                 >
-                  <Eye className="size-4" />
-                </Button>
-                <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setDeleting(doc)}>
                   <Trash2 className="size-4" />
                 </Button>
               </div>
@@ -400,33 +445,41 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
         onConfirm={() => deleting ? handleDelete(deleting.id) : undefined}
       />
 
-      {/* View document content dialog */}
-      <Dialog open={viewDocId !== null} onOpenChange={(open) => !open && setViewDocId(null)}>
-        <DialogContent className="max-h-[85vh] max-w-2xl flex flex-col">
-          <DialogHeader>
-            <DialogTitle>{viewFilename}</DialogTitle>
-            <DialogDescription>
-              {t("knowledge.tab.viewDescription")}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="overflow-y-auto flex-1 min-h-0">
+      {/* The document: its content, and the actions on it. */}
+      <Sheet open={viewDocId !== null} onOpenChange={(open) => !open && setViewDocId(null)}>
+        <SheetContent side="right" className="gap-0">
+          <SheetHeader className="gap-2 border-b p-5 pr-12">
+            <SheetTitle className="break-words text-base font-medium">{viewFilename}</SheetTitle>
+            <SheetDescription>{t("knowledge.tab.viewDescription")}</SheetDescription>
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto p-5">
             {viewLoading ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="size-5 animate-spin text-muted-foreground" />
               </div>
             ) : (
-              <pre className="whitespace-pre-wrap text-sm font-mono bg-muted/50 rounded-md p-4">
-                {viewContent}
-              </pre>
+              <pre className="whitespace-pre-wrap rounded-md bg-muted/50 p-4 font-mono text-sm">{viewContent}</pre>
             )}
           </div>
-          <DialogFooter className="shrink-0">
+          <SheetFooter className="flex-row justify-between border-t p-4">
+            <Button
+              variant="ghost"
+              className="text-destructive"
+              onClick={() => {
+                const doc = documents.find((d) => d.id === viewDocId);
+                setViewDocId(null);
+                if (doc) setDeleting(doc);
+              }}
+            >
+              <Trash2 className="size-4" aria-hidden />
+              {t("common.delete")}
+            </Button>
             <Button variant="outline" onClick={() => setViewDocId(null)}>
               {t("common.close")}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

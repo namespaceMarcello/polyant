@@ -3,7 +3,6 @@
 import { render, within } from "@testing-library/react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { I18nProvider } from "@/lib/i18n/context";
-import { setAgentName } from "@/lib/nav/agent-name";
 import { AppSidebar } from "./app-sidebar";
 import type { TenantContextValue } from "@/lib/tenant/tenant-context";
 
@@ -70,8 +69,7 @@ describe("AppSidebar — a destination takes over the sidebar", () => {
     );
 
     const content = document.querySelector<HTMLElement>('[data-sidebar="content"]')!;
-    // The agent, by its slug, and the way back out.
-    expect(within(content).getByText("bot-1")).toBeInTheDocument();
+    // The way back out; the agent's name is the page heading, not a line here.
     expect(within(content).getByRole("link", { name: /agenti/i })).toBeInTheDocument();
     // Its macros are HEADINGS now, and each section under them is its own row —
     // it was one row per macro, with the sections behind a tab row.
@@ -94,9 +92,8 @@ describe("AppSidebar — a destination takes over the sidebar", () => {
     ).toBe(`${AGENT}?tab=conversations`);
   });
 
-  it("names the agent by its display name once its page has loaded, not by its slug", () => {
+  it("shows the way back and then the sections, with no line naming the agent between them", () => {
     mockPathname.value = AGENT;
-    setAgentName("bot-1", "Sofia");
     render(
       <I18nProvider initialLocale="it">
         <SidebarProvider>
@@ -106,8 +103,8 @@ describe("AppSidebar — a destination takes over the sidebar", () => {
     );
 
     const content = document.querySelector<HTMLElement>('[data-sidebar="content"]')!;
-    // Catches the sidebar subject staying on the machine slug beside a header that says "Sofia".
-    expect(within(content).getByText("Sofia")).toBeInTheDocument();
+    // The agent's name is the page heading; repeating its slug under the back link was noise.
+    expect(within(content).getByRole("link", { name: /agenti/i })).toBeInTheDocument();
     expect(within(content).queryByText("bot-1")).not.toBeInTheDocument();
   });
 

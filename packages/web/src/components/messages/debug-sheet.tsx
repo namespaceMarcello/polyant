@@ -354,7 +354,7 @@ function DebugSheetBody({ target }: { target: DebugSheetTarget }) {
 export function DebugSheet({ open, onOpenChange, target }: DebugSheetProps) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full gap-0 overflow-y-auto sm:max-w-xl">
+      <SheetContent side="right" className="gap-0 overflow-y-auto">
         {target && <DebugSheetBody target={target} />}
       </SheetContent>
     </Sheet>

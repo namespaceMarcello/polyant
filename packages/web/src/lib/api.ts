@@ -59,9 +59,12 @@ export type {
   LatencyData,
   AnalyticsResponse,
   ToolInfo,
-  AuditLogEntry,
-  AuditLogListResult,
-  AuditStatsResult,
+  MonitorOutcome,
+  MonitorItem,
+  MonitorSection,
+  MonitorDetail,
+  MonitorTypeInfo,
+  MonitorPage,
   EventSource,
   EventDefinition,
   HookEvent,
@@ -112,8 +115,9 @@ import type {
   KnowledgeDocumentDetail,
   AnalyticsResponse,
   ToolInfo,
-  AuditLogListResult,
-  AuditStatsResult,
+  MonitorDetail,
+  MonitorOutcome,
+  MonitorPage,
   EventSource,
   EventDefinition,
   HookEvent,
@@ -561,6 +565,12 @@ export const api = {
         urlPath`/api/instances/${slug}/knowledge`,
         json("POST", data),
       ),
+    /** Off keeps the document stored; retrieval skips it until it is switched on. */
+    setEnabled: (slug: string, docId: string, enabled: boolean) =>
+      request<{ id: string; enabled: boolean }>(
+        urlPath`/api/instances/${slug}/knowledge/${docId}`,
+        json("PATCH", { enabled }),
+      ),
     delete: (slug: string, docId: string) =>
       request<{ deleted: boolean }>(
         urlPath`/api/instances/${slug}/knowledge/${docId}`,
@@ -570,9 +580,9 @@ export const api = {
       request<{
         version: number;
         instanceSlug: string;
-        documents: { filename: string; content: string; mimeType: string; source: string; contentHash: string }[];
+        documents: { filename: string; content: string; mimeType: string; source: string; contentHash: string; enabled: boolean }[];
       }>(urlPath`/api/instances/${slug}/knowledge/export`),
-    import: (slug: string, data: { version?: number; documents: { filename: string; content: string }[] }) =>
+    import: (slug: string, data: { version?: number; documents: { filename: string; content: string; enabled?: boolean }[] }) =>
       request<{ imported: number; documents: { filename: string; renamedFrom?: string }[] }>(
         urlPath`/api/instances/${slug}/knowledge/import`,
         json("POST", data),
@@ -697,6 +707,8 @@ export const api = {
     }) =>
       request<LibrarySkillDetail>("/api/skills", json("POST", data)),
     update: (name: string, data: {
+      /** Renames the skill for people; the slug in `name` is unchanged. */
+      displayName?: string;
       description: string;
       content: string;
       requiredEnv?: { name: string; description?: string; sensitive: boolean }[];
@@ -714,26 +726,21 @@ export const api = {
       request<SkillVersion>(urlPath`/api/skills/${name}/versions/${version}`),
   },
 
-  auditLogs: {
+  monitor: {
+    /** One page of the Monitor timeline, newest first; pass `nextCursor` back for the next. */
     list: (params?: {
-      instanceId?: string;
-      toolName?: string;
-      action?: string;
-      search?: string;
+      types?: readonly string[];
+      group?: string;
+      agent?: string;
+      outcome?: MonitorOutcome;
       from?: string;
       to?: string;
+      q?: string;
+      cursor?: string;
       limit?: number;
-      offset?: number;
-    }) => {
-      return request<AuditLogListResult>(withQuery("/api/audit-logs", params ?? {}));
-    },
-    stats: (params?: {
-      instanceId?: string;
-      from?: string;
-      to?: string;
-    }) => {
-      return request<AuditStatsResult>(withQuery("/api/audit-logs/stats", params ?? {}));
-    },
+    }) => request<MonitorPage>(withQuery("/api/monitor", { ...params, types: params?.types?.join(",") })),
+    detail: (type: string, id: string) =>
+      request<MonitorDetail>(urlPath`/api/monitor/${type}/${id}`),
   },
 
   scheduledTasks: {
