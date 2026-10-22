@@ -145,7 +145,6 @@ import InstanceDetailPage from "./page";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { DEFAULT_AGENT_TAB } from "@/lib/nav/agent-sections";
-import { useAgentName } from "@/lib/nav/agent-name";
 
 function makeInstance(overrides: Partial<Instance> = {}): Instance {
   return {
@@ -349,10 +348,19 @@ describe("InstanceDetailPage — sections", () => {
     expect((await screen.findByTestId("agent-icon")).tagName.toLowerCase()).toBe("svg");
   });
 
-  it("publishes the agent's name for the sidebar", async () => {
+  it("puts icon, name, slug and status in one centred row, with the icon sharing the name's row", async () => {
     render(<InstanceDetailPage />);
-    await screen.findByText("tab-body:status:provider-no-credentials");
-    expect(renderHook(() => useAgentName("test-instance")).result.current).toBe("Test Instance");
+    const icon = await screen.findByTestId("agent-icon");
+    const name = screen.getByRole("heading", { level: 1 });
+    // The icon and the name sit in the same centred group, so the icon cannot drift above the text.
+    expect(icon.parentElement).toBe(name.parentElement);
+    expect(icon.parentElement?.className).toMatch(/items-center/);
+    // Slug and status follow in one group beside it, wrapping beneath only on a narrow screen.
+    const meta = screen.getByTestId("agent-header-meta");
+    expect(meta.parentElement?.className).toMatch(/flex-wrap/);
+    expect(meta.parentElement?.className).toMatch(/items-center/);
+    expect(meta.parentElement).toBe(icon.parentElement?.parentElement);
+    expect(meta.textContent).toContain("test-instance");
   });
 
   it("falls back to the overview for an unknown `?tab=` value", async () => {

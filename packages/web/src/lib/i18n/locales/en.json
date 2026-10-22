@@ -31,7 +31,7 @@
   "conversations.title": "Conversations",
   "conversations.subtitle": "Browse and search conversation history.",
   "conversations.allInstances": "All agents",
-  "conversations.searchPlaceholder": "Search messages, conversation ID or contact...",
+  "conversations.searchPlaceholder": "Search messages, by contact or conversation ID…",
   "conversations.empty.title": "No conversations yet",
   "conversations.empty.description": "Conversations will appear here as users interact with your AI assistants.",
   "conversations.empty.searchTitle": "No matching conversations",
@@ -1626,6 +1626,5 @@
   "tools.memoryOffEnable": "Turn on memory",
   "tools.memoryOffPicker": "Memory is off: this tool cannot be added until you turn it on.",
   "conversations.column.userIdentifier": "Contact",
-  "conversations.filter.contactPlaceholder": "Find a contact (email, number...)",
   "onboarding.firstSteps.done": "Done"
 }

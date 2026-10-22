@@ -5,6 +5,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { usePagination } from "@/hooks/use-pagination";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { MessageSquare, Search, Database } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -71,17 +72,9 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
   const [instances, setInstances] = useState<Instance[]>([]);
   const [loading, setLoading] = useState(true);
   const [instanceFilter, setInstanceFilter] = useState(lockedInstanceId ?? "");
-  // The contact filter: typed freely, applied after a pause like the search box.
-  const [contact, setContact] = useState("");
-  const [debouncedContact, setDebouncedContact] = useState("");
-  useEffect(() => {
-    if (contact === debouncedContact) return;
-    const timer = setTimeout(() => {
-      setDebouncedContact(contact);
-      setPage(1);
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [contact, debouncedContact, setPage]);
+  // A direct link may narrow to one contact (`?contact=`); there is no field for it,
+  // because the search box already matches the contact.
+  const contact = useSearchParams().get("contact")?.trim() ?? "";
 
   // Fetch instances for filter dropdown — re-fetch when workspace changes.
   // Also reset the stale instance filter so the user doesn't see an empty list.
@@ -102,7 +95,7 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
       const result = await api.conversations.list({
         instanceId: instanceFilter || undefined,
         search: debouncedSearch || undefined,
-        userIdentifier: debouncedContact.trim() || undefined,
+        userIdentifier: contact || undefined,
         limit: PAGE_SIZE,
         offset,
       });
@@ -113,7 +106,7 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
     } finally {
       setLoading(false);
     }
-  }, [instanceFilter, debouncedSearch, debouncedContact, offset, setTotal, t]);
+  }, [instanceFilter, debouncedSearch, contact, offset, setTotal, t]);
 
   useEffect(() => {
     fetchConversations();
@@ -153,14 +146,6 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
             className="pl-9"
           />
         </div>
-        <Input
-          type="search"
-          aria-label={t("conversations.filter.contactPlaceholder")}
-          placeholder={t("conversations.filter.contactPlaceholder")}
-          value={contact}
-          onChange={(e) => setContact(e.target.value)}
-          className="sm:w-[300px]"
-        />
       </div>
 
       <div className="mt-6">
@@ -174,12 +159,12 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
               <MessageSquare className="h-8 w-8 text-muted-foreground" />
             </div>
             <h3 className="mt-4 text-lg font-medium">
-              {debouncedSearch || debouncedContact
+              {debouncedSearch || contact
                 ? t("conversations.empty.searchTitle")
                 : t("conversations.empty.title")}
             </h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              {debouncedSearch || debouncedContact
+              {debouncedSearch || contact
                 ? t("conversations.empty.searchDescription")
                 : t("conversations.empty.description")}
             </p>
