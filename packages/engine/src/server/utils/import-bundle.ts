@@ -12,6 +12,8 @@ export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 export const bundleDocumentSchema = z.object({
   filename: z.string().min(1),
   content: z.string().min(1),
+  /** Absent in older bundles: those documents are on. */
+  enabled: z.boolean().optional(),
 });
 
 /** A bundle document after validation: a plain filename, trimmed text, its size and stored type. */
