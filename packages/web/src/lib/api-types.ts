@@ -760,35 +760,48 @@ export interface KnowledgeDocumentDetail extends KnowledgeDocument {
   rawContent: string;
 }
 
-// ── Audit Logs ─────────────────────────────────────────────────────
+// ── Monitor ────────────────────────────────────────────────────────
 
-export interface AuditLogEntry {
+/** What became of an item. Open on the engine side; a build may add outcomes. */
+export type MonitorOutcome = "ok" | "error" | "blocked" | "running";
+
+/** One row of the Monitor timeline. `type` and `group` are open strings: a build may add types. */
+export interface MonitorItem {
   id: string;
-  instanceId: string;
+  type: string;
+  group: string;
+  /** ISO 8601 with microseconds. */
+  time: string;
+  agent: { slug: string; name: string };
   conversationId: string | null;
-  toolName: string;
-  action: string;
-  details: Record<string, unknown>;
-  success: boolean;
-  error: string | null;
+  summary: string;
+  outcome: MonitorOutcome;
   durationMs: number | null;
-  output: string | null;
-  createdAt: string;
 }
 
-export interface AuditLogListResult {
-  items: AuditLogEntry[];
-  total: number;
-  limit: number;
-  offset: number;
+/** A labelled block of the detail drawer; `key` names it. */
+export interface MonitorSection {
+  key: string;
+  kind: "json" | "text";
+  value: unknown;
 }
 
-export interface AuditStatsResult {
-  totalEntries: number;
-  errorCount: number;
-  errorRate: number;
-  byTool: Array<{ toolName: string; count: number }>;
-  byAction: Array<{ action: string; count: number }>;
+export interface MonitorDetail extends MonitorItem {
+  error: string | null;
+  sections: MonitorSection[];
+}
+
+/** A type the caller can read, with how long its rows are kept (`null`: as long as the conversation). */
+export interface MonitorTypeInfo {
+  type: string;
+  group: string;
+  retentionDays: number | null;
+}
+
+export interface MonitorPage {
+  items: MonitorItem[];
+  nextCursor: string | null;
+  types: MonitorTypeInfo[];
 }
 
 // ── Event Sources & Room ──────────────────────────────────────────

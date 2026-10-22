@@ -11,7 +11,6 @@ import {
   MessageSquareCode,
   Brain,
   Zap,
-  ScrollText,
   Settings,
   Activity,
   Users,
@@ -55,12 +54,12 @@ const overviewDefs: NavItemDef[] = [
   { titleKey: "nav.instances", path: "/instances", scope: "workspace", icon: Bot },
   { titleKey: "nav.conversations", path: "/conversations", scope: "workspace", icon: MessageSquare },
   { titleKey: "nav.playground", path: "/playground", scope: "workspace", icon: MessageSquareCode },
-  { titleKey: "nav.activity", path: "/activity", scope: "workspace", icon: Activity },
   { titleKey: "nav.memory", path: "/memory", scope: "workspace", icon: Brain },
   // The skill catalog is global — it is NOT workspace-scoped yet, so its URL
   // must not pretend otherwise. See the workspace-scoped-skills spec.
   { titleKey: "nav.skills", path: "/skills", scope: "deployment", icon: Zap },
-  { titleKey: "nav.auditLogs", path: "/audit-logs", scope: "org", icon: ScrollText },
+  // One entry for what happened: tool calls, hooks, webhooks, scheduled runs, live.
+  { titleKey: "nav.monitor", path: "/monitor", scope: "workspace", icon: Activity },
 ];
 
 // Members administers the ORGANIZATION's people. Its route is gated by

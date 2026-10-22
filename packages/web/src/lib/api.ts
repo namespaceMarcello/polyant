@@ -59,9 +59,12 @@ export type {
   LatencyData,
   AnalyticsResponse,
   ToolInfo,
-  AuditLogEntry,
-  AuditLogListResult,
-  AuditStatsResult,
+  MonitorOutcome,
+  MonitorItem,
+  MonitorSection,
+  MonitorDetail,
+  MonitorTypeInfo,
+  MonitorPage,
   EventSource,
   EventDefinition,
   HookEvent,
@@ -112,8 +115,9 @@ import type {
   KnowledgeDocumentDetail,
   AnalyticsResponse,
   ToolInfo,
-  AuditLogListResult,
-  AuditStatsResult,
+  MonitorDetail,
+  MonitorOutcome,
+  MonitorPage,
   EventSource,
   EventDefinition,
   HookEvent,
@@ -714,26 +718,21 @@ export const api = {
       request<SkillVersion>(urlPath`/api/skills/${name}/versions/${version}`),
   },
 
-  auditLogs: {
+  monitor: {
+    /** One page of the Monitor timeline, newest first; pass `nextCursor` back for the next. */
     list: (params?: {
-      instanceId?: string;
-      toolName?: string;
-      action?: string;
-      search?: string;
+      types?: readonly string[];
+      group?: string;
+      agent?: string;
+      outcome?: MonitorOutcome;
       from?: string;
       to?: string;
+      q?: string;
+      cursor?: string;
       limit?: number;
-      offset?: number;
-    }) => {
-      return request<AuditLogListResult>(withQuery("/api/audit-logs", params ?? {}));
-    },
-    stats: (params?: {
-      instanceId?: string;
-      from?: string;
-      to?: string;
-    }) => {
-      return request<AuditStatsResult>(withQuery("/api/audit-logs/stats", params ?? {}));
-    },
+    }) => request<MonitorPage>(withQuery("/api/monitor", { ...params, types: params?.types?.join(",") })),
+    detail: (type: string, id: string) =>
+      request<MonitorDetail>(urlPath`/api/monitor/${type}/${id}`),
   },
 
   scheduledTasks: {
