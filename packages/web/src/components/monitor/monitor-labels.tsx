@@ -9,9 +9,9 @@ import type { TranslationKey } from "@/lib/i18n/types";
 import type { MonitorOutcome } from "@/lib/api-types";
 
 /**
- * The types and groups the engine knows today. The engine's lists are open — a build
- * can register more — so a type or group missing here is shown under its own name
- * instead of being hidden.
+ * The types and groups the engine knows today. The engine's lists are open: a build
+ * registers more (`registerMonitorLabels`), and a type or group nobody labelled is
+ * shown under its own name instead of being hidden.
  */
 const TYPE_SHORT: Record<string, TranslationKey> = {
   tool_call: "monitor.type.tool_call",
@@ -40,6 +40,34 @@ const SECTIONS: Record<string, TranslationKey> = {
   channel: "monitor.section.channel",
   messageCount: "monitor.section.messageCount",
 };
+
+/** Rows of these types go when their conversation does; every other type has no expiry of its own. */
+const KEPT_WITH_CONVERSATION = new Set(["webhook"]);
+
+export interface MonitorLabelSet {
+  /** The pill and the filter, by type. */
+  typeShort?: Record<string, TranslationKey>;
+  /** The drawer subtitle, by type. */
+  typeLong?: Record<string, TranslationKey>;
+  groups?: Record<string, TranslationKey>;
+  /** The labelled blocks of the drawer, by section key. */
+  sections?: Record<string, TranslationKey>;
+  /** Types whose rows are kept as long as their conversation. */
+  keptWithConversation?: readonly string[];
+}
+
+/** Add the labels of the types, groups and sections a build registers with the engine. */
+export function registerMonitorLabels(set: MonitorLabelSet): void {
+  Object.assign(TYPE_SHORT, set.typeShort);
+  Object.assign(TYPE_LONG, set.typeLong);
+  Object.assign(GROUPS, set.groups);
+  Object.assign(SECTIONS, set.sections);
+  for (const type of set.keptWithConversation ?? []) KEPT_WITH_CONVERSATION.add(type);
+}
+
+export function isKeptWithConversation(type: string): boolean {
+  return KEPT_WITH_CONVERSATION.has(type);
+}
 
 export function useMonitorLabels() {
   const { t } = useI18n();

@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ChipTabs } from "@/components/layout/chip-tabs";
 import { api } from "@/lib/api";
+import { DEFAULT_MONITOR_LEVEL, itemSummary, monitorLevelView, type MonitorLevel } from "@/lib/monitor/extensions";
 import { useResource } from "@/hooks/use-resource";
 import { useI18n } from "@/lib/i18n/context";
 import { useFormat } from "@/lib/use-format";
@@ -32,15 +33,21 @@ const SEARCH_DEBOUNCE_MS = 300;
  * Filters are held by the caller (`value` / `onChange`) so a page can keep them in the
  * URL and another surface can keep them in memory. `lockedAgent` pins the list to one
  * agent and hides the agent filter: the agent page shows this same component.
+ *
+ * `level` says which view of the stream it is (the workspace's by default). Same chips,
+ * same columns, same drawer at every level; what a level reads from, which chips it
+ * starts with and whether it offers an agent filter come from `registerMonitorLevel`.
  */
 export function MonitorView({
   value,
   onChange,
   lockedAgent,
+  level = DEFAULT_MONITOR_LEVEL,
 }: {
   value: MonitorFilters;
   onChange: (next: MonitorFilters) => void;
   lockedAgent?: string;
+  level?: MonitorLevel;
 }) {
   const { t } = useI18n();
   const fmt = useFormat();
@@ -66,8 +73,11 @@ export function MonitorView({
     return () => clearTimeout(timer);
   }, [typed]);
 
-  const feed = useMonitorFeed(filters);
-  const { data: agentsData } = useResource(lockedAgent ? null : ["monitor-agents"], () => api.instances.list());
+  const view = monitorLevelView(level);
+  const feed = useMonitorFeed(filters, level);
+  // The agent filter lists the agents of the one place being read; a wider view spans many.
+  const showAgentFilter = !lockedAgent && view.agentFilter;
+  const { data: agentsData } = useResource(showAgentFilter ? ["monitor-agents"] : null, () => api.instances.list());
   const agents = agentsData?.instances ?? [];
 
   // Live rows come from the activity stream the admin layout already holds open.
@@ -120,7 +130,7 @@ export function MonitorView({
     void refreshHead();
   };
 
-  const groups = feed.types.length > 0 ? [...new Set(feed.types.map((type) => type.group))] : ["agents", "automations"];
+  const groups = feed.types.length > 0 ? [...new Set(feed.types.map((type) => type.group))] : view.defaultGroups;
   const tabs = [
     { value: "all", label: t("monitor.group.all") },
     ...groups.map((group) => ({ value: group, label: labels.group(group) })),
@@ -128,7 +138,7 @@ export function MonitorView({
 
   const retentionDays = (type: string) => feed.types.find((info) => info.type === type)?.retentionDays;
   const telemetryDays = Math.max(0, ...feed.types.map((info) => info.retentionDays ?? 0));
-  const filtered = Boolean(filters.group || filters.type || filters.outcome || filters.q || (!lockedAgent && filters.agent));
+  const filtered = Boolean(filters.group || filters.type || filters.outcome || filters.q || (showAgentFilter && filters.agent));
 
   const liveLabel = !realLive ? t("monitor.live.offline") : paused ? t("monitor.live.paused") : t("monitor.live.on");
   const liveActive = realLive && !paused;
@@ -159,7 +169,7 @@ export function MonitorView({
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        {!lockedAgent && (
+        {showAgentFilter && (
           <Select value={value.agent || "_all"} onValueChange={(agent) => onChange({ ...value, agent: agent === "_all" ? "" : agent })}>
             <SelectTrigger className="w-full sm:w-[200px]" aria-label={t("monitor.filter.agentLabel")}>
               <SelectValue placeholder={t("monitor.filter.agentAll")} />
@@ -256,12 +266,14 @@ export function MonitorView({
                     }}
                   >
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{fmt.dateTime(row.time)}</TableCell>
-                    <TableCell className="hidden md:table-cell">{row.agent.name}</TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      {row.agent.name || <span className="text-muted-foreground">—</span>}
+                    </TableCell>
                     <TableCell>
                       <TypePill type={row.type} />
                     </TableCell>
-                    <TableCell className="max-w-[420px] truncate" title={row.summary}>
-                      {row.summary}
+                    <TableCell className="max-w-[420px] truncate" title={itemSummary(row, t, fmt.currency)}>
+                      {itemSummary(row, t, fmt.currency)}
                     </TableCell>
                     <TableCell>
                       <OutcomePill outcome={row.outcome} />
@@ -287,7 +299,12 @@ export function MonitorView({
         {telemetryDays > 0 && <p>{t("monitor.retention.note", { days: telemetryDays })}</p>}
       </div>
 
-      <MonitorDetailSheet item={selected} retentionDays={selected ? retentionDays(selected.type) : undefined} onClose={() => setSelected(null)} />
+      <MonitorDetailSheet
+        item={selected}
+        level={level}
+        retentionDays={selected ? retentionDays(selected.type) : undefined}
+        onClose={() => setSelected(null)}
+      />
     </div>
   );
 }

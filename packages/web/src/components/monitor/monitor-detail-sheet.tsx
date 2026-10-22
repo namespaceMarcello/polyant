@@ -5,14 +5,15 @@
 import { ExternalLink, Loader2 } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { LoadFailed } from "@/components/ui/load-failed";
-import { api, type MonitorDetail, type MonitorSection } from "@/lib/api";
+import type { MonitorDetail, MonitorSection } from "@/lib/api";
+import { DEFAULT_MONITOR_LEVEL, itemSummary, monitorConversationHref, monitorLevelView, useMonitorEndpoint, type MonitorLevel } from "@/lib/monitor/extensions";
 import { formatDuration } from "@/lib/format";
 import { useI18n } from "@/lib/i18n/context";
 import { useResource } from "@/hooks/use-resource";
 import { useTenantPaths } from "@/lib/tenant/use-tenant-paths";
 import { useFormat } from "@/lib/use-format";
 import { isLive, type AnyMonitorItem } from "@/lib/monitor/live";
-import { OutcomePill, TypePill, useMonitorLabels } from "./monitor-labels";
+import { isKeptWithConversation, OutcomePill, TypePill, useMonitorLabels } from "./monitor-labels";
 
 /** Pretty-print text that holds JSON; anything else is shown as it is. */
 function readable(text: string): string {
@@ -37,6 +38,24 @@ function SectionBody({ section }: { section: MonitorSection }) {
   );
 }
 
+/**
+ * The link to a conversation, a component of its own because building it needs the workspace
+ * of the page (`useTenantPaths` refuses to run without one), which not every Monitor has.
+ */
+function ConversationLink({ conversationId }: { conversationId: string }) {
+  const { t } = useI18n();
+  const paths = useTenantPaths();
+  return (
+    <a
+      href={monitorConversationHref(conversationId, paths)}
+      className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+    >
+      <ExternalLink className="size-3" aria-hidden />
+      {t("monitor.detail.openConversation")}
+    </a>
+  );
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-4 text-sm">
@@ -53,10 +72,12 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
  */
 export function MonitorDetailSheet({
   item,
+  level = DEFAULT_MONITOR_LEVEL,
   retentionDays,
   onClose,
 }: {
   item: AnyMonitorItem | null;
+  level?: MonitorLevel;
   /** How long rows of this item's type are kept; `null` when they have no expiry of their own. */
   retentionDays: number | null | undefined;
   onClose: () => void;
@@ -64,10 +85,11 @@ export function MonitorDetailSheet({
   const { t } = useI18n();
   const fmt = useFormat();
   const labels = useMonitorLabels();
-  const paths = useTenantPaths();
+  const endpoint = useMonitorEndpoint(level);
   const live = item !== null && isLive(item);
-  const stored = useResource<MonitorDetail>(item && !live ? ["monitor-detail", item.type, item.id] : null, () =>
-    api.monitor.detail(item!.type, item!.id),
+  const stored = useResource<MonitorDetail>(
+    item && !live && endpoint ? ["monitor-detail", endpoint.key, item.type, item.id] : null,
+    () => endpoint!.detail(item!.type, item!.id),
   );
   const detail: MonitorDetail | undefined = item ? (live ? item.detail : stored.data) : undefined;
 
@@ -77,7 +99,7 @@ export function MonitorDetailSheet({
         {item && (
           <>
             <SheetHeader className="gap-2 border-b p-5 pr-12">
-              <SheetTitle className="break-words text-base font-medium">{item.summary}</SheetTitle>
+              <SheetTitle className="break-words text-base font-medium">{itemSummary(item, t, fmt.currency)}</SheetTitle>
               <SheetDescription>{labels.typeLong(item.type)}</SheetDescription>
               <div className="flex flex-wrap gap-2 pt-1">
                 <TypePill type={item.type} />
@@ -88,17 +110,12 @@ export function MonitorDetailSheet({
             <div className="flex-1 space-y-6 overflow-y-auto p-5">
               <dl className="space-y-2">
                 <Field label={t("monitor.detail.time")}>{fmt.dateTime(item.time)}</Field>
-                <Field label={t("monitor.detail.agent")}>{item.agent.name}</Field>
+                {item.agent.name && <Field label={t("monitor.detail.agent")}>{item.agent.name}</Field>}
                 {item.durationMs !== null && <Field label={t("monitor.detail.duration")}>{formatDuration(item.durationMs)}</Field>}
-                {item.conversationId && (
+                {/* A conversation opens in the workspace it belongs to: only a view that knows the workspace can link it. */}
+                {item.conversationId && monitorLevelView(level).conversationLinks && (
                   <Field label={t("monitor.detail.conversation")}>
-                    <a
-                      href={paths.workspace(`/conversations?id=${encodeURIComponent(item.conversationId)}`)}
-                      className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
-                    >
-                      <ExternalLink className="size-3" aria-hidden />
-                      {t("monitor.detail.openConversation")}
-                    </a>
+                    <ConversationLink conversationId={item.conversationId} />
                   </Field>
                 )}
               </dl>
@@ -131,9 +148,11 @@ export function MonitorDetailSheet({
             </div>
 
             <p className="border-t p-4 text-xs text-muted-foreground">
-              {retentionDays == null
-                ? t("monitor.detail.retentionConversation")
-                : t("monitor.detail.retentionDays", { days: retentionDays })}
+              {retentionDays != null
+                ? t("monitor.detail.retentionDays", { days: retentionDays })
+                : isKeptWithConversation(item.type)
+                  ? t("monitor.detail.retentionConversation")
+                  : t("monitor.detail.retentionNone")}
             </p>
           </>
         )}

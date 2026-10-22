@@ -785,6 +785,11 @@ export interface MonitorItem {
   summary: string;
   outcome: MonitorOutcome;
   durationMs: number | null;
+  /**
+   * Short named facts the panel words in the reader's language, for a type whose summary
+   * is not one sentence the engine can write (a change: who did what to whom).
+   */
+  facts?: Record<string, string>;
 }
 
 /** A labelled block of the detail drawer; `key` names it. */

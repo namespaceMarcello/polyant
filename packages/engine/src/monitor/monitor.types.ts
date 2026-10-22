@@ -14,6 +14,16 @@ import type { TenantScope } from "../authz/scope-filter.js";
  * controller changes.
  */
 
+/**
+ * Where the Monitor is read from: a name for one view of the same stream of rows. A build
+ * with a single view only ever uses {@link DEFAULT_MONITOR_LEVEL}; a build that adds views
+ * names them and says, per source, which ones list it.
+ */
+export type MonitorLevel = string;
+
+/** The view every source appears in unless it declares otherwise. */
+export const DEFAULT_MONITOR_LEVEL: MonitorLevel = "workspace";
+
 /** What became of the thing. `blocked` is for a policy refusing it; `running` is not finished yet. */
 export type MonitorOutcome = "ok" | "error" | "blocked" | "running";
 
@@ -34,6 +44,13 @@ export interface MonitorItem {
   summary: string;
   outcome: MonitorOutcome;
   durationMs: number | null;
+  /**
+   * Short named facts the panel can word in the reader's language, for a type whose
+   * summary cannot be one sentence the engine writes (who did what to whom, which limit
+   * was reached). String to string, so a panel that does not know a type still
+   * renders it by its summary.
+   */
+  facts?: Record<string, string>;
 }
 
 /** A labelled block of the detail drawer. The panel labels it from `key`, so a new type needs no panel change. */
@@ -57,6 +74,8 @@ export interface MonitorCursor {
 /** What one source is asked for. Every field narrows; none widens. */
 export interface MonitorSourceQuery {
   scope: TenantScope;
+  /** Which Monitor is asking. A source that reads differently per level branches on it. */
+  level: MonitorLevel;
   agent?: string;
   outcome?: MonitorOutcome;
   from?: Date;
@@ -78,6 +97,10 @@ export interface MonitorSource {
   type: string;
   group: string;
   permission: PermissionKey;
+  /** The Monitors this type appears in. Absent means the default one only. */
+  levels?: readonly MonitorLevel[];
+  /** The permission to read at a level where it is not {@link permission}. */
+  permissionAt?: Partial<Record<MonitorLevel, PermissionKey>>;
   /**
    * How long rows are kept, or `null` when they are kept as long as the product data they
    * belong to. Read per request because the platform setting changes at runtime.
@@ -86,5 +109,5 @@ export interface MonitorSource {
   /** Newest first by (time, id), at most `limit` rows, agent names left as slugs. */
   list(query: MonitorSourceQuery): Promise<MonitorItem[]>;
   /** One row with its payload, or `null` when absent or outside the scope. */
-  detail(id: string, scope: TenantScope): Promise<MonitorDetail | null>;
+  detail(id: string, scope: TenantScope, level: MonitorLevel): Promise<MonitorDetail | null>;
 }

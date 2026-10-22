@@ -29,6 +29,41 @@ export function itemKey(item: MonitorItem): string {
 /** How far apart a live event and its stored row may be, in ms. A stored tool call lands up to a flush interval later. */
 const MATCH_WINDOW_MS = 20_000;
 
+/**
+ * What a build says about an event the Monitor has no type for out of the box: the
+ * row's type, group, outcome and line, and the facts the line is worded from.
+ */
+export interface LiveEventRow {
+  type: string;
+  group: string;
+  outcome: MonitorOutcome;
+  summary: string;
+  facts?: Record<string, string>;
+  /** The row's id, when it is not the event's own. */
+  id?: string;
+  /** The event is about no agent: the row carries an empty one and the event needs no instance. */
+  noAgent?: boolean;
+}
+
+const eventRows = new Map<string, (ev: FeedEvent) => LiveEventRow | null>();
+const matchers = new Map<string, (stored: MonitorItem, live: MonitorItem, windowMs: number) => boolean>();
+
+/** Turn the events of a category (`FeedEvent.category`) into rows, or `null` for one to leave out. */
+export function registerLiveEvent(category: string, build: (ev: FeedEvent) => LiveEventRow | null): void {
+  eventRows.set(category, build);
+}
+
+/**
+ * Say when a stored row of a type is the one a live row announced, for a type whose rows
+ * cannot be matched by conversation and time alone. Called after the ids were found different.
+ */
+export function registerLiveMatch(
+  type: string,
+  same: (stored: MonitorItem, live: MonitorItem, windowMs: number) => boolean,
+): void {
+  matchers.set(type, same);
+}
+
 function toolName(summary: string): string {
   const cut = summary.indexOf(":");
   return cut === -1 ? summary : summary.slice(0, cut);
@@ -39,9 +74,11 @@ function toolName(summary: string): string {
  * (replies, reasoning, memory) and for a tool call that has not ended yet.
  */
 export function liveItemFromEvent(ev: FeedEvent): LiveMonitorItem | null {
+  const build = ev.category ? eventRows.get(ev.category) : undefined;
+  const registered = build?.(ev) ?? null;
   const slug = ev.instance?.slug;
-  if (!slug) return null;
-  const agent = { slug, name: ev.instance?.name ?? slug };
+  if (!slug && !registered?.noAgent) return null;
+  const agent = slug ? { slug, name: ev.instance?.name ?? slug } : { slug: "", name: "" };
 
   let type: string;
   let group: string;
@@ -49,7 +86,10 @@ export function liveItemFromEvent(ev: FeedEvent): LiveMonitorItem | null {
   let id = ev.id;
   let summary: string;
 
-  if (ev.category === "cron") {
+  if (registered) {
+    ({ type, group, outcome, summary } = registered);
+    id = registered.id ?? ev.id;
+  } else if (ev.category === "cron") {
     type = "scheduled_run";
     group = "automations";
     outcome = "running";
@@ -79,6 +119,7 @@ export function liveItemFromEvent(ev: FeedEvent): LiveMonitorItem | null {
     summary,
     outcome,
     durationMs: ev.durationMs ?? null,
+    ...(registered?.facts ? { facts: registered.facts } : {}),
   };
   const sections: MonitorDetail["sections"] = [];
   if (ev.argsPreview) sections.push({ key: "arguments", kind: "text", value: ev.argsPreview });
@@ -96,6 +137,8 @@ function sameEvent(stored: MonitorItem, live: MonitorItem): boolean {
   if (stored.type !== live.type || stored.agent.slug !== live.agent.slug) return false;
   if (stored.id === live.id) return true;
   if (stored.type === "scheduled_run") return false;
+  const custom = matchers.get(stored.type);
+  if (custom) return custom(stored, live, MATCH_WINDOW_MS);
   if ((stored.conversationId ?? null) !== (live.conversationId ?? null)) return false;
   if (stored.type === "tool_call" && toolName(stored.summary) !== toolName(live.summary)) return false;
   return Math.abs(Date.parse(stored.time) - Date.parse(live.time)) <= MATCH_WINDOW_MS;

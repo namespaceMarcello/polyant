@@ -992,6 +992,7 @@
   "monitor.retention.note": "Le voci con più di {days} giorni vengono eliminate in automatico.",
   "monitor.detail.retentionDays": "Conservata per {days} giorni.",
   "monitor.detail.retentionConversation": "Conservata finché esiste la conversazione, senza scadenza automatica.",
+  "monitor.detail.retentionNone": "Nessuna scadenza automatica.",
   "monitor.detail.provisional": "Evento in tempo reale: i dettagli completi compaiono quando viene registrato.",
   "monitor.detail.time": "Quando",
   "monitor.detail.agent": "Agente",

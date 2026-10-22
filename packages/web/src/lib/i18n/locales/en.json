@@ -992,6 +992,7 @@
   "monitor.retention.note": "Entries older than {days} days are deleted automatically.",
   "monitor.detail.retentionDays": "Kept for {days} days.",
   "monitor.detail.retentionConversation": "Kept as long as the conversation exists, with no automatic expiry.",
+  "monitor.detail.retentionNone": "No automatic expiry.",
   "monitor.detail.provisional": "Live event: the full details appear once it is recorded.",
   "monitor.detail.time": "When",
   "monitor.detail.agent": "Agent",
