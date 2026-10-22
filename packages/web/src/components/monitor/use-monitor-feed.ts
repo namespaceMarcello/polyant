@@ -3,7 +3,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type MonitorItem, type MonitorOutcome, type MonitorTypeInfo } from "@/lib/api";
+import type { MonitorItem, MonitorOutcome, MonitorTypeInfo } from "@/lib/api";
+import { DEFAULT_MONITOR_LEVEL, useMonitorEndpoint, type MonitorLevel } from "@/lib/monitor/extensions";
 import { foldFresh } from "@/lib/monitor/live";
 
 /** What the user chose to see. Empty strings mean "no narrowing". */
@@ -48,22 +49,29 @@ function query(filters: MonitorFilters, cursor?: string) {
  *
  * An answer that arrives for filters the user has since changed is ignored.
  */
-export function useMonitorFeed(filters: MonitorFilters) {
-  const key = JSON.stringify(filters);
+export function useMonitorFeed(filters: MonitorFilters, level: MonitorLevel = DEFAULT_MONITOR_LEVEL) {
+  const endpoint = useMonitorEndpoint(level);
+  // What is read is part of the key: the same filters at another source are another list.
+  const key = JSON.stringify([level, endpoint?.key ?? null, filters]);
   const [feed, setFeed] = useState<Feed>({ key, items: [], nextCursor: null, types: [], error: undefined, settled: false });
   const [loadingMore, setLoadingMore] = useState(false);
   const currentKey = useRef(key);
   const filtersRef = useRef(filters);
+  const endpointRef = useRef(endpoint);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     currentKey.current = key;
     filtersRef.current = filters;
+    endpointRef.current = endpoint;
   });
 
   useEffect(() => {
+    // A source that is not resolved yet reads nothing.
+    const source = endpointRef.current;
+    if (!source) return;
     let stale = false;
-    api.monitor
+    source
       .list(query(filtersRef.current))
       .then((page) => {
         if (stale) return;
@@ -81,10 +89,11 @@ export function useMonitorFeed(filters: MonitorFilters) {
   const loadMore = useCallback(async () => {
     const at = currentKey.current;
     const cursor = feed.nextCursor;
-    if (!cursor) return;
+    const source = endpointRef.current;
+    if (!cursor || !source) return;
     setLoadingMore(true);
     try {
-      const page = await api.monitor.list(query(filtersRef.current, cursor));
+      const page = await source.list(query(filtersRef.current, cursor));
       if (currentKey.current !== at) return;
       setFeed((prev) => (prev.key === at ? { ...prev, items: foldFresh(prev.items, page.items), nextCursor: page.nextCursor, types: page.types } : prev));
     } catch (error) {
@@ -97,8 +106,10 @@ export function useMonitorFeed(filters: MonitorFilters) {
   /** Read the first page again and fold it in; the pages already loaded stay. */
   const refreshHead = useCallback(async () => {
     const at = currentKey.current;
+    const source = endpointRef.current;
+    if (!source) return;
     try {
-      const page = await api.monitor.list(query(filtersRef.current));
+      const page = await source.list(query(filtersRef.current));
       if (currentKey.current !== at) return;
       setFeed((prev) => (prev.key === at ? { ...prev, items: foldFresh(prev.items, page.items), types: page.types } : prev));
     } catch {

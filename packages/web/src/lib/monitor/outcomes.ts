@@ -2,8 +2,5 @@
 
 import type { MonitorOutcome } from "@/lib/api-types";
 
-/**
- * The outcomes this build offers as a filter. `blocked` is a policy refusing a call;
- * nothing here produces it, so it is not offered until a build that records it adds it.
- */
-export const MONITOR_OUTCOMES_UI = ["ok", "error", "running"] as const satisfies readonly MonitorOutcome[];
+/** The outcomes offered as a filter. `blocked` is a policy refusing a call, for a build that records it. */
+export const MONITOR_OUTCOMES_UI = ["ok", "error", "blocked", "running"] as const satisfies readonly MonitorOutcome[];

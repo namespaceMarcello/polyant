@@ -26,6 +26,14 @@ vi.mock("@/lib/tenant/use-tenant-paths", () => ({
   useTenantPaths: () => ({ workspace: (sub: string) => `/organizations/acme/workspaces/main${sub}`, org: () => "/organizations/acme" }),
 }));
 
+import {
+  registerMonitorConversationHref,
+  registerMonitorLevel,
+  registerMonitorSummary,
+  type MonitorEndpoint,
+  type MonitorListParams,
+} from "@/lib/monitor/extensions";
+import { registerMonitorLabels } from "./monitor-labels";
 import { MonitorView } from "./monitor-view";
 import { NO_FILTERS, type MonitorFilters } from "./use-monitor-feed";
 
@@ -51,9 +59,9 @@ function item(partial: Partial<MonitorItem>): MonitorItem {
   };
 }
 
-function Harness({ initial = NO_FILTERS, lockedAgent }: { initial?: MonitorFilters; lockedAgent?: string }) {
+function Harness({ initial = NO_FILTERS, lockedAgent, level }: { initial?: MonitorFilters; lockedAgent?: string; level?: string }) {
   const [value, setValue] = useState(initial);
-  return <MonitorView value={value} onChange={setValue} lockedAgent={lockedAgent} />;
+  return <MonitorView value={value} onChange={setValue} lockedAgent={lockedAgent} level={level} />;
 }
 
 beforeEach(() => {
@@ -235,5 +243,108 @@ describe("MonitorView", () => {
     renderWithProviders(<Harness />);
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     expect(screen.queryByText("Ancora niente da mostrare")).not.toBeInTheDocument();
+  });
+});
+
+describe("MonitorView with parts a build registers", () => {
+  const wideList = vi.fn<(params?: MonitorListParams) => Promise<MonitorPage>>();
+  const wideDetail = vi.fn<(type: string, id: string) => Promise<MonitorDetail>>();
+  const wide: MonitorEndpoint = { key: "wide:1", list: (params) => wideList(params), detail: (type, id) => wideDetail(type, id) };
+  let endpoint: MonitorEndpoint | null;
+
+  const note = (partial: Partial<MonitorItem> = {}): MonitorItem =>
+    item({
+      id: "00000000-0000-4000-8000-0000000000b1",
+      type: "note",
+      group: "notes",
+      agent: { slug: "", name: "" },
+      summary: "note.created",
+      durationMs: null,
+      facts: { what: "created", who: "ada" },
+      ...partial,
+    });
+
+  beforeAll(() => {
+    registerMonitorLevel("wide", { useEndpoint: () => endpoint, defaultGroups: ["notes"], agentFilter: false, conversationLinks: false });
+    registerMonitorLabels({ typeShort: { note: "monitor.type.hook" }, groups: { notes: "monitor.group.automations" } });
+    registerMonitorSummary("note", (row) => (row.facts?.what ? `${row.facts.who} ha fatto: ${row.facts.what}` : undefined));
+  });
+
+  beforeEach(() => {
+    wideList.mockReset();
+    wideDetail.mockReset();
+    endpoint = wide;
+    wideList.mockResolvedValue({ items: [note()], nextCursor: null, types: [{ type: "note", group: "notes", retentionDays: null }] });
+  });
+
+  it("reads the level from the endpoint it registered and never from the default one", async () => {
+    renderWithProviders(<Harness level="wide" />);
+    await screen.findByText("ada ha fatto: created");
+    expect(wideList).toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("waits while the endpoint is not resolved, instead of asking for nobody's data", async () => {
+    endpoint = null;
+    renderWithProviders(<Harness level="wide" />);
+    await act(async () => {});
+    expect(wideList).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("starts from the chips the level names, labelled by what was registered", async () => {
+    wideList.mockReturnValue(new Promise(() => {}));
+    renderWithProviders(<Harness level="wide" />);
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Tutto", "Automazioni"]);
+  });
+
+  it("offers no agent filter where the level says there is none, and leaves the agent column empty", async () => {
+    renderWithProviders(<Harness level="wide" />);
+    const row = (await screen.findByText("ada ha fatto: created")).closest("tr")!;
+    expect(screen.queryByRole("combobox", { name: "Agente" })).not.toBeInTheDocument();
+    expect(within(row).getByText("—")).toBeInTheDocument();
+  });
+
+  it("keeps the engine's summary for an item with no facts", async () => {
+    wideList.mockResolvedValue({ items: [note({ facts: undefined })], nextCursor: null, types: [] });
+    renderWithProviders(<Harness level="wide" />);
+    expect(await screen.findByText("note.created")).toBeInTheDocument();
+  });
+
+  it("opens the drawer from the registered endpoint, with no conversation link and no expiry for a type kept on its own", async () => {
+    const user = userEvent.setup();
+    wideList.mockResolvedValue({ items: [note({ conversationId: "sales:web:1" })], nextCursor: null, types: [{ type: "note", group: "notes", retentionDays: null }] });
+    wideDetail.mockResolvedValue({ ...note({ conversationId: "sales:web:1" }), error: null, sections: [] });
+    renderWithProviders(<Harness level="wide" />);
+    await user.click(await screen.findByText("ada ha fatto: created"));
+    const drawer = await screen.findByRole("dialog");
+    await waitFor(() => expect(wideDetail).toHaveBeenCalledWith("note", "00000000-0000-4000-8000-0000000000b1"));
+    expect(detail).not.toHaveBeenCalled();
+    expect(within(drawer).queryByRole("link", { name: /Apri la conversazione/ })).not.toBeInTheDocument();
+    expect(within(drawer).getByText("Nessuna scadenza automatica.")).toBeInTheDocument();
+  });
+
+  it("says a webhook row is kept as long as its conversation, and offers «Bloccati» as an outcome", async () => {
+    const user = userEvent.setup();
+    list.mockResolvedValue({ items: [item({ type: "webhook", group: "automations", summary: "crm → lead" })], nextCursor: null, types: TYPES });
+    detail.mockResolvedValue({ ...item({ type: "webhook", group: "automations", summary: "crm → lead" }), error: null, sections: [] });
+    renderWithProviders(<Harness />);
+    await user.click(await screen.findByText("crm → lead"));
+    expect(await screen.findByText(/finché esiste la conversazione/)).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("combobox", { name: "Esito" }));
+    expect(await screen.findByRole("option", { name: "Bloccati" })).toBeInTheDocument();
+  });
+
+  it("opens a conversation where the build says it opens", async () => {
+    const user = userEvent.setup();
+    registerMonitorConversationHref((id, paths) => paths.workspace(`/chat/${id}`));
+    list.mockResolvedValue({ items: [item({ conversationId: "c9" })], nextCursor: null, types: TYPES });
+    detail.mockResolvedValue({ ...item({ conversationId: "c9" }), error: null, sections: [] });
+    renderWithProviders(<Harness />);
+    await user.click(await screen.findByText("crm: create_contact"));
+    const drawer = await screen.findByRole("dialog");
+    expect(within(drawer).getByRole("link", { name: /Apri la conversazione/ })).toHaveAttribute("href", "/organizations/acme/workspaces/main/chat/c9");
+    registerMonitorConversationHref((id, paths) => paths.workspace(`/conversations?id=${encodeURIComponent(id)}`));
   });
 });

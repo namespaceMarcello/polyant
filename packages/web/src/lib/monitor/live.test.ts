@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { FeedEvent } from "@/lib/activity-stream/types";
 import type { MonitorItem } from "@/lib/api-types";
-import { foldFresh, liveItemFromEvent, liveMatches, withLive } from "./live";
+import { foldFresh, liveItemFromEvent, liveMatches, registerLiveEvent, registerLiveMatch, withLive } from "./live";
 
 const instance = { id: "i1", slug: "sales", name: "Sales", icon: null };
 
@@ -48,6 +48,36 @@ describe("liveItemFromEvent", () => {
 
   it("ignores an event with no agent", () => {
     expect(liveItemFromEvent(ev({ instance: undefined, tool: { name: "a", summary: "" }, status: "success" }))).toBeNull();
+  });
+});
+
+describe("registered live events", () => {
+  const custom = (partial: Partial<FeedEvent> = {}) => ev({ id: "n:1", category: "custom" as FeedEvent["category"], text: "note", instance: undefined, ...partial });
+
+  it("leaves out an event of a category nobody registered", () => {
+    expect(liveItemFromEvent(custom())).toBeNull();
+  });
+
+  it("turns a registered category into a row with its facts, and an empty agent when it is about none", () => {
+    registerLiveEvent("custom", (e) => ({ type: "note", group: "notes", outcome: "ok", summary: e.text, facts: { kind: "x" }, noAgent: true }));
+    const row = liveItemFromEvent(custom());
+    expect(row).toMatchObject({ type: "note", group: "notes", agent: { slug: "", name: "" }, summary: "note", facts: { kind: "x" }, conversationId: null });
+    expect(row?.detail.sections).toEqual([]);
+  });
+
+  it("still needs an agent for a registered category that is about one", () => {
+    registerLiveEvent("custom", (e) => ({ type: "note", group: "notes", outcome: "blocked", summary: e.text, id: "own-id" }));
+    expect(liveItemFromEvent(custom())).toBeNull();
+    expect(liveItemFromEvent(custom({ instance }))).toMatchObject({ type: "note", id: "own-id", outcome: "blocked", agent: { slug: "sales" } });
+  });
+
+  it("drops a live row once the stored row its type's matcher accepts is read, and not another", () => {
+    registerLiveEvent("custom", (e) => ({ type: "note", group: "notes", outcome: "ok", summary: e.text, facts: { what: "a" }, noAgent: true }));
+    registerLiveMatch("note", (a, b, windowMs) => a.facts?.what === b.facts?.what && Math.abs(Date.parse(a.time) - Date.parse(b.time)) <= windowMs);
+    const live = liveItemFromEvent(custom())!;
+    const row = stored({ type: "note", group: "notes", agent: { slug: "", name: "" }, conversationId: null, facts: { what: "a" } });
+    expect(withLive([row], [live])).toHaveLength(1);
+    expect(withLive([{ ...row, facts: { what: "b" } }], [live])).toHaveLength(2);
   });
 });
 
