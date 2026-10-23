@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { eq, and, desc, asc, sql, count, inArray, isNotNull } from "drizzle-orm";
+import { eq, and, desc, asc, sql, count, inArray } from "drizzle-orm";
 import type { ModelMessage } from "ai";
 import { db, type DbTransaction } from "../database/client.js";
 import { conversations, conversationMessages, conversationState, type AttachmentMeta, type LlmDebugPayload, type ReasoningDetail, type StepDetail } from "./schema.js";
@@ -345,26 +345,6 @@ export class ConversationStore {
 
     this.summaryCache.set(conversationId, safe);
     return true;
-  }
-
-  /**
-   * Stamp `summary_through` on a stored summary without rewriting it, only while
-   * the marker still equals `cover.expected` (history-window.ts `pin`). Returns
-   * whether the row was written.
-   */
-  async pinSummaryThrough(conversationId: string, cover: { expected: number | null; through: number }): Promise<boolean> {
-    const written = await db
-      .update(conversations)
-      .set({ summaryThrough: cover.through })
-      .where(
-        and(
-          eq(conversations.conversationId, conversationId),
-          isNotNull(conversations.summary),
-          sql`${conversations.summaryThrough} IS NOT DISTINCT FROM ${cover.expected}`,
-        ),
-      )
-      .returning({ id: conversations.id });
-    return written.length > 0;
   }
 
   /** Get context prompt for a webhook-triggered conversation. Returns null if not set. */

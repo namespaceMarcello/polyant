@@ -285,17 +285,7 @@ export async function preparePipeline(
     blockExchanges,
     userMessageCount: snapshot?.userMessageCount ?? undefined,
     summaryThrough: snapshot?.summaryThrough ?? null,
-    hasSummary: Boolean(snapshot?.summary),
   });
-  // Fix the coverage of a summary without a valid marker the first time it is
-  // computed (history-window.ts `pin`). No summary call; the planned refresh
-  // expects the stamped value. Auto-task turns write nothing, as before.
-  if (windowPlan.pin && !isAutoTaskTurn) {
-    await conversationStore.pinSummaryThrough(conversationId, windowPlan.pin).catch((err) => {
-      log.error("pipeline", `Failed to pin the summary marker of conversation ${conversationId}`, err);
-      return false;
-    });
-  }
   if (windowPlan.unreadExchanges > 0) {
     log.warn(
       "pipeline",
@@ -309,12 +299,14 @@ export async function preparePipeline(
   const summaryCover = windowPlan.summarize
     ? { expected: windowPlan.summarize.expected, through: windowPlan.summarize.through }
     : undefined;
-  // The refresh always builds on the stored summary. The model sees it when rows
-  // left the window, or when the marker is 0 (room compaction removed the rows it
-  // covered); not for a summary trusted for no exchange, and on auto-task turns
-  // only past the window, as the 15-row threshold did.
+  // The refresh always builds on the stored summary. The model sees it when the
+  // window starts after the conversation's first row, or when the summary is
+  // trusted for no exchange (marker 0 after room compaction removed the rows it
+  // covered, null, or past the count): it then covers rows no longer read, or of
+  // unknown extent, and can at worst repeat what the window holds. On auto-task
+  // turns only past the window, as the 15-row threshold did.
   const storedSummary: string | undefined = snapshot?.summary ?? undefined;
-  const showSummary = hasOverflow || (!isAutoTaskTurn && snapshot?.summaryThrough === 0);
+  const showSummary = hasOverflow || (!isAutoTaskTurn && windowPlan.covered === 0);
   const conversationSummary: string | undefined = showSummary ? storedSummary : undefined;
   let history: ModelMessage[] | undefined = hasOverflow
     ? conversationHistory.slice(windowPlan.start)

@@ -13,6 +13,7 @@ import { asInstanceSlug } from "../instances/identifiers.js";
 import { allTenantsScope } from "../authz/scope-filter.js";
 import { db } from "../database/client.js";
 import { sql } from "drizzle-orm";
+import { readFileSync } from "node:fs";
 import { HISTORY_READ_LIMIT, planHistoryWindow } from "../history-window.js";
 
 const DB_AVAILABLE = await resolveDatabaseAvailability();
@@ -21,7 +22,7 @@ const LEGACY = `${CID}:legacy`;
 const SNAP = `${CID}:snapshot`;
 const RACE = `${CID}:race`;
 const PLAN = `${CID}:plan`;
-const PIN = `${CID}:pin`;
+const BACKFILL = `${CID}:backfill`;
 const SLUG = asInstanceSlug("itest-summary-through");
 
 /** The summary state a turn reads with its rows (`getHistorySnapshot`). */
@@ -43,8 +44,17 @@ async function exchanges(cid: string, n: number) {
 describe("conversation summary marker (integration)", () => {
   afterAll(async () => {
     if (!DB_AVAILABLE) return;
-    for (const cid of [CID, LEGACY, SNAP, RACE, PLAN, PIN]) {
+    for (const cid of [CID, LEGACY, SNAP, RACE, PLAN]) {
       await conversationStore.deleteConversation(cid, allTenantsScope("integration test cleanup")).catch(() => {});
+    }
+    for (let turns = 1; turns <= 26; turns++) {
+      for (const systemRows of [false, true]) {
+        for (const failedFinal of [0, 1, 2, 3]) {
+          await conversationStore
+            .deleteConversation(`${BACKFILL}:${turns}:${systemRows}:${failedFinal}`, allTenantsScope("integration test cleanup"))
+            .catch(() => {});
+        }
+      }
     }
   });
 
@@ -138,15 +148,79 @@ describe("conversation summary marker (integration)", () => {
     expect((await stateOf(RACE)).userMessageCount).toBe(25);
   });
 
-  it.skipIf(!DB_AVAILABLE)("stamps the marker on a stored summary without one, once, and never without a summary", async () => {
-    await conversationStore.ensureConversation(PIN, SLUG);
-    await exchanges(PIN, 3);
-    expect(await conversationStore.pinSummaryThrough(PIN, { expected: null, through: 1 })).toBe(false);
-    await conversationStore.updateSummary(PIN, "old summary");
-    expect(await conversationStore.pinSummaryThrough(PIN, { expected: null, through: 1 })).toBe(true);
-    // A second turn that computed the coverage from newer rows finds the marker already set.
-    expect(await conversationStore.pinSummaryThrough(PIN, { expected: null, through: 2 })).toBe(false);
-    expect(await stateOf(PIN)).toEqual({ summary: "old summary", summaryThrough: 1, userMessageCount: 3 });
+  it.skipIf(!DB_AVAILABLE)("backfills a marker no later than the old summary's coverage, through two failed final refreshes", async () => {
+    // The backfill statement migration 0097 runs, limited to this test's conversations.
+    const migration = readFileSync(new URL("../database/migrations/0097_conversation_summary_through.sql", import.meta.url), "utf8");
+    const backfill = migration.slice(migration.indexOf("UPDATE")).trim().replace(/;$/, "");
+    type Row = { role: string; content: string };
+    let lossCases = 0;
+    let cases = 0;
+    for (let turns = 1; turns <= 26; turns++) {
+      for (const systemRows of [false, true]) {
+        for (const failedFinal of [0, 1, 2, 3]) {
+          // The window before the marker (pipeline.ts up to 8b6f76f9), turn by turn: read the last 16
+          // rows and, past 15, fold all but the last 10 into the summary. The last `failedFinal`
+          // refreshes fail, so the summary keeps the previous turn's coverage.
+          const rows: Row[] = [];
+          const folded = new Set<string>();
+          for (let i = 0; i < turns; i++) {
+            const read = rows.slice(-16);
+            if (read.length > 15 && i < turns - failedFinal) for (const r of read.slice(0, -10)) folded.add(r.content);
+            if (systemRows && i % 3 === 1) rows.push({ role: "system", content: `s${i}` });
+            rows.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}` });
+          }
+          const cid = `${BACKFILL}:${turns}:${systemRows}:${failedFinal}`;
+          await conversationStore.ensureConversation(cid, SLUG);
+          const t0 = Date.now() - 3_600_000;
+          await conversationStore.appendMessages(cid, rows.map((r, i) => ({ ...r, createdAt: new Date(t0 + i * 1000) })));
+          if (folded.size > 0) await conversationStore.updateSummary(cid, "old summary");
+        }
+      }
+    }
+    // Run twice: the second run finds no unmarked summary and changes nothing.
+    await db.execute(sql.raw(`${backfill} AND "conversation_id" LIKE '${BACKFILL}:%'`));
+    const again = await db.execute(sql.raw(`${backfill} AND "conversation_id" LIKE '${BACKFILL}:%' RETURNING 1`));
+    expect((again as unknown as unknown[]).length).toBe(0);
+
+    for (let turns = 1; turns <= 26; turns++) {
+      for (const systemRows of [false, true]) {
+        for (const failedFinal of [0, 1, 2, 3]) {
+          const rows: Row[] = [];
+          const folded = new Set<string>();
+          for (let i = 0; i < turns; i++) {
+            const read = rows.slice(-16);
+            if (read.length > 15 && i < turns - failedFinal) for (const r of read.slice(0, -10)) folded.add(r.content);
+            if (systemRows && i % 3 === 1) rows.push({ role: "system", content: `s${i}` });
+            rows.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}` });
+          }
+          const snap = await conversationStore.getHistorySnapshot(`${BACKFILL}:${turns}:${systemRows}:${failedFinal}`, HISTORY_READ_LIMIT);
+          expect(snap.summaryThrough).toBe(folded.size > 0 ? Math.max(turns - 8, 0) : null);
+          // The old window would still have folded every row of its next read: only older unfolded rows were lost there.
+          const oldLost = rows.slice(0, -16).filter((r) => r.role === "user" && !folded.has(r.content)).map((r) => r.content);
+          for (const blockExchanges of [5, 1]) {
+            const plan = planHistoryWindow(snap.rows, {
+              blockExchanges,
+              userMessageCount: snap.userMessageCount ?? undefined,
+              summaryThrough: snap.summaryThrough,
+            });
+            const seen = new Set(snap.rows.slice(plan.start).map((r) => r.content));
+            const missing = rows.filter((r) => r.role === "user" && !seen.has(r.content) && !folded.has(r.content)).map((r) => r.content);
+            const shape = { turns, systemRows, failedFinal, blockExchanges };
+            if (failedFinal <= 2) {
+              expect({ ...shape, missing }).toEqual({ ...shape, missing: [] });
+            } else {
+              // A third failed refresh loses no exchange the old window had not already lost.
+              expect({ ...shape, extra: missing.filter((c) => !oldLost.includes(c)) }).toEqual({ ...shape, extra: [] });
+              if (missing.length > 0) lossCases++;
+            }
+            cases++;
+          }
+        }
+      }
+    }
+    expect(cases).toBe(26 * 2 * 4 * 2);
+    // The k=3 limit is real: some conversations lose the exchange the old window lost.
+    expect(lossCases).toBeGreaterThan(0);
   });
 
   it.skipIf(!DB_AVAILABLE)("gives every row the planned window holds its replay columns, whatever the stored state", async () => {
@@ -181,7 +255,6 @@ describe("conversation summary marker (integration)", () => {
           blockExchanges,
           userMessageCount: snap.userMessageCount ?? undefined,
           summaryThrough: snap.summaryThrough,
-          hasSummary: Boolean(snap.summary),
         });
         const window = snap.rows.slice(plan.start);
         expect(window.length).toBeGreaterThan(0);

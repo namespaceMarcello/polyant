@@ -56,17 +56,27 @@ export interface HistoryWindowState {
   blockExchanges?: number;
   /** User rows persisted in the whole conversation, from the snapshot `rows` were read in; undefined when unknown. */
   userMessageCount?: number;
-  /** Exchanges the stored summary covers (`conversations.summary_through`); null when it was never recorded. */
+  /**
+   * Exchanges the stored summary covers (`conversations.summary_through`). Null (no
+   * summary yet, or one an engine without the marker wrote during a rollout) and a
+   * value past the count (rows deleted since) are trusted for no exchange: the
+   * window starts at the first row read, and a summary of unknown extent can only
+   * repeat an exchange the window also holds.
+   */
   summaryThrough?: number | null;
-  /** True when a summary text is stored. A summary without a marker predates it and is trusted up to the block start. */
-  hasSummary?: boolean;
 }
 
 export interface HistoryWindowPlan {
   /** Index of the first row the model sees. */
   start: number;
-  /** True when rows before `start` exist, so the stored summary stands in for them. */
+  /**
+   * True when the window starts after the conversation's first row: rows before
+   * `start`, or exchanges older than the rows read, exist, so the stored summary
+   * stands in for them.
+   */
   hasOverflow: boolean;
+  /** Exchanges the stored summary is trusted to cover: the marker, or 0 when it is null or past the count. */
+  covered: number;
   /**
    * Rows `[from, to)` to fold into the summary after this turn, and the marker to
    * write with it: `expected` is the stored value the write must still find, so a
@@ -78,14 +88,6 @@ export interface HistoryWindowPlan {
    * failed refreshes): the planned refresh marks them covered without reading them.
    */
   unreadExchanges: number;
-  /**
-   * The marker to stamp, without a summary call, on a summary whose own marker is
-   * missing or past the count: the coverage computed here from the rows read. That
-   * value grows with every new row, so it is fixed the first time it is computed,
-   * and a failed refresh cannot make a later turn trust the old summary further.
-   * `summarize.expected` assumes the stamp landed.
-   */
-  pin: { expected: number | null; through: number } | undefined;
 }
 
 /**
@@ -115,27 +117,11 @@ export function planHistoryWindow(
   };
 
   const block = state.blockExchanges ?? HISTORY_BLOCK_EXCHANGES;
-  const blockStart = windowStartExchange(exchanges, block);
-  /**
-   * What a summary written before the marker covers. The old window (pipeline.ts
-   * up to 8b6f76f9) read 16 rows and, past 15, kept the last 10 and folded the
-   * rest. Its last turn persisted the last user row read (with the system rows
-   * just before it), so the summary covers the exchanges wholly before the 10
-   * rows ahead of those; the block start caps it on the turns that follow, until
-   * a refresh writes the marker.
-   */
-  const legacyCovered = (): number => {
-    if (userIdx.length === 0) return 0;
-    let end = userIdx[userIdx.length - 1];
-    while (end > 0 && rows[end - 1].role === "system") end--;
-    return Math.min(blockStart, end > 10 ? ordinalOf(end - 10) : firstOrdinal);
-  };
   const stored = state.summaryThrough ?? null;
-  // A marker past the count (rows deleted since) or a summary written before the
-  // marker existed: trust it only as far as the old window folded, and pin that.
-  const markerValid = stored !== null && stored <= exchanges;
-  const legacy = !markerValid && Boolean(state.hasSummary);
-  const covered = markerValid ? stored : legacy ? legacyCovered() : 0;
+  // Migration 0097 stamped every summary stored before the marker existed. A null
+  // marker beside a summary (an engine without the marker wrote it during a
+  // rollout) or one past the count (rows deleted since) is trusted for nothing.
+  const covered = stored !== null && stored <= exchanges ? stored : 0;
   const coveredRow = rowOf(covered);
 
   // Size cap: move to later exchanges while the window is over budget. The
@@ -163,14 +149,14 @@ export function planHistoryWindow(
   const to = rowOf(through);
   const summarize =
     through > covered && to > coveredRow
-      ? { from: coveredRow, to, expected: legacy ? covered : stored, through }
+      ? { from: coveredRow, to, expected: stored, through }
       : undefined;
 
   return {
     start,
-    hasOverflow: covered > 0 || start > 0,
+    hasOverflow: covered > 0 || start > 0 || firstOrdinal > 0,
+    covered,
     summarize,
     unreadExchanges: summarize ? Math.max(0, firstOrdinal - covered) : 0,
-    pin: legacy ? { expected: stored, through: covered } : undefined,
   };
 }
