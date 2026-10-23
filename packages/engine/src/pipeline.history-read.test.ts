@@ -49,6 +49,7 @@ const msg = {
 const config = (replay: boolean) => ({
   toolResultsInHistoryEnabled: replay,
   langsmith: { enabled: false },
+  cacheConfig: { enabled: true, ttl: "1h" },
 });
 
 describe("preparePipeline — recent messages are read once", () => {

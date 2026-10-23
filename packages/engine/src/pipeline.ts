@@ -34,12 +34,13 @@ import { getEnabledHooks } from "./hooks/hooks.store.js";
 import { getHookRegistry } from "./hooks/hook-registry.js";
 import type { ResponseGeneratedOutcome } from "./hooks/response-replay.js";
 import {
-  HISTORY_BLOCK_EXCHANGES,
   HISTORY_CHAR_BUDGET,
   HISTORY_MIN_EXCHANGES,
   HISTORY_READ_LIMIT,
+  historyBlockExchanges,
   planHistoryWindow,
 } from "./history-window.js";
+import { cacheSupported } from "./ai-gateway/config.js";
 import { resolveDatetimeSettings, UNSET_AGENT_SETTINGS } from "./instances/agent-settings.js";
 import { createLogger } from "./utils/create-logger.js";
 
@@ -278,12 +279,19 @@ export async function preparePipeline(
   }));
   const userRowsRead = windowRows.filter((r) => r.role === "user").length;
   const charsRead = windowRows.reduce((n, r) => n + r.content.length, 0);
+  // Without a prompt cache (turned off for the agent, or a model the catalog marks
+  // as uncached) the window slides one exchange at a time, as short as a fixed one.
+  const { provider, model } = instanceConfig;
+  const blockExchanges = historyBlockExchanges(
+    instanceConfig.cacheConfig.enabled && (!provider || !model || cacheSupported(provider, model)),
+  );
   const summaryState =
-    Math.max(persistedUserMessages ?? 0, userRowsRead) >= HISTORY_MIN_EXCHANGES + HISTORY_BLOCK_EXCHANGES - 1 ||
+    Math.max(persistedUserMessages ?? 0, userRowsRead) >= HISTORY_MIN_EXCHANGES + blockExchanges - 1 ||
     charsRead > HISTORY_CHAR_BUDGET
       ? await conversationStore.getSummaryState(conversationId).catch(() => null)
       : null;
   const windowPlan = planHistoryWindow(windowRows, {
+    blockExchanges,
     userMessageCount: summaryState?.userMessageCount ?? persistedUserMessages,
     summaryThrough: summaryState?.summaryThrough ?? null,
     hasSummary: Boolean(summaryState?.summary),

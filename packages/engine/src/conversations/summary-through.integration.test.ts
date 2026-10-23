@@ -17,6 +17,7 @@ const CID = `itest:summary-through:${Date.now()}`;
 const LEGACY = `${CID}:legacy`;
 const SLUG = asInstanceSlug("itest-summary-through");
 
+/** Persist `n` user/assistant exchanges (`u0`/`a0` …) on conversation `cid`. */
 async function exchanges(cid: string, n: number) {
   for (let i = 0; i < n; i++) {
     await conversationStore.appendMessages(cid, [

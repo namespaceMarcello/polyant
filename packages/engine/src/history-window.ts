@@ -32,13 +32,28 @@ export const HISTORY_READ_LIMIT = 40;
  */
 export const HISTORY_CHAR_BUDGET = 40_000;
 
-/** First exchange (0-based user ordinal) the block layout starts at when `exchanges` user rows are persisted. */
-export function windowStartExchange(exchanges: number): number {
+/**
+ * First exchange (0-based user ordinal) the block layout starts at when `exchanges` user rows are persisted.
+ * With `block` 1 the start follows every exchange: the window keeps the last {@link HISTORY_MIN_EXCHANGES}.
+ */
+export function windowStartExchange(exchanges: number, block: number = HISTORY_BLOCK_EXCHANGES): number {
   const over = Math.max(0, exchanges - HISTORY_MIN_EXCHANGES);
-  return HISTORY_BLOCK_EXCHANGES * Math.floor(over / HISTORY_BLOCK_EXCHANGES);
+  return block * Math.floor(over / block);
+}
+
+/**
+ * Exchanges the window start advances by for an agent. Blocks only pay off where
+ * the provider caches the prompt prefix: without a cache every message of a longer
+ * window is billed again on every call, so the start follows every exchange and the
+ * window stays as short as a fixed one.
+ */
+export function historyBlockExchanges(promptCacheActive: boolean): number {
+  return promptCacheActive ? HISTORY_BLOCK_EXCHANGES : 1;
 }
 
 export interface HistoryWindowState {
+  /** Exchanges the start advances by (see {@link historyBlockExchanges}); defaults to {@link HISTORY_BLOCK_EXCHANGES}. */
+  blockExchanges?: number;
   /** User rows persisted in the whole conversation, read in a statement after `rows`; undefined when unknown. */
   userMessageCount?: number;
   /** Exchanges the stored summary covers (`conversations.summary_through`); null when it was never recorded. */
@@ -88,7 +103,8 @@ export function planHistoryWindow(
     return k < 0 ? exchanges : firstOrdinal + k;
   };
 
-  const blockStart = windowStartExchange(exchanges);
+  const block = state.blockExchanges ?? HISTORY_BLOCK_EXCHANGES;
+  const blockStart = windowStartExchange(exchanges, block);
   const stored = state.summaryThrough ?? null;
   // A marker past the count (rows deleted since) or a summary written before the
   // marker existed: fall back to the block layout.
@@ -115,7 +131,7 @@ export function planHistoryWindow(
 
   // Fold into the summary what the next turn's window must leave out: the next
   // block advance, and the text over budget.
-  let through = windowStartExchange(exchanges + 1);
+  let through = windowStartExchange(exchanges + 1, block);
   if (start > coveredRow) through = Math.max(through, ordinalOf(cut(HISTORY_CHAR_BUDGET / 2)));
   const to = rowOf(through);
   const summarize =
