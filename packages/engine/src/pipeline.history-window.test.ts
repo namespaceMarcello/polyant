@@ -229,3 +229,121 @@ describe("preparePipeline — block history window", () => {
     expect(starts).toEqual([8, 10, 12]);
   });
 });
+
+type Row = { role: string; content: string };
+
+/** Persist `rows` as they stand, with the stored summary state read alongside them. */
+function persistRows(rows: Row[], state: { through: number | null; summary: string | null }) {
+  const users = rows.filter((r) => r.role === "user").length;
+  mockEnsure.mockResolvedValue({ created: false, userMessageCount: users });
+  mockGetRecentMessages.mockImplementation(async (_id: string, limit: number) => rows.slice(-limit));
+  mockSummaryState.mockResolvedValue({ summary: state.summary, summaryThrough: state.through, userMessageCount: users });
+}
+
+/** What the window before the marker (pipeline.ts up to 8b6f76f9) folded on a turn: read 16 rows, past 15 keep the last 10. */
+function oldCodeFolds(rows: Row[]): Row[] {
+  const read = rows.slice(-16);
+  return read.length > 15 ? read.slice(0, -10) : [];
+}
+
+describe("preparePipeline — summary written before the marker existed", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /**
+   * Old-code turns up to `oldTurns` exchanges (each folding what it dropped), then
+   * new-code turns writing back the marker of every refresh. On every new turn,
+   * each exchange is in the window or in what the summary folded.
+   */
+  async function upgrade(oldTurns: number, cacheEnabled: boolean, systemOnLastOldTurn = false) {
+    agent({ cacheEnabled });
+    const rows: Row[] = [];
+    const folded = new Set<string>();
+    for (let i = 0; i < oldTurns; i++) {
+      for (const r of oldCodeFolds(rows)) folded.add(r.content);
+      if (systemOnLastOldTurn && i === oldTurns - 1) rows.push({ role: "system", content: `s${i}` });
+      rows.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}` });
+    }
+    let through: number | null = null;
+    for (let i = oldTurns; i < oldTurns + 12; i++) {
+      persistRows(rows, { through, summary: folded.size > 0 ? "summary" : null });
+      const ctx = await preparePipeline(msg);
+      const seen = new Set(texts(ctx.history));
+      const missing = rows.filter((r) => r.role === "user" && !seen.has(r.content) && !folded.has(r.content));
+      expect({ oldTurns, cacheEnabled, turn: i, missing: missing.map((r) => r.content) }).toEqual({
+        oldTurns,
+        cacheEnabled,
+        turn: i,
+        missing: [],
+      });
+      for (const m of texts(ctx.droppedMessages) ?? []) folded.add(m);
+      if (ctx.summaryCover) through = ctx.summaryCover.through;
+      rows.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}` });
+    }
+  }
+
+  it("keeps every exchange the old window had not folded, with or without blocks", async () => {
+    for (let oldTurns = 8; oldTurns <= 24; oldTurns++) {
+      await upgrade(oldTurns, true);
+      await upgrade(oldTurns, false);
+    }
+  });
+
+  it("counts the system rows the last old turn persisted before its user row", async () => {
+    for (let oldTurns = 9; oldTurns <= 14; oldTurns++) {
+      await upgrade(oldTurns, true, true);
+      await upgrade(oldTurns, false, true);
+    }
+  });
+});
+
+describe("preparePipeline — history read edge cases", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    agent();
+  });
+
+  const clientHistory = [{ role: "user", content: "from the client" }];
+  const withClientHistory = { ...(msg as object), metadata: { conversationHistory: clientHistory } } as never;
+
+  it("falls back to the client-side history when the history read fails or returns no rows", async () => {
+    for (const read of [() => Promise.reject(new Error("db down")), async () => []]) {
+      persist(20, { through: 15 });
+      mockGetRecentMessages.mockImplementation(read);
+      const ctx = await preparePipeline(withClientHistory);
+      expect(ctx.history).toEqual(clientHistory);
+      expect(ctx.hasOverflow).toBe(false);
+      expect(ctx.conversationSummary).toBeUndefined();
+      expect(ctx.droppedMessages).toBeUndefined();
+      expect(ctx.summaryCover).toBeUndefined();
+    }
+  });
+
+  it("shows a stored summary whose marker is 0 and refreshes on top of it", async () => {
+    // Room compaction moved the marker back to 0; the summary text is still stored.
+    persist(14, { through: 0 });
+    mockSummaryState.mockResolvedValue({ summary: "room summary", summaryThrough: 0, userMessageCount: 14 });
+    const ctx = await preparePipeline(msg);
+    expect(ctx.history?.[0]?.content).toBe("u0");
+    expect(ctx.conversationSummary).toBe("room summary");
+    expect(ctx.summaryCover).toEqual({ expected: 0, through: 10 });
+  });
+
+  it("warns, with ids only, when the marker is older than the rows read", async () => {
+    const out: string[] = [];
+    const capture = (chunk: unknown) => (out.push(String(chunk)), true);
+    vi.spyOn(process.stderr, "write").mockImplementation(capture);
+    vi.spyOn(process.stdout, "write").mockImplementation(capture);
+    // 30 exchanges: the 40 rows read start at u10, the marker is still 5.
+    persist(30, { through: 5 });
+    await preparePipeline(msg);
+    const line = out.find((l) => l.includes("older than the rows read"));
+    expect(line).toContain("5 exchanges");
+    expect(line).not.toMatch(/\bu\d+\b/);
+    // With the marker inside the rows read there is nothing to warn about.
+    out.length = 0;
+    persist(30, { through: 20 });
+    await preparePipeline(msg);
+    expect(out.some((l) => l.includes("older than the rows read"))).toBe(false);
+    vi.restoreAllMocks();
+  });
+});

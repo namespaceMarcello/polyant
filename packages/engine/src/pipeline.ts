@@ -285,38 +285,48 @@ export async function preparePipeline(
   const blockExchanges = historyBlockExchanges(
     instanceConfig.cacheConfig.enabled && (!provider || !model || cacheSupported(provider, model)),
   );
+  // No rows read (a new conversation, or the read failed): no window and no
+  // summary; the client-side history in the metadata stands in, as before.
   const summaryState =
-    Math.max(persistedUserMessages ?? 0, userRowsRead) >= HISTORY_MIN_EXCHANGES + blockExchanges - 1 ||
-    charsRead > HISTORY_CHAR_BUDGET
+    conversationHistory.length > 0 &&
+    (Math.max(persistedUserMessages ?? 0, userRowsRead) >= HISTORY_MIN_EXCHANGES + blockExchanges - 1 ||
+      charsRead > HISTORY_CHAR_BUDGET)
       ? await conversationStore.getSummaryState(conversationId).catch(() => null)
       : null;
-  const windowPlan = planHistoryWindow(windowRows, {
-    blockExchanges,
-    userMessageCount: summaryState?.userMessageCount ?? persistedUserMessages,
-    summaryThrough: summaryState?.summaryThrough ?? null,
-    hasSummary: Boolean(summaryState?.summary),
-    refreshAllowed:
-      summaryState !== null && persistedUserMessages !== undefined && summaryState.userMessageCount === persistedUserMessages,
-  });
+  const windowPlan =
+    conversationHistory.length > 0
+      ? planHistoryWindow(windowRows, {
+          blockExchanges,
+          userMessageCount: summaryState?.userMessageCount ?? persistedUserMessages,
+          summaryThrough: summaryState?.summaryThrough ?? null,
+          hasSummary: Boolean(summaryState?.summary),
+          refreshAllowed:
+            summaryState !== null &&
+            persistedUserMessages !== undefined &&
+            summaryState.userMessageCount === persistedUserMessages,
+        })
+      : { start: 0, hasOverflow: false, summarize: undefined, unreadExchanges: 0 };
+  if (windowPlan.unreadExchanges > 0) {
+    log.warn(
+      "pipeline",
+      `History window: ${windowPlan.unreadExchanges} exchanges of conversation ${conversationId} are older than the rows read and leave the window unsummarized`,
+    );
+  }
   const hasOverflow = windowPlan.hasOverflow;
-  let history: ModelMessage[] | undefined;
-  let conversationSummary: string | undefined;
   const droppedMessages: ModelMessage[] | undefined = windowPlan.summarize
     ? conversationHistory.slice(windowPlan.summarize.from, windowPlan.summarize.to)
     : undefined;
   const summaryCover = windowPlan.summarize
     ? { expected: windowPlan.summarize.expected, through: windowPlan.summarize.through }
     : undefined;
-
-  if (hasOverflow) {
-    conversationSummary = summaryState?.summary ?? undefined;
-    history = conversationHistory.slice(windowPlan.start);
-  } else {
-    conversationSummary = undefined;
-    history = conversationHistory.length > 0
+  // A stored summary is always shown, and the refresh always builds on it: a
+  // marker at 0 (room compaction) still has text the model must not lose.
+  const conversationSummary: string | undefined = summaryState?.summary ?? undefined;
+  let history: ModelMessage[] | undefined = hasOverflow
+    ? conversationHistory.slice(windowPlan.start)
+    : conversationHistory.length > 0
       ? conversationHistory
       : (msg.metadata?.conversationHistory as ModelMessage[] | undefined);
-  }
 
   // Tool-result replay (opt-in per instance): rebuild the in-window history from
   // the raw rows read above, reconstructing tool_use/tool_result blocks from the
@@ -496,6 +506,34 @@ export interface AfterResponseOptions {
   receivedAt?: Date;
 }
 
+/**
+ * Summary refreshes running in this process, or landed in the last minute, by
+ * conversation and the marker they start from. A turn that starts before the
+ * previous turn's refresh lands plans the same one; the compare-and-set write
+ * would discard it, but only after paying for its summary call. Skipping it is
+ * safe: the marker stays, so the window keeps those exchanges and a later turn
+ * plans the refresh again. Value: until when the claim holds.
+ */
+const summaryClaims = new Map<string, number>();
+const SUMMARY_CLAIM_LANDED_MS = 60_000;
+const SUMMARY_CLAIMS_MAX = 10_000;
+
+function claimSummaryRefresh(opts: AfterResponseOptions): { landed(): void; release(): void } | undefined {
+  if (!opts.summaryCover) return { landed() {}, release() {} };
+  const key = `${opts.conversationId}|${opts.summaryCover.expected ?? "null"}`;
+  if ((summaryClaims.get(key) ?? 0) > Date.now()) return undefined;
+  summaryClaims.delete(key);
+  summaryClaims.set(key, Number.POSITIVE_INFINITY);
+  if (summaryClaims.size > SUMMARY_CLAIMS_MAX) {
+    const oldest = summaryClaims.keys().next().value;
+    if (oldest !== undefined) summaryClaims.delete(oldest);
+  }
+  return {
+    landed: () => void summaryClaims.set(key, Date.now() + SUMMARY_CLAIM_LANDED_MS),
+    release: () => void summaryClaims.delete(key),
+  };
+}
+
 export function afterResponse(opts: AfterResponseOptions): void {
   // Skip automated Open WebUI tasks entirely
   if (isAutoTask(opts.userMessage)) return;
@@ -597,11 +635,13 @@ export function afterResponse(opts: AfterResponseOptions): void {
     });
 
     // 2. Update conversation summary (only when sliding window overflows)
-    if (opts.needsSummaryUpdate && opts.droppedMessages?.length) {
+    const dropped = opts.needsSummaryUpdate ? opts.droppedMessages : undefined;
+    const claim = dropped?.length ? claimSummaryRefresh(opts) : undefined;
+    if (claim && dropped) {
       const existing = opts.existingSummary
         ? `Previous summary: ${opts.existingSummary}\n\n`
         : "";
-      const droppedText = opts.droppedMessages
+      const droppedText = dropped
         .map(m => {
           const label = m.role === "user" ? "User" : m.role === "system" ? "System" : "Assistant";
           return `${label}: ${m.content}`;
@@ -629,8 +669,14 @@ export function afterResponse(opts: AfterResponseOptions): void {
         const summary = summaryResponse.text.trim();
         if (summary) {
           await conversationStore.updateSummary(opts.conversationId, summary, opts.summaryCover);
+          // Written, or lost the compare-and-set to another refresh: either way the
+          // marker left `expected`, and a refresh from it would only be discarded.
+          claim.landed();
+        } else {
+          claim.release();
         }
       } catch (err) {
+        claim.release();
         log.error("pipeline", "Summary generation failed", err);
       }
     }

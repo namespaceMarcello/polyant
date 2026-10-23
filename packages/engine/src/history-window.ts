@@ -75,6 +75,11 @@ export interface HistoryWindowPlan {
    * late or duplicate refresh cannot fold the same exchanges twice.
    */
   summarize: { from: number; to: number; expected: number | null; through: number } | undefined;
+  /**
+   * Exchanges between the stored marker and the oldest row read (after many
+   * failed refreshes): the planned refresh marks them covered without reading them.
+   */
+  unreadExchanges: number;
 }
 
 /**
@@ -105,10 +110,24 @@ export function planHistoryWindow(
 
   const block = state.blockExchanges ?? HISTORY_BLOCK_EXCHANGES;
   const blockStart = windowStartExchange(exchanges, block);
+  /**
+   * What a summary written before the marker covers. The old window (pipeline.ts
+   * up to 8b6f76f9) read 16 rows and, past 15, kept the last 10 and folded the
+   * rest. Its last turn persisted the last user row read (with the system rows
+   * just before it), so the summary covers the exchanges wholly before the 10
+   * rows ahead of those; the block start caps it on the turns that follow, until
+   * a refresh writes the marker.
+   */
+  const legacyCovered = (): number => {
+    if (userIdx.length === 0) return 0;
+    let end = userIdx[userIdx.length - 1];
+    while (end > 0 && rows[end - 1].role === "system") end--;
+    return Math.min(blockStart, end > 10 ? ordinalOf(end - 10) : firstOrdinal);
+  };
   const stored = state.summaryThrough ?? null;
   // A marker past the count (rows deleted since) or a summary written before the
-  // marker existed: fall back to the block layout.
-  const covered = stored !== null && stored <= exchanges ? stored : state.hasSummary ? blockStart : 0;
+  // marker existed: trust it only as far as the old window folded.
+  const covered = stored !== null && stored <= exchanges ? stored : state.hasSummary ? legacyCovered() : 0;
   const coveredRow = rowOf(covered);
 
   // Size cap: move to later exchanges while the window is over budget. The
@@ -139,5 +158,10 @@ export function planHistoryWindow(
       ? { from: coveredRow, to, expected: stored, through }
       : undefined;
 
-  return { start, hasOverflow: covered > 0 || start > 0, summarize };
+  return {
+    start,
+    hasOverflow: covered > 0 || start > 0,
+    summarize,
+    unreadExchanges: summarize ? Math.max(0, firstOrdinal - covered) : 0,
+  };
 }
