@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-10-23
+
+### Added
+
+### Changed
+
+### Fixed
+
 ## [1.3.3] - 2026-10-16
 
 There is no 1.3.2 of Polyant.
@@ -956,7 +964,8 @@ Patch release. It restores agent creation, which fails on every attempt in 1.1.0
 - Delegated sub-agents cannot recursively spawn further sub-agents.
 - Node.js 22 is aligned across the supported development and container environments.
 
-[Unreleased]: https://github.com/polyant-ai/polyant/compare/v1.3.3...HEAD
+[Unreleased]: https://github.com/polyant-ai/polyant/compare/v1.3.4...HEAD
+[1.3.4]: https://github.com/polyant-ai/polyant/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/polyant-ai/polyant/compare/v1.3.1...v1.3.3
 [1.3.1]: https://github.com/polyant-ai/polyant/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/polyant-ai/polyant/compare/v1.2.0...v1.3.0
