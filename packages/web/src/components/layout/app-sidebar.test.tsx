@@ -163,3 +163,20 @@ describe("AppSidebar — Members is org administration, Settings is platform adm
     expect(within(content).getByRole("link", { name: /impostazioni/i })).toBeInTheDocument();
   });
 });
+
+// The mark is the one way home from anywhere in the panel; a plain <span> there
+// leaves a user on a deep page with only the browser's back button.
+describe("AppSidebar — the Polyant mark", () => {
+  it("is a link named Polyant that leads to the root page", () => {
+    render(
+      <I18nProvider initialLocale="it">
+        <SidebarProvider>
+          <AppSidebar user={{ name: "Ada", email: "ada@example.com", isPlatformAdmin: false }} />
+        </SidebarProvider>
+      </I18nProvider>,
+    );
+
+    const header = document.querySelector<HTMLElement>('[data-sidebar="header"]')!;
+    expect(within(header).getByRole("link", { name: "Polyant" }).getAttribute("href")).toBe("/");
+  });
+});
