@@ -126,6 +126,26 @@ describe("SkillsTab", () => {
     expect(screen.getByText("Send emails via SMTP")).toBeInTheDocument();
   });
 
+  // A long description used to push every row to a different height; clamped, the
+  // list stays scannable and the full text is still one hover away.
+  it("clamps a skill's description to two lines with the full text on hover, and omits an empty one", () => {
+    const long = "Search the web for information ".repeat(20).trim();
+    const skills: SkillState[] = [
+      { name: "long-one", description: long, enabled: true, requiredEnv: [], envConfigured: true },
+      { name: "no-description", description: "", enabled: true, requiredEnv: [], envConfigured: true },
+    ];
+
+    render(
+      <SkillsTab slug="test-instance" skills={skills} tools={[]} onSkillsUpdate={onSkillsUpdate} onToolsUpdate={onToolsUpdate} />,
+    );
+
+    const description = screen.getByText(long);
+    expect(description).toHaveClass("line-clamp-2");
+    expect(description).toHaveAttribute("title", long);
+    // One description paragraph only: the skill without one renders none.
+    expect(document.querySelectorAll("p[title]")).toHaveLength(1);
+  });
+
   it("shows switches reflecting skill enabled state", () => {
     render(
       <SkillsTab slug="test-instance" skills={makeSkills()} tools={[]} onSkillsUpdate={onSkillsUpdate} onToolsUpdate={onToolsUpdate} />,

@@ -10,7 +10,6 @@ import { Trash2, Download, MoreHorizontal, Bot } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
-import { Chip } from "@/components/ui/chip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -53,7 +52,7 @@ import { PrivacyTab } from "./privacy-tab";
 import { PageActionsProvider, usePageActions } from "./page-actions-context";
 import { useI18n } from "@/lib/i18n/context";
 import { instanceStatusLabel } from "@/lib/instance-status";
-import { agentSection, agentSectionsByMacro, resolveAgentTab } from "@/lib/nav/agent-sections";
+import { agentSection, resolveAgentTab } from "@/lib/nav/agent-sections";
 import { SectionActionsSlot } from "./section-actions";
 import { useTenantPaths } from "@/lib/tenant/use-tenant-paths";
 import { useStatusChecks } from "./use-status-checks";
@@ -288,7 +287,7 @@ function InstanceDetailContent() {
       <div className="mt-8 flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
         <div className="min-w-0">
           <h2 className="text-2xl font-semibold tracking-tight">
-            {t(section.macro === "automation" ? "instances.macro.automation" : section.titleKey)}
+            {t(section.titleKey)}
           </h2>
           <SectionDescription tab={section.tab} />
         </div>
@@ -298,20 +297,6 @@ function InstanceDetailContent() {
 
       <SectionActionsSlot value={actionsSlot}>
       <Tabs value={activeTab} onValueChange={(tab) => router.push(`${pathname}?tab=${tab}`)} className="mt-6">
-        {section.macro === "automation" && (
-          <nav aria-label={t("instances.macro.automation")} className="flex gap-2 overflow-x-auto">
-            {agentSectionsByMacro("automation").map((tab) => (
-              <Chip
-                key={tab.tab}
-                active={activeTab === tab.tab}
-                aria-current={activeTab === tab.tab ? "page" : undefined}
-                onClick={() => router.push(`${pathname}?tab=${tab.tab}`)}
-              >
-                {t(tab.titleKey)}
-              </Chip>
-            ))}
-          </nav>
-        )}
         {/* Panoramica */}
         <TabsContent value="overview" data-tour="agent-overview">
           <StatusTab instance={instance} tools={tools} skills={skills} status={status} />
@@ -331,7 +316,7 @@ function InstanceDetailContent() {
           <ChannelsSection instance={instance} onUpdate={setInstance} />
         </TabsContent>
 
-        {/* Comportamento */}
+        {/* Prompts, resources, knowledge, hooks and advanced parameters */}
         <TabsContent value="prompts" data-tour="agent-prompts">
           <PromptsTab slug={instance.slug} prompts={prompts} onUpdate={setPrompts} />
         </TabsContent>
@@ -391,7 +376,7 @@ function InstanceDetailContent() {
           <PrivacyTab instance={instance} onUpdate={setInstance} />
         </TabsContent>
 
-        {/* Attività — what this agent has done, not how it is configured. */}
+        {/* Conversations, memories and the Monitor: what this agent has done */}
         <TabsContent value="conversations" data-tour="agent-conversations">
           <AgentConversationsTab slug={instance.slug} />
         </TabsContent>
