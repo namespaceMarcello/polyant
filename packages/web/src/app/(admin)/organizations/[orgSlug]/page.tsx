@@ -16,7 +16,6 @@ export default function DashboardPage() {
       <PageHeader
         title={t("dashboard.title")}
         subtitle={t("dashboard.subtitle")}
-        subtitleClassName="mt-2 text-muted-foreground"
       />
 
       <FirstStepsCard />

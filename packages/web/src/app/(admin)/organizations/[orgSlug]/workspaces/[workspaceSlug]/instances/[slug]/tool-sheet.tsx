@@ -150,10 +150,10 @@ export function ToolSheet({
   return (
     <>
     <Sheet open={tool !== null} onOpenChange={(open) => !open && requestClose()}>
-      <SheetContent side="right" className="gap-0">
+      <SheetContent side="right" className="w-full gap-0">
         {tool && (
           <>
-            <SheetHeader className="gap-2 border-b p-5 pr-12">
+            <SheetHeader className="gap-1 border-b p-5 pr-12">
               <SheetTitle className="font-mono text-base font-medium">{toolDisplayName(tool.name)}</SheetTitle>
               <ToolDescription key={tool.name} summary={capabilitySummary(tool, locale)} description={tool.description} />
               <div className="flex flex-wrap gap-2 pt-1">
@@ -237,7 +237,7 @@ export function ToolSheet({
               )}
             </div>
 
-            <SheetFooter className="flex-row justify-between border-t p-4">
+            <SheetFooter className="flex-row items-center justify-between border-t p-4">
               {alwaysEnabled ? (
                 <span className="text-sm text-muted-foreground">{t("tools.cannotDisable")}</span>
               ) : (
@@ -248,7 +248,7 @@ export function ToolSheet({
               )}
               <div className="flex gap-2">
                 <Button variant="outline" onClick={requestClose}>
-                  {t("common.close")}
+                  {specs.length > 0 && params.canRead ? t("common.cancel") : t("common.close")}
                 </Button>
                 {/* In the footer so it stays in view however long the parameter list is. */}
                 {specs.length > 0 && params.canRead && (

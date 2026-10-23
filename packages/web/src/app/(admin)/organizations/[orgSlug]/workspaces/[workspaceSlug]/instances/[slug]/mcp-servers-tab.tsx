@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2, Loader2, Link2, Unlink } from "lucide-react";
+import { Plus, Link2, Unlink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -17,11 +17,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ListControlCell, ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListSearch, matchesSearch } from "@/components/list-search";
+import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { api, getUserErrorMessage, type McpServer } from "@/lib/api";
 import { useResource } from "@/hooks/use-resource";
 import { useFormat } from "@/lib/use-format";
 import { useI18n } from "@/lib/i18n/context";
-import { McpServerDialog } from "./mcp-server-dialog";
+import { McpServerSheet } from "./mcp-server-sheet";
 import { SectionActions } from "./section-actions";
 
 interface Props {
@@ -30,6 +32,7 @@ interface Props {
 
 export function McpServersTab({ slug }: Props) {
   const { t } = useI18n();
+  const fmt = useFormat();
   const { data, error, loading, reload } = useResource(["mcp-servers", slug], () => api.mcpServers.list(slug));
   const servers = data ?? [];
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -37,6 +40,7 @@ export function McpServersTab({ slug }: Props) {
   const [dialogKey, setDialogKey] = useState(0);
   const [editing, setEditing] = useState<McpServer | null>(null);
   const [deleting, setDeleting] = useState<McpServer | null>(null);
+  const [search, setSearch] = useState("");
   // The server whose shared account is being connected in another tab. The
   // provider redirects there, not here, so the list is read again when this
   // tab regains focus.
@@ -114,6 +118,7 @@ export function McpServersTab({ slug }: Props) {
       await api.mcpServers.delete(slug, deleting.slug);
       toast.success(t("mcp.deleted"));
       setDeleting(null);
+      setDialogOpen(false);
       reload();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("mcp.deleteFailed")));
@@ -122,19 +127,21 @@ export function McpServersTab({ slug }: Props) {
 
   if (error && data === undefined) return <LoadFailed message={t("mcp.loadFailed")} onRetry={reload} />;
 
-  if (loading && data === undefined) {
-    return (
-      <div className="flex items-center gap-2 py-8 text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
-        {t("common.loading")}
-      </div>
-    );
-  }
+  if (loading && data === undefined) return <ListLoading className="" />;
+
+  const isShared = (server: McpServer) => server.authMode === "oauth" && server.config.account === "shared";
+  const visible = servers
+    .filter((server) =>
+      matchesSearch(search, server.name, server.slug, server.url, t(`mcp.authMode.${server.authMode}` as const)),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+  // Read from the list, so connecting or disconnecting the shared account shows in the open drawer.
+  const current = editing ? servers.find((server) => server.slug === editing.slug) ?? editing : null;
 
   return (
     <div className="space-y-6">
       {/* The page draws the title and the line under it; the long explanation
-          of static and OAuth servers lives in the server's dialog. */}
+          of static and OAuth servers lives in the server's drawer. */}
       <SectionActions>
         <Button onClick={openCreate} size="sm">
           <Plus className="mr-1 size-4" />
@@ -143,68 +150,58 @@ export function McpServersTab({ slug }: Props) {
       </SectionActions>
 
       {servers.length === 0 ? (
-        <div className="rounded-md border border-dashed p-8 text-center text-muted-foreground">
-          <p>{t("mcp.empty")}</p>
-        </div>
+        <ListEmpty className="mt-8" title={t("mcp.empty")} />
       ) : (
-        <ListTable>
-          <TableHeader>
-            <TableRow className="hover:bg-transparent">
-              <ListHead className="w-[26%]">{t("mcp.col.name")}</ListHead>
-              <ListHead>{t("mcp.col.url")}</ListHead>
-              <ListHead className="w-40">{t("mcp.col.auth")}</ListHead>
-              <ListHead className="w-24">{t("mcp.col.enabled")}</ListHead>
-              <ListHead align="end" className="w-28">{t("mcp.col.actions")}</ListHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {servers.map((server) => (
-              <ListRow key={server.id} muted={!server.enabled}>
-                <ListNameCell name={server.name} summary={<code className="text-xs">{server.slug}</code>} />
-                <TableCell>
-                  <span className="truncate block text-xs text-muted-foreground">{server.url}</span>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline" className="text-xs">
-                    {t(`mcp.authMode.${server.authMode}` as const)}
-                  </Badge>
-                  {server.authMode === "oauth" && server.config.account === "shared" && (
-                    <SharedAccountState
-                      server={server}
-                      waiting={connecting === server.slug}
-                      onConnect={() => handleConnectShared(server)}
-                      onDisconnect={() => handleDisconnectShared(server)}
-                    />
-                  )}
-                </TableCell>
-                <ListControlCell className="text-left">
-                  <Switch
-                    checked={server.enabled}
-                    onCheckedChange={(v) => handleToggle(server, v)}
-                  />
-                </ListControlCell>
-                <ListControlCell>
-                  <div className="flex items-center justify-end gap-1">
-                    <Button variant="ghost" size="icon" className="size-8" onClick={() => openEdit(server)}>
-                      <Pencil className="size-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-8 text-destructive"
-                      onClick={() => setDeleting(server)}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </div>
-                </ListControlCell>
-              </ListRow>
-            ))}
-          </TableBody>
-        </ListTable>
+        <>
+          <ListSearch value={search} onChange={setSearch} className="relative" />
+          {visible.length === 0 ? (
+            <ListNoResults />
+          ) : (
+            <ListTable className="mt-0">
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <ListHead className="w-[26%]">{t("mcp.col.name")}</ListHead>
+                  <ListHead>{t("mcp.col.url")}</ListHead>
+                  <ListHead className="w-40">{t("mcp.col.auth")}</ListHead>
+                  <ListHead align="end" className="w-28">{t("common.active")}</ListHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visible.map((server) => (
+                  <ListRow
+                    key={server.id}
+                    onOpen={() => openEdit(server)}
+                    selected={dialogOpen && editing?.slug === server.slug}
+                    muted={!server.enabled}
+                  >
+                    <ListNameCell name={server.name} onOpen={() => openEdit(server)} summary={server.slug} />
+                    <TableCell>
+                      <span className="block truncate text-xs text-muted-foreground" title={server.url}>{server.url}</span>
+                    </TableCell>
+                    <TableCell className="whitespace-normal">
+                      <Badge variant="outline">{t(`mcp.authMode.${server.authMode}` as const)}</Badge>
+                      {isShared(server) && (
+                        <p className="mt-1.5 text-xs text-muted-foreground">
+                          {sharedAccountText(server, connecting === server.slug)}
+                        </p>
+                      )}
+                    </TableCell>
+                    <ListControlCell>
+                      <Switch
+                        checked={server.enabled}
+                        onCheckedChange={(v) => handleToggle(server, v)}
+                        aria-label={t("mcp.enabled", { name: server.name })}
+                      />
+                    </ListControlCell>
+                  </ListRow>
+                ))}
+              </TableBody>
+            </ListTable>
+          )}
+        </>
       )}
 
-      <McpServerDialog
+      <McpServerSheet
         key={dialogKey}
         agentSlug={slug}
         open={dialogOpen}
@@ -212,6 +209,17 @@ export function McpServersTab({ slug }: Props) {
         editing={editing}
         takenSlugs={servers.map((server) => server.slug)}
         onSaved={reload}
+        onDelete={setDeleting}
+        accountState={
+          current && isShared(current) ? (
+            <SharedAccountState
+              server={current}
+              waiting={connecting === current.slug}
+              onConnect={() => handleConnectShared(current)}
+              onDisconnect={() => handleDisconnectShared(current)}
+            />
+          ) : undefined
+        }
       />
 
       <ConfirmDialog
@@ -224,6 +232,16 @@ export function McpServersTab({ slug }: Props) {
       />
     </div>
   );
+
+  /** Whether the shared account is connected, as one line. */
+  function sharedAccountText(server: McpServer, waiting: boolean): string {
+    const connected = server.sharedAccount ?? null;
+    return connected
+      ? t("mcp.shared.connectedOn", { date: fmt.date(connected.connectedAt) })
+      : waiting
+        ? t("mcp.shared.waiting")
+        : t("mcp.shared.notConnected");
+  }
 }
 
 /** Whether the agent's shared account is connected, and the control that changes it. */
@@ -242,8 +260,8 @@ function SharedAccountState({
   const fmt = useFormat();
   const connected = server.sharedAccount ?? null;
   return (
-    <div className="mt-1.5 space-y-1">
-      <p className="text-xs text-muted-foreground">
+    <div className="space-y-2 border-t pt-4">
+      <p className="text-sm text-muted-foreground">
         {connected
           ? t("mcp.shared.connectedOn", {
               date: fmt.date(connected.connectedAt),
@@ -253,12 +271,12 @@ function SharedAccountState({
             : t("mcp.shared.notConnected")}
       </p>
       {connected ? (
-        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={onDisconnect}>
+        <Button variant="outline" size="sm" onClick={onDisconnect}>
           <Unlink className="mr-1 size-3.5" />
           {t("mcp.shared.disconnect")}
         </Button>
       ) : (
-        <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={onConnect}>
+        <Button variant="outline" size="sm" onClick={onConnect}>
           <Link2 className="mr-1 size-3.5" />
           {t("mcp.shared.connect")}
         </Button>
