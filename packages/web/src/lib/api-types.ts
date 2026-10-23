@@ -597,11 +597,37 @@ export interface LlmDebugPayload {
 }
 
 /** Response of GET /api/conversations/:id/messages/:messageId/debug. */
+/** One model call made during a turn. */
+export interface TurnModelCall {
+  /** "conversation" for the agent's answer, "service" for the calls around it, "embedding" for an embedder. */
+  callType: string;
+  provider: string;
+  model: string;
+  durationMs: number;
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number;
+  /** "ok", "error" or "aborted". */
+  outcome: string;
+  /** The class of the failure, never its message. */
+  errorKind: string | null;
+  createdAt: string | null;
+}
+
 export interface MessageDebug {
   /** Null when the turn was generated with DEBUG off. */
   debugPayload: LlmDebugPayload | null;
   /** Per-step tool trace for the turn (always present for tool-using turns). */
   steps: StepDetail[] | null;
+  /** How the turn arrived; null for a message with no pipeline trace. */
+  turn?: {
+    channel: string;
+    streaming: boolean;
+    /** Present only on a voice turn. */
+    speechToText: { provider: string; durationMs: number | null; audioDurationSec: number | null } | null;
+  } | null;
+  /** The turn's model calls, from the user message that opened it to the next one. */
+  modelCalls?: TurnModelCall[];
 }
 
 // ── Memories ──────────────────────────────────────────────────────────

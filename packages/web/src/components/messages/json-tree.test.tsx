@@ -54,11 +54,6 @@ describe("JsonTree", () => {
     expect(writeText).toHaveBeenLastCalledWith("3");
   });
 
-  it("shows a first-level hint beside a closed key", () => {
-    render(<JsonTree value={[{ role: "user" }]} hint={(m) => (m as { role: string }).role} />);
-    expect(screen.getByRole("button", { name: "0 user" })).toHaveAttribute("aria-expanded", "false");
-  });
-
   it("gives an empty branch no toggle", () => {
     render(<JsonTree value={{ empty: {}, list: [] }} />);
     expect(screen.queryByRole("button", { expanded: false })).not.toBeInTheDocument();

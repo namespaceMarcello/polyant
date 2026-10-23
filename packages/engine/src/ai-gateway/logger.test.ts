@@ -146,6 +146,19 @@ describe("AILogger", () => {
       expect(mockDb.insert).not.toHaveBeenCalled();
     });
 
+    it("stamps each entry with the time it was logged, not the time of the write", async () => {
+      const valuesFn = vi.fn().mockResolvedValue(undefined);
+      const mockDb = { insert: vi.fn().mockReturnValue({ values: valuesFn }) };
+      logger.initialize(mockDb);
+      vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+
+      logger.log(makeEntry());
+      vi.setSystemTime(new Date("2026-01-01T12:00:04Z"));
+      await logger.flush();
+
+      expect(valuesFn).toHaveBeenCalledWith([expect.objectContaining({ createdAt: new Date("2026-01-01T12:00:00Z") })]);
+    });
+
     it("auto-flushes when buffer reaches 10 entries", async () => {
       const valuesFn = vi.fn().mockResolvedValue(undefined);
       const mockDb = { insert: vi.fn().mockReturnValue({ values: valuesFn }) };

@@ -37,6 +37,7 @@ export type {
   CostBreakdown,
   MessageLatency,
   MessageDebug,
+  TurnModelCall,
   LlmDebugPayload,
   ReasoningDetail,
   StepDetail,
