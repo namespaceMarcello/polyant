@@ -1210,6 +1210,8 @@ export class ConversationStore {
         .set({
           messageCount: sql`${conversations.messageCount} - ${idsToDelete.length} + 1`,
           userMessageCount: sql`${conversations.userMessageCount} - ${deletedUser}`,
+          // The summary marker counts user rows too: keep it on the same exchanges.
+          summaryThrough: sql`CASE WHEN ${conversations.summaryThrough} IS NULL THEN NULL ELSE GREATEST(${conversations.summaryThrough} - ${deletedUser}, 0) END`,
           ...(summaryRow?.createdAt
             ? { lastMessageAt: sql`GREATEST(${conversations.lastMessageAt}, ${summaryRow.createdAt.toISOString()}::timestamptz)` }
             : {}),
