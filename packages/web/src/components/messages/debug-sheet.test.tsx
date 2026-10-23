@@ -130,6 +130,21 @@ describe("DebugSheet tabs", () => {
     expect(screen.getByText('"monday"')).toBeInTheDocument();
   });
 
+  it("keeps the system prompt in Prompt and the messages sent in History", async () => {
+    renderSheet({
+      debugPayload: { system: "You are a test.", messages: [stateMessage], tools: [] },
+      steps: [step],
+    });
+
+    await userEvent.click(screen.getByRole("tab", { name: "message.debug.prompt" }));
+    expect(await screen.findByText("You are a test.")).toBeInTheDocument();
+    expect(screen.queryByText("message.debug.messages")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: /message\.debug\.history/ }));
+    expect(await screen.findByText("message.debug.messages")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "0" })).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("says the payload was not captured in the payload tabs, and keeps the steps", async () => {
     renderSheet({ debugPayload: null, steps: [step] });
 
