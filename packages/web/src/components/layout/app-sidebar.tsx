@@ -3,6 +3,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import {
   LayoutDashboard,
@@ -177,14 +178,17 @@ export function AppSidebar(
       {...sidebarProps}
     >
       <SidebarHeader>
-        <div className="flex h-10 items-center gap-2 px-2">
+        <Link
+          href="/"
+          className="flex h-10 items-center gap-2 rounded-md px-2 outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+        >
           <div className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
             <Bot className="size-4" />
           </div>
           <span className="truncate text-base font-semibold group-data-[collapsible=icon]:hidden">
             Polyant
           </span>
-        </div>
+        </Link>
       </SidebarHeader>
 
       <SidebarContent data-tour="nav">

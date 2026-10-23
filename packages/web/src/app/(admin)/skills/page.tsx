@@ -128,9 +128,8 @@ export default function SkillsPage() {
           <Table className="table-fixed w-full">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[180px]">{t("skills.table.name")}</TableHead>
+                <TableHead>{t("skills.table.name")}</TableHead>
                 <TableHead className="w-[100px]">{t("skills.table.category")}</TableHead>
-                <TableHead>{t("skills.table.description")}</TableHead>
                 <TableHead className="w-[100px]">
                   {t("skills.table.actions")}
                 </TableHead>
@@ -139,15 +138,23 @@ export default function SkillsPage() {
             <TableBody>
               {skills.map((skill) => (
                 <TableRow key={skill.name}>
-                  <TableCell className="font-medium truncate">
+                  <TableCell className="max-w-0 font-medium">
                     <Link
                       href={`/skills/${skill.name}`}
-                      className="underline underline-offset-4 hover:text-accent-strong"
+                      className="inline-block max-w-full truncate align-bottom underline underline-offset-4 hover:text-accent-strong"
                     >
                       {skill.displayName}
                     </Link>
                     {skill.displayName !== skill.name && (
                       <span className="block truncate font-mono text-xs font-normal text-muted-foreground">{skill.name}</span>
+                    )}
+                    {skill.description && (
+                      <span
+                        title={skill.description}
+                        className="mt-0.5 line-clamp-2 block whitespace-normal text-xs font-normal text-muted-foreground"
+                      >
+                        {skill.description}
+                      </span>
                     )}
                   </TableCell>
                   <TableCell>
@@ -158,9 +165,6 @@ export default function SkillsPage() {
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground max-w-0 truncate whitespace-normal">
-                    <span className="line-clamp-1">{skill.description}</span>
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1">

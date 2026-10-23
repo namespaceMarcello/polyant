@@ -229,7 +229,11 @@ export function SkillsTab({ slug, skills, tools, onSkillsUpdate, onToolsUpdate }
                 </Badge>
               )}
             </div>
-            <p className="text-xs text-muted-foreground">{skill.description}</p>
+            {skill.description && (
+              <p title={skill.description} className="line-clamp-2 text-xs text-muted-foreground">
+                {skill.description}
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
