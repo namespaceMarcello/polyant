@@ -5,8 +5,6 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  FileText,
-  Trash2,
   RefreshCw,
   Loader2,
   Download,
@@ -16,7 +14,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { TableBody, TableHeader, TableRow } from "@/components/ui/table";
+import { ListControlCell, ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListSearch, matchesSearch } from "@/components/list-search";
+import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
+import { DrawerDeleteButton, ListDrawer } from "@/components/list-drawer";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { api, getUserErrorMessage, type Instance, type KnowledgeDocument } from "@/lib/api";
@@ -24,9 +26,10 @@ import { providerName } from "@/lib/provider-secrets";
 import { useI18n } from "@/lib/i18n/context";
 import { useResource } from "@/hooks/use-resource";
 import { downloadBlob } from "@/lib/download";
+import { SectionActions } from "./section-actions";
 import { usePageSaveAction } from "./page-actions-context";
 import { useDraft } from "./use-draft";
-import { AddTextDialog } from "@/components/knowledge/add-text-dialog";
+import { AddTextSheet } from "@/components/knowledge/add-text-sheet";
 import { formatBytes, KnowledgeStatusBadge } from "@/components/knowledge/document-status";
 
 interface Props {
@@ -161,10 +164,11 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
     }
   };
   usePageSaveAction({ isDirty: Object.keys(pending).length > 0, saving: savingDocs, onSave: saveDocSwitches });
+  const [search, setSearch] = useState("");
   const [viewDocId, setViewDocId] = useState<string | null>(null);
   const [viewContent, setViewContent] = useState<string>("");
-  const [viewFilename, setViewFilename] = useState<string>("");
   const [viewLoading, setViewLoading] = useState(false);
+  const [viewFailed, setViewFailed] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -262,23 +266,29 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
       await api.knowledge.delete(slug, docId);
       toast.success(t("knowledge.tab.deleted"));
       setDeleting(null);
+      setViewDocId(null);
       load();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("knowledge.tab.deleteFailed")));
     }
   };
 
-  const handleView = async (docId: string, docFilename: string) => {
-    setViewDocId(docId);
-    setViewFilename(docFilename);
-    setViewLoading(true);
+  /** Opens the document's drawer; a ready document's text is read for it, one still being read or failed has none to show. */
+  const handleView = async (doc: KnowledgeDocument) => {
+    setViewDocId(doc.id);
     setViewContent("");
+    setViewFailed(false);
+    if (doc.status !== "ready") {
+      setViewLoading(false);
+      return;
+    }
+    setViewLoading(true);
     try {
-      const { document } = await api.knowledge.get(slug, docId);
+      const { document } = await api.knowledge.get(slug, doc.id);
       setViewContent(document.rawContent);
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("knowledge.tab.loadFailed")));
-      setViewDocId(null);
+      setViewFailed(true);
     } finally {
       setViewLoading(false);
     }
@@ -286,21 +296,72 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
 
   if (error && data === undefined) return <LoadFailed message={t("knowledge.tab.loadFailed")} onRetry={load} />;
 
-  if (loading && data === undefined) {
-    return (
-      <div className="max-w-3xl">
-        <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
-      </div>
-    );
-  }
+  if (loading && data === undefined) return <ListLoading className="" />;
 
   // Disabled knowledge means the documents are NOT reachable by the model. The
   // list stayed fully interactive when the switch was off, which reads as "these
   // are in use" — so everything below is dimmed and inert, and says why.
   const knowledgeEnabled = instance.knowledgeEnabled ?? false;
 
+  const statusText = (doc: KnowledgeDocument) =>
+    t(
+      doc.status === "ready"
+        ? "knowledge.tab.statusReady"
+        : doc.status === "error"
+          ? "knowledge.tab.statusError"
+          : doc.status === "uploading"
+            ? "knowledge.tab.statusUploading"
+            : "knowledge.tab.statusProcessing",
+    );
+  /** The line under the filename: size, chunks once read, and why a failed one failed. */
+  const summaryOf = (doc: KnowledgeDocument) =>
+    [
+      formatBytes(doc.sizeBytes),
+      doc.status === "ready" ? `${doc.chunkCount} chunks` : null,
+      doc.status === "error" ? doc.errorMessage : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  const visibleDocs = documents.filter((doc) => matchesSearch(search, doc.filename, summaryOf(doc), statusText(doc)));
+  const viewedDoc = viewDocId ? documents.find((d) => d.id === viewDocId) ?? null : null;
+
   return (
-    <div className="max-w-3xl">
+    <div>
+      <SectionActions>
+        <Button variant="ghost" size="sm" onClick={load} disabled={!knowledgeEnabled} aria-label={t("knowledge.tab.refresh")}>
+          <RefreshCw className="size-4" />
+        </Button>
+        <input
+          ref={importInputRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={handleImportFile}
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => importInputRef.current?.click()}
+          disabled={importing || !knowledgeEnabled}
+        >
+          {importing ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Upload className="mr-1.5 size-4" />}
+          {t("knowledge.tab.import")}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleExport}
+          disabled={exporting || documents.length === 0 || !knowledgeEnabled}
+        >
+          {exporting ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Download className="mr-1.5 size-4" />}
+          {/* "Esporta documenti", not "Esporta": the page header carries an
+              Esporta too, and that one exports the AGENT. One word, two
+              different things, forty pixels apart. */}
+          {t("knowledge.exportDocuments")}
+        </Button>
+        <AddTextSheet onAdd={handleUpload} disabled={!knowledgeEnabled} />
+      </SectionActions>
+
       <KnowledgeToggle instance={instance} onUpdate={onUpdate} />
       <div
         className={
@@ -308,131 +369,58 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
         }
         aria-disabled={!knowledgeEnabled}
       >
-      <div className="mb-6 flex items-center justify-between">
-        <div className="space-y-1">
-          <p className="text-sm text-muted-foreground">{t("knowledge.tab.description")}</p>
-          {/* Added, not substituted: what the list IS does not change when the
-              agent stops consulting it, so replacing the description hid a
-              standing fact to state a temporary one. */}
-          {!knowledgeEnabled && (
-            <p className="text-sm font-medium">{t("knowledge.tab.disabledNotice")}</p>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={load}>
-            <RefreshCw className="size-4" />
-          </Button>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept="application/json,.json"
-            className="hidden"
-            onChange={handleImportFile}
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => importInputRef.current?.click()}
-            disabled={importing}
-          >
-            {importing ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Upload className="mr-1.5 size-4" />}
-            {t("knowledge.tab.import")}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExport}
-            disabled={exporting || documents.length === 0}
-          >
-            {exporting ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Download className="mr-1.5 size-4" />}
-            {/* "Esporta documenti", not "Esporta": the page header carries an
-                Esporta too, and that one exports the AGENT. One word, two
-                different things, forty pixels apart. */}
-            {t("knowledge.exportDocuments")}
-          </Button>
-          <AddTextDialog onAdd={handleUpload} />
-        </div>
+      <div className="space-y-1">
+        <p className="text-sm text-muted-foreground">{t("knowledge.tab.description")}</p>
+        {/* Added, not substituted: what the list IS does not change when the
+            agent stops consulting it, so replacing the description hid a
+            standing fact to state a temporary one. */}
+        {!knowledgeEnabled && (
+          <p className="text-sm font-medium">{t("knowledge.tab.disabledNotice")}</p>
+        )}
       </div>
 
       {documents.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-8 text-center">
-          <FileText className="mx-auto mb-3 size-10 text-muted-foreground/50" />
-          <p className="text-sm font-medium">{t("knowledge.tab.empty")}</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("knowledge.tab.emptyHint")}
-          </p>
-        </div>
+        <ListEmpty className="mt-8" title={t("knowledge.tab.empty")} description={t("knowledge.tab.emptyHint")} />
       ) : (
-        <div className="space-y-2">
-          {documents.map((doc) => (
-            <div
-              key={doc.id}
-              // The whole row opens the document: a ready one is a button for the
-              // keyboard too (Enter or Space); one still processing has nothing to open.
-              {...(doc.status === "ready"
-                ? {
-                    role: "button",
-                    tabIndex: 0,
-                    onClick: () => handleView(doc.id, doc.filename),
-                    onKeyDown: (e: React.KeyboardEvent) => {
-                      if (e.target !== e.currentTarget) return;
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        handleView(doc.id, doc.filename);
-                      }
-                    },
-                  }
-                : {})}
-              className={`flex items-center justify-between rounded-lg border p-4 ${
-                doc.status === "ready" ? "cursor-pointer hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" : ""
-              }`}
-            >
-              <div className="flex items-center gap-4 min-w-0 flex-1">
-                <FileText className="size-5 shrink-0 text-muted-foreground" />
-                <div className="space-y-0.5 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className={`font-medium text-sm truncate ${isOn(doc) ? "" : "text-muted-foreground"}`}>
-                      {doc.filename}
-                    </span>
-                    <KnowledgeStatusBadge status={doc.status} t={t} />
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {formatBytes(doc.sizeBytes)}
-                    {doc.status === "ready" && ` · ${doc.chunkCount} chunks`}
-                    {doc.status === "error" && doc.errorMessage && (
-                      <span className="text-destructive">
-                        {" "}
-                        · {doc.errorMessage}
-                      </span>
-                    )}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-1 shrink-0 ml-2">
-                {/* A real switch on the row. Clicking it never opens the document. */}
-                <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} className="mr-2">
-                  <Switch
-                    checked={isOn(doc)}
-                    onCheckedChange={(v) => setDocEnabled(doc, v)}
-                    aria-label={t("knowledge.tab.docEnabled", { name: doc.filename })}
-                  />
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-destructive"
-                  aria-label={t("common.delete")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setDeleting(doc);
-                  }}
-                >
-                  <Trash2 className="size-4" />
-                </Button>
-              </div>
-            </div>
-          ))}
-        </div>
+        <>
+          <ListSearch value={search} onChange={setSearch} className="relative mt-4" />
+          {visibleDocs.length === 0 ? (
+            <ListNoResults />
+          ) : (
+            <ListTable>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <ListHead>{t("common.name")}</ListHead>
+                  <ListHead align="end" className="w-28">{t("common.active")}</ListHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visibleDocs.map((doc) => (
+                  <ListRow
+                    key={doc.id}
+                    onOpen={() => handleView(doc)}
+                    selected={viewDocId === doc.id}
+                    muted={!isOn(doc)}
+                  >
+                    <ListNameCell
+                      name={doc.filename}
+                      onOpen={() => handleView(doc)}
+                      badges={<KnowledgeStatusBadge status={doc.status} t={t} />}
+                      summary={summaryOf(doc)}
+                    />
+                    <ListControlCell>
+                      <Switch
+                        checked={isOn(doc)}
+                        onCheckedChange={(v) => setDocEnabled(doc, v)}
+                        aria-label={t("knowledge.tab.docEnabled", { name: doc.filename })}
+                      />
+                    </ListControlCell>
+                  </ListRow>
+                ))}
+              </TableBody>
+            </ListTable>
+          )}
+        </>
       )}
       </div>
 
@@ -446,40 +434,35 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
       />
 
       {/* The document: its content, and the actions on it. */}
-      <Sheet open={viewDocId !== null} onOpenChange={(open) => !open && setViewDocId(null)}>
-        <SheetContent side="right" className="gap-0">
-          <SheetHeader className="gap-2 border-b p-5 pr-12">
-            <SheetTitle className="break-words text-base font-medium">{viewFilename}</SheetTitle>
-            <SheetDescription>{t("knowledge.tab.viewDescription")}</SheetDescription>
-          </SheetHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            {viewLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="size-5 animate-spin text-muted-foreground" />
-              </div>
-            ) : (
-              <pre className="whitespace-pre-wrap rounded-md bg-muted/50 p-4 font-mono text-sm">{viewContent}</pre>
-            )}
+      <ListDrawer
+        open={viewedDoc !== null}
+        onOpenChange={(open) => !open && setViewDocId(null)}
+        title={viewedDoc?.filename ?? ""}
+        description={t("knowledge.tab.viewDescription")}
+        header={viewedDoc && <div className="flex flex-wrap gap-2 pt-1"><KnowledgeStatusBadge status={viewedDoc.status} t={t} /></div>}
+        footer={
+          viewedDoc && (
+            <>
+              <DrawerDeleteButton onClick={() => setDeleting(viewedDoc)} />
+              <Button variant="outline" onClick={() => setViewDocId(null)}>
+                {t("common.close")}
+              </Button>
+            </>
+          )
+        }
+      >
+        {viewLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="size-5 animate-spin text-muted-foreground" />
           </div>
-          <SheetFooter className="flex-row justify-between border-t p-4">
-            <Button
-              variant="ghost"
-              className="text-destructive"
-              onClick={() => {
-                const doc = documents.find((d) => d.id === viewDocId);
-                setViewDocId(null);
-                if (doc) setDeleting(doc);
-              }}
-            >
-              <Trash2 className="size-4" aria-hidden />
-              {t("common.delete")}
-            </Button>
-            <Button variant="outline" onClick={() => setViewDocId(null)}>
-              {t("common.close")}
-            </Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
+        ) : viewFailed ? (
+          <LoadFailed message={t("knowledge.tab.loadFailed")} />
+        ) : viewedDoc?.status === "error" ? (
+          <p className="text-sm text-destructive">{viewedDoc.errorMessage || t("knowledge.tab.statusError")}</p>
+        ) : viewedDoc?.status === "ready" ? (
+          <pre className="whitespace-pre-wrap rounded-md bg-muted/50 p-4 font-mono text-sm">{viewContent}</pre>
+        ) : null}
+      </ListDrawer>
     </div>
   );
 }
