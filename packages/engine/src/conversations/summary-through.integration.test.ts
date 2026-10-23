@@ -15,7 +15,15 @@ import { allTenantsScope } from "../authz/scope-filter.js";
 const DB_AVAILABLE = await resolveDatabaseAvailability();
 const CID = `itest:summary-through:${Date.now()}`;
 const LEGACY = `${CID}:legacy`;
+const SNAP = `${CID}:snapshot`;
+const RACE = `${CID}:race`;
 const SLUG = asInstanceSlug("itest-summary-through");
+
+/** The summary state a turn reads with its rows (`getHistorySnapshot`). */
+async function stateOf(cid: string) {
+  const { summary, summaryThrough, userMessageCount } = await conversationStore.getHistorySnapshot(cid, 40);
+  return { summary, summaryThrough, userMessageCount };
+}
 
 /** Persist `n` user/assistant exchanges (`u0`/`a0` …) on conversation `cid`. */
 async function exchanges(cid: string, n: number) {
@@ -30,7 +38,7 @@ async function exchanges(cid: string, n: number) {
 describe("conversation summary marker (integration)", () => {
   afterAll(async () => {
     if (!DB_AVAILABLE) return;
-    for (const cid of [CID, LEGACY]) {
+    for (const cid of [CID, LEGACY, SNAP, RACE]) {
       await conversationStore.deleteConversation(cid, allTenantsScope("integration test cleanup")).catch(() => {});
     }
   });
@@ -42,7 +50,7 @@ describe("conversation summary marker (integration)", () => {
     expect(await conversationStore.updateSummary(CID, "first", { expected: null, through: 2 })).toBe(true);
     // A second refresh planned on the same base lost the race: dropped, not folded twice.
     expect(await conversationStore.updateSummary(CID, "duplicate", { expected: null, through: 2 })).toBe(false);
-    expect(await conversationStore.getSummaryState(CID)).toEqual({
+    expect(await stateOf(CID)).toEqual({
       summary: "first",
       summaryThrough: 2,
       userMessageCount: 4,
@@ -51,7 +59,7 @@ describe("conversation summary marker (integration)", () => {
     // Compaction removes u0/a0 (one user row): the summary still ends after u1,
     // which is now exchange 1.
     await conversationStore.replaceOldestMessages(CID, 2, "room");
-    expect(await conversationStore.getSummaryState(CID)).toMatchObject({ summaryThrough: 1, userMessageCount: 3 });
+    expect(await stateOf(CID)).toMatchObject({ summaryThrough: 1, userMessageCount: 3 });
   });
 
   it.skipIf(!DB_AVAILABLE)("leaves a summary written before the marker without one through compaction", async () => {
@@ -59,6 +67,69 @@ describe("conversation summary marker (integration)", () => {
     await exchanges(LEGACY, 3);
     await conversationStore.updateSummary(LEGACY, "legacy");
     await conversationStore.replaceOldestMessages(LEGACY, 2, "room");
-    expect(await conversationStore.getSummaryState(LEGACY)).toMatchObject({ summary: "legacy", summaryThrough: null });
+    expect(await stateOf(LEGACY)).toMatchObject({ summary: "legacy", summaryThrough: null });
+  });
+
+  it.skipIf(!DB_AVAILABLE)("reads the rows with their summary state, and replay columns only for the window", async () => {
+    await conversationStore.ensureConversation(SNAP, SLUG);
+    const t0 = Date.now() - 60_000;
+    for (let i = 0; i < 8; i++) {
+      await conversationStore.appendMessages(SNAP, [
+        { role: "user", content: `u${i}`, createdAt: new Date(t0 + i * 2000) },
+        {
+          role: "assistant",
+          content: `a${i}`,
+          createdAt: new Date(t0 + i * 2000 + 1000),
+          steps: [{ stepIndex: i }] as never,
+          reasoning: [{ text: `r${i}` }] as never,
+        },
+      ]);
+    }
+    const all = Array.from({ length: 8 }, (_, i) => [`u${i}`, `a${i}`]).flat();
+
+    // No marker yet: the whole read is the window.
+    let replay = await conversationStore.getHistorySnapshot(SNAP, 40, { steps: true });
+    expect(replay.rows.map((r) => r.content)).toEqual(all);
+    expect(replay.rows.filter((r) => r.steps).map((r) => r.content)).toEqual(all.filter((c) => c.startsWith("a")));
+
+    expect(await conversationStore.updateSummary(SNAP, "s", { expected: null, through: 5 })).toBe(true);
+    const text = await conversationStore.getHistorySnapshot(SNAP, 6);
+    expect(text.rows.map((r) => r.content)).toEqual(["u5", "a5", "u6", "a6", "u7", "a7"]);
+    expect(text.rows[1]).not.toHaveProperty("steps");
+    expect(text).toMatchObject({ summary: "s", summaryThrough: 5, userMessageCount: 8 });
+
+    // Marker at 5: exchanges 5..7 are the window; older rows come without the replay columns.
+    replay = await conversationStore.getHistorySnapshot(SNAP, 40, { steps: true });
+    expect(replay.rows.map((r) => r.content)).toEqual(all);
+    expect(replay.rows.filter((r) => r.steps).map((r) => r.content)).toEqual(["a5", "a6", "a7"]);
+    expect(replay.rows.filter((r) => r.reasoning).map((r) => r.content)).toEqual(["a5", "a6", "a7"]);
+    expect(replay.rows.find((r) => r.content === "a7")?.steps).toEqual([{ stepIndex: 7 }]);
+    expect(replay.rows.find((r) => r.content === "a7")?.reasoning).toEqual([{ text: "r7" }]);
+    expect(await conversationStore.getHistorySnapshot(`${SNAP}:none`, 40)).toEqual({
+      rows: [],
+      summary: null,
+      summaryThrough: null,
+      userMessageCount: null,
+    });
+  });
+
+  it.skipIf(!DB_AVAILABLE)("never returns a count out of step with the rows while turns land", async () => {
+    await conversationStore.ensureConversation(RACE, SLUG);
+    let landed = false;
+    const turns = (async () => {
+      await exchanges(RACE, 25);
+    })().finally(() => {
+      landed = true;
+    });
+    let reads = 0;
+    while (!landed) {
+      const snap = await conversationStore.getHistorySnapshot(RACE, 1000);
+      const users = snap.rows.filter((r) => r.role === "user").length;
+      if (snap.rows.length > 0) expect(snap.userMessageCount).toBe(users);
+      reads++;
+    }
+    await turns;
+    expect(reads).toBeGreaterThan(0);
+    expect((await stateOf(RACE)).userMessageCount).toBe(25);
   });
 });

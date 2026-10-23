@@ -24,6 +24,15 @@ export function rowsToModelMessages(rows: readonly MessageRow[]): ModelMessage[]
   return rows.map((r) => ({ role: r.role as "user" | "assistant" | "system", content: r.content }));
 }
 
+/** Recent rows and the summary state from one snapshot (`getHistorySnapshot`). */
+export interface HistorySnapshot {
+  rows: MessageRow[];
+  /** Null when no rows were read or the conversation row is missing. */
+  summary: string | null;
+  summaryThrough: number | null;
+  userMessageCount: number | null;
+}
+
 export interface MessageRow {
   role: string;
   content: string;
@@ -298,25 +307,6 @@ export class ConversationStore {
   }
 
   /**
-   * The summary, the exchanges it covers and the persisted user-message count,
-   * in one statement, for the history window (history-window.ts).
-   */
-  async getSummaryState(
-    conversationId: string,
-  ): Promise<{ summary: string | null; summaryThrough: number | null; userMessageCount: number } | null> {
-    const rows = await db
-      .select({
-        summary: conversations.summary,
-        summaryThrough: conversations.summaryThrough,
-        userMessageCount: conversations.userMessageCount,
-      })
-      .from(conversations)
-      .where(eq(conversations.conversationId, conversationId))
-      .limit(1);
-    return rows[0] ?? null;
-  }
-
-  /**
    * Update conversation summary in DB and in-memory cache.
    *
    * With `cover`, the write also moves `summary_through` and lands only while the
@@ -346,7 +336,11 @@ export class ConversationStore {
           ),
         )
         .returning({ id: conversations.id });
-      if (written.length === 0) return false;
+      if (written.length === 0) {
+        // Another refresh moved the marker: the text this process cached is not the stored one.
+        this.summaryCache.delete(conversationId);
+        return false;
+      }
     }
 
     this.summaryCache.set(conversationId, safe);
@@ -395,7 +389,7 @@ export class ConversationStore {
     conversationId: string,
     instanceId: InstanceSlug,
     options?: { channel?: string; userIdentifier?: string; source?: string; contextPrompt?: string },
-  ): Promise<{ created: boolean; userMessageCount?: number }> {
+  ): Promise<{ created: boolean }> {
     const channel = options?.channel ?? "web";
     const userIdentifier = options?.userIdentifier ?? null;
     const source = options?.source ?? "user";
@@ -415,9 +409,9 @@ export class ConversationStore {
         target: conversations.conversationId,
         set: { channel, userIdentifier, ...(contextPrompt ? { contextPrompt } : {}) },
       })
-      .returning({ xmax: sql<string>`xmax::text`, userMessageCount: conversations.userMessageCount });
+      .returning({ xmax: sql<string>`xmax::text` });
 
-    return { created: result[0]?.xmax === "0", userMessageCount: result[0]?.userMessageCount };
+    return { created: result[0]?.xmax === "0" };
   }
 
   /** Append messages to a conversation. */
@@ -564,6 +558,64 @@ export class ConversationStore {
       reasoning: (r.reasoning as ReasoningDetail[] | null) ?? null,
       createdAt: r.createdAt ?? null,
     }));
+  }
+
+  /**
+   * The most recent `limit` rows of a conversation, oldest first, with the summary,
+   * its `summary_through` marker and the persisted user-message count read in the
+   * same statement, hence the same snapshot: `appendMessages` moves the rows and the
+   * count in one transaction, so the count always lines up with the rows read and
+   * the window can place the marker on them (history-window.ts).
+   *
+   * With `steps`, the replay columns (`steps`, `reasoning`) come back only for the
+   * rows the window can hold, the exchanges after the marker (every row read when
+   * no marker within the count is stored); older rows carry them as null. Ordered
+   * like `getRecentMessages`, ties included.
+   */
+  async getHistorySnapshot(
+    conversationId: string,
+    limit: number,
+    options: { steps?: boolean } = {},
+  ): Promise<HistorySnapshot> {
+    // In the window: fewer user rows after the row than the exchanges the marker leaves uncovered.
+    const inWindow = sql`m.users_after < CASE
+        WHEN s.summary_through IS NULL OR s.summary_through > s.user_message_count THEN ${limit}
+        ELSE s.user_message_count - s.summary_through END`;
+    const replayColumns = options.steps
+      ? sql`CASE WHEN ${inWindow} THEN m.steps END AS steps, CASE WHEN ${inWindow} THEN m.reasoning END AS reasoning,`
+      : sql``;
+    const result = await db.execute(sql`
+      SELECT m.role, m.content, m.created_at, ${replayColumns}
+             s.summary, s.summary_through, s.user_message_count
+      FROM (
+        SELECT role, content, created_at, ${options.steps ? sql`steps, reasoning,` : sql``}
+               row_number() OVER (ORDER BY created_at DESC) AS rn,
+               count(*) FILTER (WHERE role = 'user')
+                 OVER (ORDER BY created_at DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS users_after
+        FROM conversation_messages
+        WHERE conversation_id = ${conversationId}
+        ORDER BY created_at DESC
+        LIMIT ${limit}
+      ) m
+      LEFT JOIN conversations s ON s.conversation_id = ${conversationId}
+      ORDER BY m.rn DESC
+    `);
+    const raw = result as unknown as Array<Record<string, unknown>>;
+    const json = <T>(v: unknown): T | null => (v == null ? null : ((typeof v === "string" ? JSON.parse(v) : v) as T));
+    const first = raw[0];
+    return {
+      rows: raw.map((r) => ({
+        role: r.role as string,
+        content: r.content as string,
+        ...(options.steps
+          ? { steps: json<StepDetail[]>(r.steps), reasoning: json<ReasoningDetail[]>(r.reasoning) }
+          : {}),
+        createdAt: r.created_at ? new Date(r.created_at as string) : null,
+      })),
+      summary: (first?.summary as string | null | undefined) ?? null,
+      summaryThrough: first?.summary_through == null ? null : Number(first.summary_through),
+      userMessageCount: first?.user_message_count == null ? null : Number(first.user_message_count),
+    };
   }
 
   /**

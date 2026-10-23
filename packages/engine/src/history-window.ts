@@ -54,14 +54,12 @@ export function historyBlockExchanges(promptCacheActive: boolean): number {
 export interface HistoryWindowState {
   /** Exchanges the start advances by (see {@link historyBlockExchanges}); defaults to {@link HISTORY_BLOCK_EXCHANGES}. */
   blockExchanges?: number;
-  /** User rows persisted in the whole conversation, read in a statement after `rows`; undefined when unknown. */
+  /** User rows persisted in the whole conversation, from the snapshot `rows` were read in; undefined when unknown. */
   userMessageCount?: number;
   /** Exchanges the stored summary covers (`conversations.summary_through`); null when it was never recorded. */
   summaryThrough?: number | null;
   /** True when a summary text is stored. A summary without a marker predates it and is trusted up to the block start. */
   hasSummary?: boolean;
-  /** False when the count moved while the rows were read: plan the window, but do not move the marker this turn. */
-  refreshAllowed?: boolean;
 }
 
 export interface HistoryWindowPlan {
@@ -154,7 +152,7 @@ export function planHistoryWindow(
   if (start > coveredRow) through = Math.max(through, ordinalOf(cut(HISTORY_CHAR_BUDGET / 2)));
   const to = rowOf(through);
   const summarize =
-    state.refreshAllowed !== false && through > covered && to > coveredRow
+    through > covered && to > coveredRow
       ? { from: coveredRow, to, expected: stored, through }
       : undefined;
 

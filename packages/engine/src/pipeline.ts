@@ -14,7 +14,7 @@ import type { CostBreakdown } from "./ai-gateway/types.js";
 import { conversationStore } from "./conversations/index.js";
 import { ConversationStateBuffer } from "./conversations/state.buffer.js";
 import { buildHistoryWithToolResults } from "./conversations/tool-history.js";
-import { rowsToModelMessages, type MessageRow } from "./conversations/store.js";
+import { rowsToModelMessages, type HistorySnapshot, type MessageRow } from "./conversations/store.js";
 import { extractMemories } from "./memory/index.js";
 import { pipelineLog } from "./utils/pipeline-logger.js";
 import { contactConversationId } from "./channels/outbound-conversation.js";
@@ -33,13 +33,7 @@ import type { HookEventPayload, HookExecutionSummary, HookRunContext } from "./h
 import { getEnabledHooks } from "./hooks/hooks.store.js";
 import { getHookRegistry } from "./hooks/hook-registry.js";
 import type { ResponseGeneratedOutcome } from "./hooks/response-replay.js";
-import {
-  HISTORY_CHAR_BUDGET,
-  HISTORY_MIN_EXCHANGES,
-  HISTORY_READ_LIMIT,
-  historyBlockExchanges,
-  planHistoryWindow,
-} from "./history-window.js";
+import { HISTORY_READ_LIMIT, historyBlockExchanges, planHistoryWindow } from "./history-window.js";
 import { cacheSupported } from "./ai-gateway/config.js";
 import { resolveDatetimeSettings, UNSET_AGENT_SETTINGS } from "./instances/agent-settings.js";
 import { createLogger } from "./utils/create-logger.js";
@@ -165,14 +159,10 @@ export async function preparePipeline(
     ?? contactConversationId(instanceId, msg.channelType, msg.channelId);
   const isAutoTaskTurn = isAutoTask(msg.text);
 
-  // Persisted user rows, from the upsert below, read before the history rows
-  // (history-window.ts). Unknown on auto-task turns.
-  let persistedUserMessages: number | undefined;
-
   // Skip conversation creation for automated tasks (e.g. Open WebUI title/tag generation)
   if (!isAutoTaskTurn) {
     const source = (msg.metadata?.source as string) ?? "user";
-    const ensureResult: { created: boolean; userMessageCount?: number } = await conversationStore
+    const ensureResult = await conversationStore
       .ensureConversation(conversationId, instanceId, {
         channel: msg.channelType,
         userIdentifier: msg.userName,
@@ -182,7 +172,6 @@ export async function preparePipeline(
         log.error("pipeline", `Failed to ensure conversation ${conversationId}`, err);
         return { created: false };
       });
-    persistedUserMessages = ensureResult.userMessageCount;
 
     // Activity-stream emit: lifecycle event when a brand-new conversation row
     // is created (never on subsequent turns of the same conversation).
@@ -227,24 +216,29 @@ export async function preparePipeline(
 
   // Fetch history, instance config, and context prompt in parallel — all independent
   // except that the history query depends on the config's tool-result replay flag.
-  // Replay agents read the raw rows ONCE and derive the text history from them,
-  // instead of running the same ordered query twice. The config is the 30s-cached one.
+  // One statement reads the rows with the summary, its marker and the user-message
+  // count, so they come from the same snapshot (history-window.ts). Replay agents
+  // read the raw rows ONCE and derive the text history from them, instead of
+  // running the same ordered query twice. The config is the 30s-cached one.
   const instanceConfigPromise = resolveInstanceConfig(instanceId);
-  const textHistory = () =>
-    conversationStore.getRecentMessages(conversationId, HISTORY_READ_LIMIT).catch(() => [] as ModelMessage[]);
-  const historyPromise: Promise<{ messages: ModelMessage[]; rows?: MessageRow[] }> =
-    instanceConfigPromise.then(async (config) => {
-      if (config.toolResultsInHistoryEnabled && !isAutoTaskTurn) {
-        try {
-          const rows = await conversationStore.getRecentMessageRows(conversationId, HISTORY_READ_LIMIT);
-          return { messages: rowsToModelMessages(rows), rows };
-        } catch {
-          // Same degradation as before: the text read stands in for the rows.
-        }
+  type HistoryRead = { messages: ModelMessage[]; rows?: MessageRow[]; snapshot?: HistorySnapshot };
+  const historyPromise: Promise<HistoryRead> = instanceConfigPromise.then(async (config) => {
+    if (config.toolResultsInHistoryEnabled && !isAutoTaskTurn) {
+      try {
+        const snapshot = await conversationStore.getHistorySnapshot(conversationId, HISTORY_READ_LIMIT, { steps: true });
+        return { messages: rowsToModelMessages(snapshot.rows), rows: snapshot.rows, snapshot };
+      } catch {
+        // Same degradation as before: the text read stands in for the rows.
       }
-      return { messages: await textHistory() };
-    });
-  const [{ messages: conversationHistory, rows: replayRows }, instanceConfig, contextPrompt, stateBuffer] =
+    }
+    try {
+      const snapshot = await conversationStore.getHistorySnapshot(conversationId, HISTORY_READ_LIMIT);
+      return { messages: rowsToModelMessages(snapshot.rows), snapshot };
+    } catch {
+      return { messages: [] };
+    }
+  });
+  const [{ messages: conversationHistory, rows: replayRows, snapshot }, instanceConfig, contextPrompt, stateBuffer] =
     await Promise.all([
       historyPromise,
       instanceConfigPromise,
@@ -270,15 +264,12 @@ export async function preparePipeline(
 
   // Block window (history-window.ts): the start is where the stored summary ends
   // and advances 5 exchanges at a time, so the history stays append-only for the
-  // prompt cache. The count is read again with the summary, after the rows: when
-  // it moved in between, the rows may not line up with it, so this turn plans the
-  // window from the newer count and leaves the summary for the next turn.
+  // prompt cache. The summary, its marker and the count come from the rows' own
+  // statement, so they line up with the rows read.
   const windowRows = conversationHistory.map((m) => ({
     role: m.role,
     content: typeof m.content === "string" ? m.content : "",
   }));
-  const userRowsRead = windowRows.filter((r) => r.role === "user").length;
-  const charsRead = windowRows.reduce((n, r) => n + r.content.length, 0);
   // Without a prompt cache (turned off for the agent, or a model the catalog marks
   // as uncached) the window slides one exchange at a time, as short as a fixed one.
   const { provider, model } = instanceConfig;
@@ -287,23 +278,14 @@ export async function preparePipeline(
   );
   // No rows read (a new conversation, or the read failed): no window and no
   // summary; the client-side history in the metadata stands in, as before.
-  const summaryState =
-    conversationHistory.length > 0 &&
-    (Math.max(persistedUserMessages ?? 0, userRowsRead) >= HISTORY_MIN_EXCHANGES + blockExchanges - 1 ||
-      charsRead > HISTORY_CHAR_BUDGET)
-      ? await conversationStore.getSummaryState(conversationId).catch(() => null)
-      : null;
+  const summaryState = conversationHistory.length > 0 ? snapshot : undefined;
   const windowPlan =
     conversationHistory.length > 0
       ? planHistoryWindow(windowRows, {
           blockExchanges,
-          userMessageCount: summaryState?.userMessageCount ?? persistedUserMessages,
+          userMessageCount: summaryState?.userMessageCount ?? undefined,
           summaryThrough: summaryState?.summaryThrough ?? null,
           hasSummary: Boolean(summaryState?.summary),
-          refreshAllowed:
-            summaryState !== null &&
-            persistedUserMessages !== undefined &&
-            summaryState.userMessageCount === persistedUserMessages,
         })
       : { start: 0, hasOverflow: false, summarize: undefined, unreadExchanges: 0 };
   if (windowPlan.unreadExchanges > 0) {

@@ -9,23 +9,47 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockGetRecentMessages, mockEnsure, mockSummaryState, mockConfig } = vi.hoisted(() => ({
+const { mockGetRecentMessages, mockEnsure, mockSummaryState, mockConfig, storeReads } = vi.hoisted(() => ({
+  /** The persisted rows, newest `limit` (fixture). */
   mockGetRecentMessages: vi.fn(),
   mockEnsure: vi.fn(),
+  /** The stored summary, marker and user-message count (fixture). */
   mockSummaryState: vi.fn(),
   mockConfig: vi.fn(),
+  /** Every history read preparePipeline makes, in order, with its arguments after the conversation id. */
+  storeReads: [] as unknown[][],
 }));
 
-vi.mock("./conversations/index.js", () => ({
-  conversationStore: {
-    ensureConversation: mockEnsure,
-    getRecentMessages: mockGetRecentMessages,
-    getRecentMessageRows: vi.fn(),
-    getContextPrompt: vi.fn(async () => null),
-    getSummary: vi.fn(async () => "summary"),
-    getSummaryState: mockSummaryState,
-  },
-}));
+vi.mock("./conversations/index.js", () => {
+  const read =
+    <A extends unknown[], R>(name: string, fn: (...a: A) => R) =>
+    (...a: A): R => {
+      storeReads.push([name, ...a.slice(1)]);
+      return fn(...a);
+    };
+  return {
+    conversationStore: {
+      ensureConversation: mockEnsure,
+      // The separate reads turns made before the snapshot, so a turn still making them shows in storeReads.
+      getRecentMessages: read("getRecentMessages", mockGetRecentMessages),
+      getRecentMessageRows: read("getRecentMessageRows", (id: string, limit: number) => mockGetRecentMessages(id, limit)),
+      getSummaryState: read("getSummaryState", mockSummaryState),
+      getSummary: read("getSummary", async () => "summary"),
+      // One statement: the rows and, from the same snapshot, the summary state (none without rows).
+      getHistorySnapshot: read("getHistorySnapshot", async (id: string, limit: number) => {
+        const rows = await mockGetRecentMessages(id, limit);
+        const state = rows.length > 0 ? await mockSummaryState(id) : undefined;
+        return {
+          rows,
+          summary: state?.summary ?? null,
+          summaryThrough: state?.summaryThrough ?? null,
+          userMessageCount: state?.userMessageCount ?? null,
+        };
+      }),
+      getContextPrompt: vi.fn(async () => null),
+    },
+  };
+});
 vi.mock("./conversations/state.buffer.js", () => ({
   ConversationStateBuffer: class {
     static load = vi.fn(async () => new this());
@@ -35,9 +59,9 @@ vi.mock("./conversations/state.buffer.js", () => ({
 vi.mock("./instances/config-resolver.js", () => ({ resolveInstanceConfig: mockConfig }));
 
 /** The resolved agent config the pipeline reads; provider and model unset mean the deployment defaults. */
-function agent(over: { cacheEnabled?: boolean; provider?: string; model?: string } = {}) {
+function agent(over: { cacheEnabled?: boolean; provider?: string; model?: string; replay?: boolean } = {}) {
   mockConfig.mockResolvedValue({
-    toolResultsInHistoryEnabled: false,
+    toolResultsInHistoryEnabled: over.replay ?? false,
     langsmith: { enabled: false },
     cacheConfig: { enabled: over.cacheEnabled ?? true, ttl: "1h" },
     provider: over.provider,
@@ -63,8 +87,8 @@ const msg = {
 interface Persisted {
   /** Exchanges the stored summary covers; defaults to the block start (every refresh landed). */
   through?: number | null;
-  /** The count read with the summary, after the rows; defaults to `exchanges`. */
-  countAfter?: number;
+  /** The count `ensureConversation` saw, before another turn's rows landed; defaults to `exchanges`. */
+  ensureCount?: number;
   content?: Record<string, string>;
 }
 
@@ -77,12 +101,12 @@ function persist(exchanges: number, opts: Persisted = {}) {
   }
   const blockStart = 5 * Math.floor(Math.max(0, exchanges - 5) / 5);
   const through = opts.through === undefined ? blockStart : opts.through;
-  mockEnsure.mockResolvedValue({ created: false, userMessageCount: exchanges });
+  mockEnsure.mockResolvedValue({ created: false, userMessageCount: opts.ensureCount ?? exchanges });
   mockGetRecentMessages.mockImplementation(async (_id: string, limit: number) => rows.slice(-limit));
   mockSummaryState.mockResolvedValue({
     summary: through ? "summary" : null,
     summaryThrough: through,
-    userMessageCount: opts.countAfter ?? exchanges,
+    userMessageCount: exchanges,
   });
 }
 
@@ -192,11 +216,31 @@ describe("preparePipeline — block history window", () => {
     expect(ctx.summaryCover).toEqual({ expected: 5, through: 10 });
   });
 
-  it("does not move the marker when the count moved while the rows were read", async () => {
-    persist(14, { countAfter: 15 });
+  it("reads the rows, the summary and the count in one statement, with no summary read after it", async () => {
+    persist(14);
+    storeReads.length = 0;
     const ctx = await preparePipeline(msg);
-    expect(ctx.droppedMessages).toBeUndefined();
-    expect(ctx.summaryCover).toBeUndefined();
+    expect(storeReads).toEqual([["getHistorySnapshot", 40]]);
+    expect(ctx.conversationSummary).toBe("summary");
+    expect(ctx.summaryCover).toEqual({ expected: 5, through: 10 });
+  });
+
+  it("still refreshes when another turn's rows land between ensureConversation and the read", async () => {
+    // The upsert saw 13 exchanges; the rows and the count read with them already hold 14.
+    persist(14, { ensureCount: 13 });
+    const ctx = await preparePipeline(msg);
+    expect(texts(ctx.droppedMessages)).toEqual(["u5", "a5", "u6", "a6", "u7", "a7", "u8", "a8", "u9", "a9"]);
+    expect(ctx.summaryCover).toEqual({ expected: 5, through: 10 });
+  });
+
+  it("reads the replay rows in the same statement, asking for the replay columns", async () => {
+    agent({ replay: true });
+    persist(14);
+    storeReads.length = 0;
+    const ctx = await preparePipeline(msg);
+    expect(storeReads).toEqual([["getHistorySnapshot", 40, { steps: true }]]);
+    expect(ctx.history?.[0]?.content).toBe("u5");
+    expect(ctx.summaryCover).toEqual({ expected: 5, through: 10 });
   });
 
   it("passes a short conversation whole, without a summary", async () => {
