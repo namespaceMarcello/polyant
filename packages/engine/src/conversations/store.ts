@@ -586,7 +586,8 @@ export class ConversationStore {
       : sql``;
     const result = await db.execute(sql`
       SELECT m.role, m.content, m.created_at, ${replayColumns}
-             s.summary, s.summary_through, s.user_message_count
+             -- The summary text rides on the newest row only: once, not once per row read.
+             CASE WHEN m.rn = 1 THEN s.summary END AS summary, s.summary_through, s.user_message_count
       FROM (
         SELECT role, content, created_at, ${options.steps ? sql`steps, reasoning,` : sql``}
                row_number() OVER (ORDER BY created_at DESC) AS rn,
@@ -602,7 +603,8 @@ export class ConversationStore {
     `);
     const raw = result as unknown as Array<Record<string, unknown>>;
     const json = <T>(v: unknown): T | null => (v == null ? null : ((typeof v === "string" ? JSON.parse(v) : v) as T));
-    const first = raw[0];
+    // Rows come oldest first; the newest carries the summary text (see the CASE above).
+    const newest = raw[raw.length - 1];
     return {
       rows: raw.map((r) => ({
         role: r.role as string,
@@ -612,9 +614,9 @@ export class ConversationStore {
           : {}),
         createdAt: r.created_at ? new Date(r.created_at as string) : null,
       })),
-      summary: (first?.summary as string | null | undefined) ?? null,
-      summaryThrough: first?.summary_through == null ? null : Number(first.summary_through),
-      userMessageCount: first?.user_message_count == null ? null : Number(first.user_message_count),
+      summary: (newest?.summary as string | null | undefined) ?? null,
+      summaryThrough: newest?.summary_through == null ? null : Number(newest.summary_through),
+      userMessageCount: newest?.user_message_count == null ? null : Number(newest.user_message_count),
     };
   }
 
