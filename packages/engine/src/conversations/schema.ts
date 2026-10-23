@@ -8,6 +8,9 @@ export const conversations = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     conversationId: text("conversation_id").notNull().unique(),
     summary: text("summary"),
+    // Exchanges (user-message ordinals) the summary covers; null on summaries
+    // written before it was recorded. The history window starts here (history-window.ts).
+    summaryThrough: integer("summary_through"),
     title: text("title"),
     instanceId: text("instance_id"),
     channel: text("channel").default("web"),

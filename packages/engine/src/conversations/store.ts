@@ -297,15 +297,60 @@ export class ConversationStore {
     return summary;
   }
 
-  /** Update conversation summary in DB and in-memory cache. */
-  async updateSummary(conversationId: string, summary: string): Promise<void> {
+  /**
+   * The summary, the exchanges it covers and the persisted user-message count,
+   * in one statement, for the history window (history-window.ts).
+   */
+  async getSummaryState(
+    conversationId: string,
+  ): Promise<{ summary: string | null; summaryThrough: number | null; userMessageCount: number } | null> {
+    const rows = await db
+      .select({
+        summary: conversations.summary,
+        summaryThrough: conversations.summaryThrough,
+        userMessageCount: conversations.userMessageCount,
+      })
+      .from(conversations)
+      .where(eq(conversations.conversationId, conversationId))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Update conversation summary in DB and in-memory cache.
+   *
+   * With `cover`, the write also moves `summary_through` and lands only while the
+   * stored marker still equals `cover.expected`: a refresh that lost the race to
+   * another one is dropped instead of folding the same exchanges twice. Returns
+   * whether the row was written.
+   */
+  async updateSummary(
+    conversationId: string,
+    summary: string,
+    cover?: { expected: number | null; through: number },
+  ): Promise<boolean> {
     const safe = stripNulString(summary);
-    await db
-      .update(conversations)
-      .set({ summary: safe, updatedAt: new Date() })
-      .where(eq(conversations.conversationId, conversationId));
+    if (!cover) {
+      await db
+        .update(conversations)
+        .set({ summary: safe, updatedAt: new Date() })
+        .where(eq(conversations.conversationId, conversationId));
+    } else {
+      const written = await db
+        .update(conversations)
+        .set({ summary: safe, summaryThrough: cover.through, updatedAt: new Date() })
+        .where(
+          and(
+            eq(conversations.conversationId, conversationId),
+            sql`${conversations.summaryThrough} IS NOT DISTINCT FROM ${cover.expected}`,
+          ),
+        )
+        .returning({ id: conversations.id });
+      if (written.length === 0) return false;
+    }
 
     this.summaryCache.set(conversationId, safe);
+    return true;
   }
 
   /** Get context prompt for a webhook-triggered conversation. Returns null if not set. */
@@ -350,7 +395,7 @@ export class ConversationStore {
     conversationId: string,
     instanceId: InstanceSlug,
     options?: { channel?: string; userIdentifier?: string; source?: string; contextPrompt?: string },
-  ): Promise<{ created: boolean }> {
+  ): Promise<{ created: boolean; userMessageCount?: number }> {
     const channel = options?.channel ?? "web";
     const userIdentifier = options?.userIdentifier ?? null;
     const source = options?.source ?? "user";
@@ -370,9 +415,9 @@ export class ConversationStore {
         target: conversations.conversationId,
         set: { channel, userIdentifier, ...(contextPrompt ? { contextPrompt } : {}) },
       })
-      .returning({ xmax: sql<string>`xmax::text` });
+      .returning({ xmax: sql<string>`xmax::text`, userMessageCount: conversations.userMessageCount });
 
-    return { created: result[0]?.xmax === "0" };
+    return { created: result[0]?.xmax === "0", userMessageCount: result[0]?.userMessageCount };
   }
 
   /** Append messages to a conversation. */
