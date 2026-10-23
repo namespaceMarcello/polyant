@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { JsonTree } from "./json-tree";
+
+vi.mock("@/lib/i18n/context", () => ({
+  useI18n: () => ({ locale: "en", setLocale: vi.fn(), t: (key: string) => key }),
+}));
 
 describe("JsonTree", () => {
   const value = { customer: { name: "Ada", tags: ["vip"] }, confirmed: true, notes: null };
@@ -30,10 +34,35 @@ describe("JsonTree", () => {
     expect(screen.queryByText('"Ada"')).not.toBeInTheDocument();
   });
 
+  it("opens a branch from its key, and shows no size beside it", async () => {
+    render(<JsonTree value={value} />);
+    expect(screen.queryByText("{2}")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText("customer"));
+    expect(screen.getByText('"Ada"')).toBeInTheDocument();
+  });
+
+  it("copies a leaf value on click, a string without its quotes", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<JsonTree value={{ city: "Torino", count: 3 }} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "common.copy city" }));
+    expect(writeText).toHaveBeenCalledWith("Torino");
+    expect(await screen.findByRole("button", { name: "common.copied city" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "common.copy count" }));
+    expect(writeText).toHaveBeenLastCalledWith("3");
+  });
+
+  it("shows a first-level hint beside a closed key", () => {
+    render(<JsonTree value={[{ role: "user" }]} hint={(m) => (m as { role: string }).role} />);
+    expect(screen.getByRole("button", { name: "0 user" })).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("gives an empty branch no toggle", () => {
     render(<JsonTree value={{ empty: {}, list: [] }} />);
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
-    expect(screen.getByText("{0}")).toBeInTheDocument();
-    expect(screen.getByText("[0]")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { expanded: false })).not.toBeInTheDocument();
+    expect(screen.getByText("{}")).toBeInTheDocument();
+    expect(screen.getByText("[]")).toBeInTheDocument();
   });
 });

@@ -142,7 +142,7 @@ describe("DebugSheet tabs", () => {
 
     await userEvent.click(screen.getByRole("tab", { name: /message\.debug\.history/ }));
     expect(await screen.findByText("message.debug.messages")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "0" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "0 user" })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("says the payload was not captured in the payload tabs, and keeps the steps", async () => {
