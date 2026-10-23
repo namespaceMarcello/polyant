@@ -4,10 +4,10 @@ import { screen, waitFor } from "@testing-library/react";
 import { renderWithProviders, userEvent } from "@/test-utils";
 import { ApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { CreateUserDialog } from "./create-user-dialog";
+import { CreateUserSheet } from "./create-user-sheet";
 
 const { mockCreate } = vi.hoisted(() => ({ mockCreate: vi.fn() }));
-// A made-up one-time value the dialog shows once; not a credential.
+// A made-up one-time value the drawer shows once; not a credential.
 const ONE_TIME_SECRET = "Gen-Pass-42";
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -21,12 +21,12 @@ function renderDialog() {
   const onOpenChange = vi.fn();
   const onCreated = vi.fn();
   renderWithProviders(
-    <CreateUserDialog open onOpenChange={onOpenChange} onCreated={onCreated} />,
+    <CreateUserSheet open onOpenChange={onOpenChange} onCreated={onCreated} />,
   );
   return { onOpenChange, onCreated };
 }
 
-describe("CreateUserDialog", () => {
+describe("CreateUserSheet", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("cannot be submitted without an email", async () => {
