@@ -74,7 +74,7 @@ function InstanceGrid({ instances, paths }: { instances: Instance[]; paths: Tena
             </p>
             <Badge
               variant={inst.status === "active" ? "default" : "secondary"}
-              className="mt-1 text-[10px]"
+              className="mt-1"
             >
               {instanceStatusLabel(inst.status, t)}
             </Badge>
