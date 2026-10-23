@@ -279,8 +279,8 @@ export async function preparePipeline(
   const incomingSystemMessages = (msg.metadata?.systemMessages as Array<{ role: string; content: string }>) ?? [];
 
   // Block window (history-window.ts): the start is where the stored summary ends
-  // and advances 5 exchanges at a time, so the history stays append-only for the
-  // prompt cache. The summary, its marker and the count come from the rows' own
+  // and advances 5 exchanges at a time where the prompt is cached (1 otherwise, or
+  // for tool-replay agents), so the history stays append-only for the prompt cache. The summary, its marker and the count come from the rows' own
   // statement, so they line up with the rows read.
   const windowRows = conversationHistory.map((m) => ({
     role: m.role,

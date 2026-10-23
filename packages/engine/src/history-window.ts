@@ -9,6 +9,9 @@
  * to the cache on every call and never reads it back. Here the start advances in
  * blocks of {@link HISTORY_BLOCK_EXCHANGES} exchanges: between two advances the
  * history only grows, and its cached prefix is read instead of re-written.
+ * Where the prompt is not cached, or the agent replays tool results, the start
+ * follows every exchange instead ({@link historyBlockExchanges}), so the window
+ * stays as short as a fixed one.
  *
  * The window starts where the stored summary ends (`conversations.summary_through`,
  * in user-message ordinals: an exchange begins with a user row). The summary is
