@@ -316,7 +316,7 @@ function InstanceDetailContent() {
           <ChannelsSection instance={instance} onUpdate={setInstance} />
         </TabsContent>
 
-        {/* Configurazione (prompt), Risorse, Conoscenza, Automazioni (hook) e Avanzate, in order of the tab values */}
+        {/* Prompts, resources, knowledge, hooks and advanced parameters */}
         <TabsContent value="prompts" data-tour="agent-prompts">
           <PromptsTab slug={instance.slug} prompts={prompts} onUpdate={setPrompts} />
         </TabsContent>
@@ -376,7 +376,7 @@ function InstanceDetailContent() {
           <PrivacyTab instance={instance} onUpdate={setInstance} />
         </TabsContent>
 
-        {/* Conversazioni, Memorie e Monitor */}
+        {/* Conversations, memories and the Monitor: what this agent has done */}
         <TabsContent value="conversations" data-tour="agent-conversations">
           <AgentConversationsTab slug={instance.slug} />
         </TabsContent>
