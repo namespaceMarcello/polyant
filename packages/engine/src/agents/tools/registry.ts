@@ -87,6 +87,11 @@ export interface ToolContext {
    *  conversation (a plugin renders a PDF, another plugin uploads it). The
    *  engine owns the bytes and binds every handle to this conversation. */
   artifacts: import("./artifact-store.js").ToolArtifactApi;
+  /** One short LLM answer through the gateway, on the agent's provider and keys
+   *  (`agentAi`), so a tool no longer needs `apiKeys` to ask a model. */
+  ai?: import("@polyant-ai/plugin-sdk").HookAi;
+  /** The turn's cancellation: aborted once nobody waits for this call. */
+  abortSignal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
