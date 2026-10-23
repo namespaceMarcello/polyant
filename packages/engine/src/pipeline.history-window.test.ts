@@ -183,6 +183,15 @@ describe("preparePipeline — window without a prompt cache", () => {
     expect(firsts).toEqual(["u0", "u0", "u0", "u0", "u0", "u5", "u5"]);
   });
 
+  it("treats an empty provider or model as unset: the provider's standard model, here one with a cache", async () => {
+    // An empty model id is not in the catalog, and bedrock's fallback for it is "no cache"; its standard model caches.
+    for (const over of [{ provider: "bedrock", model: "" }, { provider: "", model: "" }]) {
+      agent(over);
+      const { firsts } = await converse(5, 12);
+      expect({ over, firsts }).toEqual({ over, firsts: ["u0", "u0", "u0", "u0", "u0", "u5", "u5"] });
+    }
+  });
+
   it("slides one exchange per turn when the provider cannot be resolved", async () => {
     agent({ provider: "no-such-provider" });
     const { firsts } = await converse(5, 12);
@@ -293,50 +302,58 @@ describe("preparePipeline — block history window", () => {
     expect(starts).toEqual([8, 10, 12]);
   });
 
-  /** Six short exchanges whose answers each replay five tool results of 5,000 chars (2,000 kept each). */
-  function persistToolTurns(stepsOf: (i: number) => unknown = (i) => [toolStep(i)]) {
+  /** `exchanges` short exchanges whose answers each replay one tool call; the rows persisted for the snapshot. */
+  function persistToolTurns(exchanges: number, through: number | null, stepsOf: (i: number) => unknown = (i) => [toolStep(i)]) {
     const rows: { role: string; content: string; steps?: unknown }[] = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < exchanges; i++) {
       rows.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}`, steps: stepsOf(i) });
     }
-    mockEnsure.mockResolvedValue({ created: false, userMessageCount: 6 });
-    mockGetRecentMessages.mockImplementation(async () => rows);
-    mockSummaryState.mockResolvedValue({ summary: null, summaryThrough: null, userMessageCount: 6 });
+    mockEnsure.mockResolvedValue({ created: false, userMessageCount: exchanges });
+    mockGetRecentMessages.mockImplementation(async (_id: string, limit: number) => rows.slice(-limit));
+    mockSummaryState.mockResolvedValue({ summary: through ? "summary" : null, summaryThrough: through, userMessageCount: exchanges });
   }
   const toolStep = (i: number) => ({
     index: 0,
     stepType: "initial",
     text: "",
     finishReason: "tool-calls",
-    toolCalls: Array.from({ length: 5 }, (_, k) => ({ toolCallId: `c${i}_${k}`, toolName: "lookup", args: {} })),
-    toolResults: Array.from({ length: 5 }, (_, k) => ({ toolCallId: `c${i}_${k}`, result: "r".repeat(5_000) })),
+    toolCalls: [{ toolCallId: `c${i}`, toolName: "lookup", args: {} }],
+    toolResults: [{ toolCallId: `c${i}`, result: `r${i}` }],
   });
 
-  it("cuts a replayed window by the size of its tool calls and results, not only its text", async () => {
-    // Each answer replays about 11k chars: the 40k budget holds three exchanges,
-    // and the refresh folds down to half the budget (the last exchange).
-    agent({ replay: true });
-    persistToolTurns();
-    const ctx = await preparePipeline(msg);
-    expect(ctx.history?.[0]).toEqual({ role: "user", content: "u3" });
-    expect(ctx.history?.filter((m) => m.role === "tool")).toHaveLength(3);
-    expect(texts(ctx.droppedMessages)).toEqual(["u0", "a0", "u1", "a1", "u2", "a2", "u3", "a3", "u4", "a4"]);
-    expect(ctx.summaryCover).toEqual({ expected: null, through: 5 });
-    // The same rows without replay are a few chars of text: the whole conversation fits.
-    agent({ replay: false });
-    expect((await preparePipeline(msg)).history?.[0]?.content).toBe("u0");
+  it("slides a tool-replay agent's window one exchange per turn, with the prompt cache on", async () => {
+    // Blocks would carry up to four more exchanges of tool calls and results on every call.
+    agent({ replay: true, cacheEnabled: true, provider: "anthropic", model: "claude-sonnet-5-5" });
+    const firsts: string[] = [];
+    const covers: (number | undefined)[] = [];
+    let through = 1;
+    for (const exchanges of [6, 7, 8]) {
+      persistToolTurns(exchanges, through);
+      const ctx = await preparePipeline(msg);
+      firsts.push(String(ctx.history?.[0]?.content));
+      covers.push(ctx.summaryCover?.through);
+      through = ctx.summaryCover?.through ?? through;
+    }
+    expect(firsts).toEqual(["u1", "u2", "u3"]);
+    expect(covers).toEqual([2, 3, 4]);
+    // The same conversation without replay keeps its block: no refresh before exchange 10.
+    agent({ replay: false, cacheEnabled: true, provider: "anthropic", model: "claude-sonnet-5-5" });
+    persistToolTurns(8, 0);
+    const blocks = await preparePipeline(msg);
+    expect(blocks.history?.[0]?.content).toBe("u0");
+    expect(blocks.summaryCover).toBeUndefined();
   });
 
-  it("replays the text of an answer whose steps cell could not be decoded, and the tool calls of the others", async () => {
+  it("rebuilds the tool calls and results of the window rows only, and the text of an answer without steps", async () => {
     agent({ replay: true });
-    // The snapshot keeps an undecodable legacy cell as its raw string (store.ts).
-    persistToolTurns((i) => (i === 5 ? "not json" : i === 4 ? [toolStep(i)] : null));
+    // a4's steps read as null: no tool calls, or a cell the snapshot could not decode (store.ts).
+    persistToolTurns(7, 2, (i) => (i === 4 ? null : [toolStep(i)]));
     const ctx = await preparePipeline(msg);
-    expect(ctx.history?.slice(-3)).toEqual([
-      expect.objectContaining({ role: "tool" }),
-      { role: "user", content: "u5" },
-      { role: "assistant", content: "a5" },
-    ]);
+    expect(ctx.history?.[0]).toEqual({ role: "user", content: "u2" });
+    const calls = ctx.history?.filter((m) => m.role === "tool").map((m) => (m.content as { toolCallId: string }[])[0].toolCallId);
+    expect(calls).toEqual(["c2", "c3", "c5", "c6"]);
+    expect(ctx.history).toContainEqual({ role: "assistant", content: "a4" });
+    expect(texts(ctx.droppedMessages)).toEqual(["u2", "a2"]);
   });
 });
 
@@ -401,7 +418,7 @@ describe("preparePipeline — history read edge cases", () => {
     }
   });
 
-  it("opens the window on a user row when the rows read start inside an exchange the summary does not cover", async () => {
+  it("opens the window on a user row when the rows read start inside an exchange the summary does not cover, and folds the rows before it", async () => {
     // 23 exchanges; the rows read start at a3, whose user row was not read.
     const rows = [{ role: "assistant", content: "a3" }];
     for (let i = 4; i < 23; i++) rows.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}` });
@@ -410,9 +427,23 @@ describe("preparePipeline — history read edge cases", () => {
       mockSummaryState.mockResolvedValue({ summary: "old summary", summaryThrough: through, userMessageCount: 23 });
       const ctx = await preparePipeline(msg);
       expect({ through, first: ctx.history?.[0]?.content }).toEqual({ through, first: "u4" });
-      expect({ through, folded: texts(ctx.droppedMessages)?.[0] }).toEqual({ through, folded: "u4" });
+      // a3 belongs to an exchange the marker does not reach: summarized, not lost.
+      expect({ through, folded: texts(ctx.droppedMessages)?.slice(0, 2) }).toEqual({ through, folded: ["a3", "u4"] });
       expect(ctx.conversationSummary).toBe("old summary");
     }
+  });
+
+  it("leaves the rows before the first user row read out of a refresh that does not cover their exchange", async () => {
+    // 30 exchanges; the rows read are 34 outbound answers of exchange 26, then u27..a29.
+    // The refresh reaches exchange 25 or 26 only: folding them now would fold them again next turn.
+    const rows = Array.from({ length: 34 }, (_, k) => ({ role: "assistant", content: `o${k}` }));
+    for (let i = 27; i < 30; i++) rows.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}` });
+    mockGetRecentMessages.mockImplementation(async () => rows);
+    mockSummaryState.mockResolvedValue({ summary: "old summary", summaryThrough: 0, userMessageCount: 30 });
+    const ctx = await preparePipeline(msg);
+    expect(ctx.history?.[0]?.content).toBe("u27");
+    expect(ctx.droppedMessages).toBeUndefined();
+    expect(ctx.summaryCover).toBeUndefined();
   });
 
   it("trusts a summary without a marker for no exchange: shown, window from the first row, refreshed from null", async () => {

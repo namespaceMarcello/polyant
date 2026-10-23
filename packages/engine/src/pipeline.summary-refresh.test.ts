@@ -10,8 +10,10 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockChat, mockUpdateSummary, mockGetSummaryThrough } = vi.hoisted(() => ({
+const { mockChat, mockUpdateSummary, mockGetSummaryThrough, mockExtractMemories } = vi.hoisted(() => ({
   mockChat: vi.fn(),
+  /** Runs after the summary step: its call marks the end of the refresh. */
+  mockExtractMemories: vi.fn(async (..._args: unknown[]) => undefined),
   mockUpdateSummary: vi.fn(async (..._args: unknown[]) => true),
   /** The stored marker the refresh reads again before its summary call. */
   mockGetSummaryThrough: vi.fn(async (..._args: unknown[]): Promise<number | null | undefined> => 5),
@@ -27,7 +29,7 @@ vi.mock("./conversations/index.js", () => ({
   },
 }));
 vi.mock("./utils/title-generator.js", () => ({ generateConversationTitle: vi.fn(async () => undefined) }));
-vi.mock("./memory/index.js", () => ({ extractMemories: vi.fn(async () => undefined) }));
+vi.mock("./memory/index.js", () => ({ extractMemories: mockExtractMemories }));
 
 import { afterResponse } from "./pipeline.js";
 import { asInstanceSlug } from "./instances/identifiers.js";
@@ -42,7 +44,7 @@ function respond(conversationId: string, expected: number | null, cover = true) 
     needsSummaryUpdate: true,
     droppedMessages: [{ role: "user", content: "u5" }, { role: "assistant", content: "a5" }],
     ...(cover ? { summaryCover: { expected, through: (expected ?? 0) + 5 } } : {}),
-    memoryEnabled: false,
+    memoryEnabled: true,
   });
 }
 
@@ -53,11 +55,8 @@ describe("afterResponse — summary refresh", () => {
     mockGetSummaryThrough.mockResolvedValue(5);
   });
 
-  /** Let the fire-and-forget work run past the marker read. */
-  const settle = async () => {
-    await vi.waitFor(() => expect(mockGetSummaryThrough).toHaveBeenCalled());
-    await new Promise((r) => setTimeout(r, 10));
-  };
+  /** Wait until `turns` post-response runs are past the summary step (memory extraction follows it). */
+  const settle = (turns = 1) => vi.waitFor(() => expect(mockExtractMemories).toHaveBeenCalledTimes(turns));
 
   it("skips the paid summary call when the marker moved after the window was planned", async () => {
     // The previous turn's refresh landed (5 -> 10) while this turn was answering.
@@ -77,8 +76,8 @@ describe("afterResponse — summary refresh", () => {
     await settle();
     mockGetSummaryThrough.mockResolvedValueOnce(undefined);
     respond("c-gone", null);
-    await vi.waitFor(() => expect(mockGetSummaryThrough).toHaveBeenCalledTimes(2));
-    await new Promise((r) => setTimeout(r, 10));
+    await settle(2);
+    expect(mockGetSummaryThrough).toHaveBeenCalledTimes(2);
     expect(mockChat).not.toHaveBeenCalled();
     expect(mockUpdateSummary).not.toHaveBeenCalled();
   });
@@ -93,7 +92,8 @@ describe("afterResponse — summary refresh", () => {
   it("refreshes without a marker read when the turn planned no marker move", async () => {
     mockChat.mockResolvedValue({ text: "summary" });
     respond("c-plain", 5, false);
-    await vi.waitFor(() => expect(mockUpdateSummary).toHaveBeenCalledWith("c-plain", "summary", undefined));
+    await settle();
+    expect(mockUpdateSummary).toHaveBeenCalledWith("c-plain", "summary", undefined);
     expect(mockGetSummaryThrough).not.toHaveBeenCalled();
   });
 

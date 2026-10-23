@@ -568,15 +568,16 @@ export class ConversationStore {
       ORDER BY m.rn DESC
     `);
     const raw = result as unknown as Array<Record<string, unknown>>;
-    // As drizzle's jsonb mapper: a string cell is parsed, and one that is not JSON
-    // (a legacy double-encoded value) is kept as it is instead of failing the read.
+    // As drizzle's jsonb mapper, a string cell (a legacy double-encoded value) is
+    // parsed. One that is not JSON reads as null instead of failing the read or
+    // passing a string as the declared type: that row replays its text only.
     const json = <T>(v: unknown): T | null => {
       if (v == null) return null;
       if (typeof v !== "string") return v as T;
       try {
         return JSON.parse(v) as T;
       } catch {
-        return v as T;
+        return null;
       }
     };
     // Rows come oldest first; the newest carries the summary text (see the CASE above).

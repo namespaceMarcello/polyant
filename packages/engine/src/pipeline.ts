@@ -151,23 +151,16 @@ function buildLangsmithConfig(cfg: InstanceConfig): { apiKey: string; project: s
 
 /**
  * Whether the catalog prices a prompt cache for the model the gateway calls for
- * this agent. A selection the gateway cannot resolve fails its call anyway; the
- * window then slides as if uncached.
+ * this agent. An empty provider or model counts as unset. A selection the gateway
+ * cannot resolve fails its call anyway; the window then slides as if uncached.
  */
 function effectiveModelCached(cfg: InstanceConfig): boolean {
   try {
-    const { provider, model } = resolveEffectiveModelSelection(cfg.provider, cfg.model);
+    const { provider, model } = resolveEffectiveModelSelection(cfg.provider || undefined, cfg.model || undefined);
     return cacheSupported(provider, model);
   } catch {
     return false;
   }
-}
-
-/** Characters a replayed row sends: its text, or the serialized parts of a tool turn. */
-function replayedChars(messages: readonly ModelMessage[]): number {
-  let chars = 0;
-  for (const m of messages) chars += typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
-  return chars;
 }
 
 export async function preparePipeline(
@@ -289,22 +282,18 @@ export async function preparePipeline(
   // and advances 5 exchanges at a time, so the history stays append-only for the
   // prompt cache. The summary, its marker and the count come from the rows' own
   // statement, so they line up with the rows read.
-  // Tool-result replay (opt-in per instance) rebuilds each row read from its
-  // persisted `steps`, with the tool calls and their (truncated) results, so the
-  // model retains tool outputs across turns. Rows rebuild independently, so the
-  // char budget counts what each replayed row sends, not only its text.
-  const replayed = replayRows?.map((row) => buildHistoryWithToolResults([row]));
-  const windowRows = conversationHistory.map((m, i) => ({
+  const windowRows = conversationHistory.map((m) => ({
     role: m.role,
     content: typeof m.content === "string" ? m.content : "",
-    ...(replayed ? { chars: replayedChars(replayed[i]) } : {}),
   }));
   // Without a prompt cache (turned off for the agent, or a model the catalog marks
   // as uncached) the window slides one exchange at a time, as short as a fixed one.
   // The model is the one the gateway calls: an unset model means the provider's
-  // standard tier, the one the supervisor asks for.
+  // standard tier, the one the supervisor asks for. Agents that replay tool results
+  // slide one exchange at a time as well (history-window.ts).
   const blockExchanges = historyBlockExchanges(
     instanceConfig.cacheConfig.enabled && effectiveModelCached(instanceConfig),
+    instanceConfig.toolResultsInHistoryEnabled,
   );
   // No rows read (a new conversation, or the read failed): the snapshot carries no
   // summary state, so there is no window and no summary; the client-side history
@@ -342,10 +331,12 @@ export async function preparePipeline(
       ? conversationHistory
       : (msg.metadata?.conversationHistory as ModelMessage[] | undefined);
 
-  // Replay agents see the in-window rows rebuilt above. The dropped messages and
-  // the summary stay text-only.
-  if (replayed && replayed.length > 0) {
-    history = replayed.slice(windowPlan.start).flat();
+  // Tool-result replay (opt-in per instance): rebuild the in-window history from
+  // the raw rows read above, reconstructing tool_use/tool_result blocks from the
+  // persisted `steps` so the model retains tool outputs across turns. The dropped
+  // messages / summary stay text-only.
+  if (replayRows && replayRows.length > 0) {
+    history = buildHistoryWithToolResults(replayRows.slice(windowPlan.start));
   }
 
   const langsmith = buildLangsmithConfig(instanceConfig);

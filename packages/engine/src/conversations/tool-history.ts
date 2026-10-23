@@ -59,8 +59,7 @@ export function buildHistoryWithToolResults(rows: MessageRow[]): ModelMessage[] 
   const out: ModelMessage[] = [];
 
   for (const row of rows) {
-    // A legacy cell the read could not decode arrives as its raw string: replay its text only.
-    const steps: StepDetail[] = Array.isArray(row.steps) ? row.steps : [];
+    const steps: StepDetail[] = row.steps ?? [];
     const toolCalls = steps.flatMap((s) => s.toolCalls ?? []);
 
     if (row.role !== "assistant" || toolCalls.length === 0) {

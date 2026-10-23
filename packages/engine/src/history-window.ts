@@ -45,10 +45,12 @@ export function windowStartExchange(exchanges: number, block: number = HISTORY_B
  * Exchanges the window start advances by for an agent. Blocks only pay off where
  * the provider caches the prompt prefix: without a cache every message of a longer
  * window is billed again on every call, so the start follows every exchange and the
- * window stays as short as a fixed one.
+ * window stays as short as a fixed one. Agents that replay tool results
+ * (`toolResultsInHistoryEnabled`) slide one exchange at a time too: a longer window
+ * would carry up to four more exchanges of tool calls and results on every call.
  */
-export function historyBlockExchanges(promptCacheActive: boolean): number {
-  return promptCacheActive ? HISTORY_BLOCK_EXCHANGES : 1;
+export function historyBlockExchanges(promptCacheActive: boolean, toolResultReplay = false): number {
+  return promptCacheActive && !toolResultReplay ? HISTORY_BLOCK_EXCHANGES : 1;
 }
 
 export interface HistoryWindowState {
@@ -93,12 +95,6 @@ export interface HistoryWindowPlan {
 export interface HistoryWindowRow {
   role: string;
   content: string;
-  /**
-   * Characters the row adds to the request when they differ from its text: a
-   * replayed assistant row also carries its tool calls and results. Defaults to
-   * the length of `content`.
-   */
-  chars?: number;
 }
 
 /**
@@ -142,7 +138,7 @@ export function planHistoryWindow(
   // Size cap: move to later exchanges while the window is over budget. The
   // refresh below folds what this drops, down to half the budget, so the start
   // moves once per half budget of new text instead of on every turn.
-  const size = (i: number): number => rows[i].chars ?? rows[i].content.length;
+  const size = (i: number): number => rows[i].content.length;
   const cut = (limit: number): number => {
     let start = coveredRow;
     let chars = 0;
@@ -162,10 +158,11 @@ export function planHistoryWindow(
   let through = windowStartExchange(exchanges + 1, block);
   if (start > coveredRow) through = Math.max(through, ordinalOf(cut(HISTORY_CHAR_BUDGET / 2)));
   const to = rowOf(through);
-  const summarize =
-    through > covered && to > coveredRow
-      ? { from: coveredRow, to, expected: stored, through }
-      : undefined;
+  // Rows before the first user row read belong to exchange `firstOrdinal - 1`. When
+  // the marker does not reach it they stay out of the window, and the refresh that
+  // covers that exchange folds them too: summarized, not lost, and folded once.
+  const from = covered < firstOrdinal && through >= firstOrdinal ? 0 : coveredRow;
+  const summarize = through > covered && to > from ? { from, to, expected: stored, through } : undefined;
 
   return {
     start,

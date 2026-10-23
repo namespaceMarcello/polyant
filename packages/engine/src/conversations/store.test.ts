@@ -326,7 +326,7 @@ describe("ConversationStore", () => {
   });
 
   describe("getHistorySnapshot", () => {
-    it("keeps a replay cell that is not JSON as its raw value instead of failing the whole read", async () => {
+    it("reads a replay cell that is not JSON as null, so a string never passes as steps, and decodes the rest", async () => {
       mockDb.execute.mockResolvedValueOnce([
         { role: "user", content: "u", created_at: "2026-01-01T00:00:00Z", steps: null, reasoning: null },
         {
@@ -343,7 +343,7 @@ describe("ConversationStore", () => {
       const snap = await conversationStore.getHistorySnapshot(uid(), 40, { steps: true });
       expect(snap.rows.map((r) => [r.role, r.steps, r.reasoning])).toEqual([
         ["user", null, null],
-        ["assistant", "not json", [{ type: "text", text: "t" }]],
+        ["assistant", null, [{ type: "text", text: "t" }]],
       ]);
       expect([snap.summary, snap.summaryThrough, snap.userMessageCount]).toEqual(["s", 3, 4]);
     });
