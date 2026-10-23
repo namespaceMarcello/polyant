@@ -9,9 +9,15 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { useI18n } from "@/lib/i18n/context";
 
 /**
- * The right-hand drawer a list row opens: what the row is on top, its details
- * in a scrolling body, its actions in the footer. Viewing and editing a listed
- * item always happens here, never in a dialog or on a page of its own.
+ * The right-hand drawer a list row opens: what the row is on top (a title and
+ * a line of description), its details in a scrolling body, its actions in the
+ * footer. Viewing and editing a listed item always happens here, never in a
+ * dialog or on a page of its own.
+ *
+ * The footer has one shape, so drawers cannot drift apart: the destructive
+ * action (delete, revoke, remove, each asking first) on the left; on the right
+ * the extra secondary actions, then Cancel and the primary button when the
+ * drawer edits or creates, or a single Close when it only shows.
  */
 export function ListDrawer({
   open,
@@ -19,29 +25,46 @@ export function ListDrawer({
   title,
   description,
   header,
-  footer,
+  destructive,
+  actions,
+  primary,
   children,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: ReactNode;
-  description?: ReactNode;
-  /** Extra content under the title, such as badges. */
+  /** The one line under the title. */
+  description: ReactNode;
+  /** Extra content under the description, such as badges. */
   header?: ReactNode;
-  /** The buttons of the drawer; the strip is drawn only when there are some. */
-  footer?: ReactNode;
+  /** The destructive action, on the left. */
+  destructive?: ReactNode;
+  /** Secondary actions on the right, before Cancel or Close (export, upgrade). */
+  actions?: ReactNode;
+  /** The primary button of a drawer that edits or creates; without it the drawer only shows and closes. */
+  primary?: ReactNode;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full gap-0">
         <SheetHeader className="gap-1 border-b p-5 pr-12">
           <SheetTitle className="break-words text-base font-medium">{title}</SheetTitle>
-          {description && <SheetDescription>{description}</SheetDescription>}
+          <SheetDescription className="line-clamp-2">{description}</SheetDescription>
           {header}
         </SheetHeader>
         <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5">{children}</div>
-        {footer && <SheetFooter className="flex-row items-center justify-between border-t p-4">{footer}</SheetFooter>}
+        <SheetFooter className="flex-row items-center justify-between border-t p-4">
+          <div>{destructive}</div>
+          <div className="flex items-center gap-2">
+            {actions}
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              {primary ? t("common.cancel") : t("common.close")}
+            </Button>
+            {primary}
+          </div>
+        </SheetFooter>
       </SheetContent>
     </Sheet>
   );

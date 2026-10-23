@@ -166,7 +166,7 @@ export function ToolsTab({
     matchesSearch(search, toolDisplayName(tool.name), tool.name, capabilitySummary(tool, locale), tool.description, categoryLabel(tool.category, locale)) &&
     (originFilter === null || (pluginNamespaceOf(tool.name) ?? CORE_ORIGIN) === originFilter) &&
     (categoryFilter === null || tool.category === categoryFilter);
-  const rows = listed.filter(matches).sort((a, b) => a.name.localeCompare(b.name));
+  const rows = listed.filter(matches).sort((a, b) => toolDisplayName(a.name).localeCompare(toolDisplayName(b.name)));
   const systemRows = alwaysOn.filter(matches);
 
   /**

@@ -200,6 +200,17 @@ describe("ToolsTab", () => {
     expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
   });
 
+  it("lists the tools alphabetically by the name shown", () => {
+    renderTab();
+    const names = screen
+      .getAllByRole("row")
+      .slice(1)
+      .flatMap((row) => within(row).queryAllByRole("button").slice(0, 1))
+      .map((b) => b.textContent);
+    // `crm:contact` is shown as `contact`; the always-on tool, which has no panel, stays last.
+    expect(names).toEqual(["contact", "readFile", "saveMemory"]);
+  });
+
   it("starts clean: nothing to save", () => {
     renderTab();
     expect(lastSaveAction.current?.isDirty).toBe(false);

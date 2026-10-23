@@ -106,20 +106,13 @@ export function UserSheet({
         open={user !== null}
         onOpenChange={(open) => !open && onClose()}
         title={user ? user.name ?? user.email : ""}
-        description={user?.name ? user.email : undefined}
-        footer={
+        description={user ? (user.name ? user.email : user.isPlatformAdmin ? t("users.role.platformAdmin") : t("users.role.user")) : ""}
+        destructive={user && <DrawerDeleteButton disabled={isSelf} onClick={() => setConfirmDelete(true)} />}
+        primary={
           user && (
-            <>
-              <DrawerDeleteButton disabled={isSelf} onClick={() => setConfirmDelete(true)} />
-              <div className="flex gap-2">
-                <Button type="button" variant="outline" onClick={onClose}>
-                  {t("common.close")}
-                </Button>
-                <Button type="submit" form="edit-user-form" disabled={saving}>
-                  {t("users.edit.submit")}
-                </Button>
-              </div>
-            </>
+            <Button type="submit" form="edit-user-form" disabled={saving}>
+              {t("users.edit.submit")}
+            </Button>
           )
         }
       >

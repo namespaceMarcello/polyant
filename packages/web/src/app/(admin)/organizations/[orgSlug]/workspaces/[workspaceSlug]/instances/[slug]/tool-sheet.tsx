@@ -237,7 +237,7 @@ export function ToolSheet({
               )}
             </div>
 
-            <SheetFooter className="flex-row justify-between border-t p-4">
+            <SheetFooter className="flex-row items-center justify-between border-t p-4">
               {alwaysEnabled ? (
                 <span className="text-sm text-muted-foreground">{t("tools.cannotDisable")}</span>
               ) : (
@@ -248,7 +248,7 @@ export function ToolSheet({
               )}
               <div className="flex gap-2">
                 <Button variant="outline" onClick={requestClose}>
-                  {t("common.close")}
+                  {specs.length > 0 && params.canRead ? t("common.cancel") : t("common.close")}
                 </Button>
                 {/* In the footer so it stays in view however long the parameter list is. */}
                 {specs.length > 0 && params.canRead && (

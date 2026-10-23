@@ -4,7 +4,6 @@
 
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { DrawerDeleteButton, ListDrawer } from "@/components/list-drawer";
 import type { ManagementApiKey } from "@/lib/api";
@@ -42,6 +41,7 @@ export function ApiKeySheet({
         open={apiKey !== null}
         onOpenChange={(open) => !open && onClose()}
         title={apiKey?.name ?? ""}
+        description={apiKey ? t("apiKeys.drawer.createdOn", { date: format.date(apiKey.createdAt) }) : ""}
         header={
           apiKey && isExpired(apiKey) ? (
             <div className="flex gap-2 pt-1">
@@ -49,14 +49,9 @@ export function ApiKeySheet({
             </div>
           ) : undefined
         }
-        footer={
+        destructive={
           apiKey && (
-            <>
-              <DrawerDeleteButton label={t("apiKeys.revoke.button")} disabled={busy} onClick={() => setConfirming(true)} />
-              <Button variant="outline" onClick={onClose}>
-                {t("common.close")}
-              </Button>
-            </>
+            <DrawerDeleteButton label={t("apiKeys.revoke.button")} disabled={busy} onClick={() => setConfirming(true)} />
           )
         }
       >

@@ -73,7 +73,9 @@ describe("CreateUserSheet", () => {
     expect(await screen.findByText("Gen-Pass-42")).toBeInTheDocument();
     expect(onOpenChange).not.toHaveBeenCalled();
 
-    await u.click(screen.getByRole("button", { name: "OK" }));
+    // A generated password is shown, not edited: the footer is a single Close.
+    expect(screen.queryByRole("button", { name: "Annulla" })).not.toBeInTheDocument();
+    await u.click(screen.getAllByRole("button", { name: "Chiudi" })[0]);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 

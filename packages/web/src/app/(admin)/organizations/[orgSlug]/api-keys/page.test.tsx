@@ -113,7 +113,7 @@ describe("ApiKeysPage", () => {
     // The list behind the drawer already shows the new key.
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
 
-    await user.click(screen.getByRole("button", { name: "apiKeys.created.done" }));
+    await user.click(screen.getAllByRole("button", { name: "common.close" })[0]);
     await waitFor(() => expect(screen.queryByText(TOKEN)).not.toBeInTheDocument());
   });
 
@@ -232,5 +232,24 @@ describe("ApiKeysPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("apiKeys.loadFailed");
     await user.click(screen.getByRole("button", { name: "common.retry" }));
     expect(await screen.findByText("ci")).toBeInTheDocument();
+  });
+
+  it("lists the keys alphabetically by name", async () => {
+    mockList.mockResolvedValue({ keys: [key({ id: "k1", name: "zeta" }), key({ id: "k2", name: "alpha" })] });
+    render(<ApiKeysPage />);
+    await screen.findByText("zeta");
+    const names = screen.getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("button")[0].textContent);
+    expect(names).toEqual(["alpha", "zeta"]);
+  });
+
+  it("gives the key's drawer a description line with its creation date, and a Close only footer besides Revoke", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({ keys: [key({ id: "k1", name: "ci" })] });
+    render(<ApiKeysPage />);
+    await user.click((await screen.findByText("ci")).closest("tr")!);
+    const drawer = await screen.findByRole("dialog");
+    expect(drawer.querySelector("[data-slot=sheet-description]")).toHaveTextContent("apiKeys.drawer.createdOn");
+    const footer = drawer.querySelector("[data-slot=sheet-footer]") as HTMLElement;
+    expect(within(footer).getAllByRole("button").map((b) => b.textContent)).toEqual(["apiKeys.revoke.button", "common.close"]);
   });
 });

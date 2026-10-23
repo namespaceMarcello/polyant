@@ -50,7 +50,7 @@ export function AgentSkillSheet({
       open={skill !== null}
       onOpenChange={(open) => !open && onClose()}
       title={skill?.name ?? ""}
-      description={skill?.description || undefined}
+      description={skill?.description || t("skills.tab.noDescription")}
       header={
         skill && (toolCount > 0 || skill.pinnedVersion || hasEnv || skill.hasUpdate) ? (
           <div className="flex flex-wrap gap-2 pt-1">
@@ -69,22 +69,13 @@ export function AgentSkillSheet({
           </div>
         ) : undefined
       }
-      footer={
-        skill && (
-          <>
-            {skill.hasUpdate ? (
-              <Button variant="outline" disabled={upgrading} onClick={onUpgrade}>
-                <ArrowUpCircle className="size-4" aria-hidden />
-                {upgrading ? t("common.saving") : t("skills.tab.upgrade")}
-              </Button>
-            ) : (
-              <span />
-            )}
-            <Button variant="outline" onClick={onClose}>
-              {t("common.close")}
-            </Button>
-          </>
-        )
+      actions={
+        skill?.hasUpdate ? (
+          <Button variant="outline" disabled={upgrading} onClick={onUpgrade}>
+            <ArrowUpCircle className="size-4" aria-hidden />
+            {upgrading ? t("common.saving") : t("skills.tab.upgrade")}
+          </Button>
+        ) : undefined
       }
     >
       {skill && (

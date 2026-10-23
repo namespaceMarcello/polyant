@@ -174,12 +174,8 @@ export function SkillsTab({ slug, skills, tools, onSkillsUpdate, onToolsUpdate }
   // Render
   // ---------------------------------------------------------------------------
 
-  // Group: enabled first, then disabled — both alphabetically (backend already sorts by name)
-  const sortedSkills = useMemo(() => {
-    const enabled = skills.filter((s) => getSkillEnabled(s.name));
-    const disabled = skills.filter((s) => !getSkillEnabled(s.name));
-    return [...enabled, ...disabled];
-  }, [skills, skillToggles, skillEnabledMap]);
+  // By name, and not enabled-first: a row that jumps to the top when its switch is flicked is hard to follow.
+  const sortedSkills = useMemo(() => [...skills].sort((a, b) => a.name.localeCompare(b.name)), [skills]);
 
   const visibleSkills = sortedSkills.filter((skill) => matchesSearch(search, skill.name, skill.description, skill.category));
   const opened = openSkill ? skills.find((skill) => skill.name === openSkill) ?? null : null;

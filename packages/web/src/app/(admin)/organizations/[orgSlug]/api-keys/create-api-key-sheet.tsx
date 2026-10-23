@@ -73,24 +73,11 @@ export function CreateApiKeySheet({ orgSlug, open, onOpenChange, onCreated }: Pr
       onOpenChange={(o) => (o ? onOpenChange(true) : close())}
       title={token ? t("apiKeys.created.title") : t("apiKeys.create.title")}
       description={token ? t("apiKeys.created.shownOnce") : t("apiKeys.create.description")}
-      footer={
-        token ? (
-          <>
-            <span />
-            <Button onClick={close}>{t("apiKeys.created.done")}</Button>
-          </>
-        ) : (
-          <>
-            <span />
-            <div className="flex gap-2">
-              <Button type="button" variant="outline" onClick={close}>
-                {t("common.cancel")}
-              </Button>
-              <Button type="submit" form="create-api-key-form" disabled={submitting || !name.trim()}>
-                {t("apiKeys.create.submit")}
-              </Button>
-            </div>
-          </>
+      primary={
+        token ? undefined : (
+          <Button type="submit" form="create-api-key-form" disabled={submitting || !name.trim()}>
+            {t("apiKeys.create.submit")}
+          </Button>
         )
       }
     >

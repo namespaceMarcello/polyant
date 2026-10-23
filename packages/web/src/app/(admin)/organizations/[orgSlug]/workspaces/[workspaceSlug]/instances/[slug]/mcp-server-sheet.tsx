@@ -247,19 +247,12 @@ export function McpServerSheet({
       onOpenChange={onOpenChange}
       title={editing ? t("mcp.editTitle") : t("mcp.createTitle")}
       description={t("mcp.dialogDescription")}
-      footer={
-        <>
-          {editing && onDelete ? <DrawerDeleteButton onClick={() => onDelete(editing)} /> : <span />}
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>
-              {t("common.cancel")}
-            </Button>
-            <Button onClick={handleSave} disabled={saving}>
-              {saving && <Loader2 className="mr-1 size-4 animate-spin" />}
-              {saving ? t("common.saving") : t("common.save")}
-            </Button>
-          </div>
-        </>
+      destructive={editing && onDelete ? <DrawerDeleteButton onClick={() => onDelete(editing)} /> : undefined}
+      primary={
+        <Button onClick={handleSave} disabled={saving}>
+          {saving && <Loader2 className="mr-1 size-4 animate-spin" />}
+          {saving ? t("common.saving") : t("common.save")}
+        </Button>
       }
     >
       <div className="space-y-4">

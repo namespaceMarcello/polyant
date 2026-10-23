@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useState } from "react";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import { renderWithProviders, userEvent } from "@/test-utils";
 import { ListSearch, matchesSearch } from "./list-search";
 import { ListEmpty, ListNoResults } from "./list-states";
@@ -52,10 +52,45 @@ describe("list states", () => {
 });
 
 describe("ListDrawer", () => {
-  it("draws no footer strip when the drawer has no buttons", () => {
-    renderWithProviders(<ListDrawer open onOpenChange={() => {}} title="Titolo">corpo</ListDrawer>);
-    expect(screen.getByText("corpo")).toBeInTheDocument();
-    expect(document.querySelector("[data-slot=sheet-footer]")).toBeNull();
+  const buttons = () =>
+    within(document.querySelector("[data-slot=sheet-footer]") as HTMLElement)
+      .getAllByRole("button")
+      .map((b) => b.textContent);
+
+  // A drawer that only shows ends in one Close; one that edits ends in Cancel and
+  // its primary button. Both keep the destructive action on the left.
+  it("ends a drawer that only shows in a single Close", () => {
+    renderWithProviders(<ListDrawer open onOpenChange={() => {}} title="Titolo" description="Riga">corpo</ListDrawer>);
+    expect(screen.getByText("Riga")).toBeInTheDocument();
+    expect(buttons()).toEqual(["Chiudi"]);
+  });
+
+  it("orders the footer: destructive on the left, then the extras, Cancel and the primary button", () => {
+    renderWithProviders(
+      <ListDrawer
+        open
+        onOpenChange={() => {}}
+        title="Titolo"
+        description="Riga"
+        destructive={<button>Elimina</button>}
+        actions={<button>Esporta</button>}
+        primary={<button>Salva</button>}
+      >
+        corpo
+      </ListDrawer>,
+    );
+    expect(buttons()).toEqual(["Elimina", "Esporta", "Annulla", "Salva"]);
+  });
+
+  it("closes from Cancel", async () => {
+    const onOpenChange = vi.fn();
+    renderWithProviders(
+      <ListDrawer open onOpenChange={onOpenChange} title="T" description="D" primary={<button>Salva</button>}>
+        corpo
+      </ListDrawer>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Annulla" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });
 

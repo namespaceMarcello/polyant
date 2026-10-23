@@ -245,4 +245,33 @@ describe("MembersPage — a role that may not manage members is told so", () => 
     expect(mockMembersRemove).toHaveBeenCalledWith("u2", "acme");
     expect(screen.getByText("ada@example.com")).toBeInTheDocument();
   });
+
+  it("lists the members by name, falling back to the email, in alphabetical order", async () => {
+    mockMembersList.mockResolvedValue({
+      members: [
+        { userId: "u1", email: "zed@example.com", name: "Zed", roleKey: "owner" },
+        { userId: "u2", email: "carla@example.com", name: null, roleKey: "viewer" },
+        { userId: "u3", email: "ada@example.com", name: "Ada", roleKey: "admin" },
+      ],
+    });
+    render(<MembersPage />);
+    await screen.findByText("Zed");
+    const names = screen.getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("button")[0].textContent);
+    expect(names).toEqual(["Ada", "carla@example.com", "Zed"]);
+  });
+
+  it("gives the drawer a line of description: the email, or the role when there is no name", async () => {
+    const user = userEvent.setup();
+    mockMembersList.mockResolvedValue({
+      members: [
+        { userId: "u1", email: "ada@example.com", name: "Ada", roleKey: "owner" },
+        { userId: "u2", email: "bob@example.com", name: null, roleKey: "viewer" },
+      ],
+    });
+    render(<MembersPage />);
+    await user.click((await screen.findByText("bob@example.com")).closest("tr")!);
+    const drawer = await screen.findByRole("dialog");
+    // The title is the email, so the line under it says the role instead of repeating it.
+    expect(drawer.querySelector("[data-slot=sheet-description]")).toHaveTextContent("role.viewer");
+  });
 });

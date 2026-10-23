@@ -74,24 +74,11 @@ export function CreateUserSheet({ open, onOpenChange, onCreated }: Props) {
       onOpenChange={(o) => (o ? onOpenChange(true) : close())}
       title={t("users.create.title")}
       description={t("users.create.description")}
-      footer={
-        generated ? (
-          <>
-            <span />
-            <Button onClick={close}>OK</Button>
-          </>
-        ) : (
-          <>
-            <span />
-            <div className="flex gap-2">
-              <Button type="button" variant="outline" onClick={close}>
-                {t("common.cancel")}
-              </Button>
-              <Button type="submit" form="create-user-form" disabled={submitting || !email.trim()}>
-                {t("users.create.submit")}
-              </Button>
-            </div>
-          </>
+      primary={
+        generated ? undefined : (
+          <Button type="submit" form="create-user-form" disabled={submitting || !email.trim()}>
+            {t("users.create.submit")}
+          </Button>
         )
       }
     >

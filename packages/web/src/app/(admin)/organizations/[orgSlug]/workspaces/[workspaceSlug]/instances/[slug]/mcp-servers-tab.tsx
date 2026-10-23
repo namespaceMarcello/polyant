@@ -130,9 +130,11 @@ export function McpServersTab({ slug }: Props) {
   if (loading && data === undefined) return <ListLoading className="" />;
 
   const isShared = (server: McpServer) => server.authMode === "oauth" && server.config.account === "shared";
-  const visible = servers.filter((server) =>
-    matchesSearch(search, server.name, server.slug, server.url, t(`mcp.authMode.${server.authMode}` as const)),
-  );
+  const visible = servers
+    .filter((server) =>
+      matchesSearch(search, server.name, server.slug, server.url, t(`mcp.authMode.${server.authMode}` as const)),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
   // Read from the list, so connecting or disconnecting the shared account shows in the open drawer.
   const current = editing ? servers.find((server) => server.slug === editing.slug) ?? editing : null;
 

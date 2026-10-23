@@ -3,7 +3,8 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { renderWithProviders, userEvent } from "@/test-utils";
 
-const { list, get, update, remove, versions, replace, searchParams } = vi.hoisted(() => ({
+const { list, get, update, remove, versions, getVersion, replace, searchParams } = vi.hoisted(() => ({
+  getVersion: vi.fn(),
   list: vi.fn(),
   get: vi.fn(),
   update: vi.fn(),
@@ -21,7 +22,7 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("@/lib/api", () => ({
   getUserErrorMessage: (_e: unknown, fallback: string) => fallback,
   api: {
-    skillLibrary: { list, get, update, delete: remove, versions, getVersion: vi.fn() },
+    skillLibrary: { list, get, update, delete: remove, versions, getVersion },
     tools: { catalog: async () => ({ tools: [] }) },
     exportImport: { exportSkill: vi.fn(), importSkills: vi.fn() },
   },
@@ -169,5 +170,63 @@ describe("skills catalog", () => {
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Riprova" }));
     expect(await screen.findByText("Ricerca web")).toBeInTheDocument();
+  });
+
+  it("lists the skills by display name, in alphabetical order", async () => {
+    list.mockResolvedValue({ skills: [summaries[1], summaries[0]] });
+    renderWithProviders(<SkillsPage />);
+    await screen.findByText("Ricerca web");
+    const names = screen.getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("button")[0].textContent);
+    expect(names).toEqual(["Ricerca web", "Scrittore di mail"]);
+  });
+
+  it("ends the drawer in the common footer: Delete on the left, Export, Cancel and Save on the right", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SkillsPage />);
+    await user.click(await screen.findByText("Cerca in rete"));
+    const drawer = await screen.findByRole("dialog");
+    await within(drawer).findByLabelText("Nome");
+    const footer = drawer.querySelector("[data-slot=sheet-footer]") as HTMLElement;
+    expect(within(footer).getAllByRole("button").map((b) => b.textContent)).toEqual(["Elimina", "Esporta", "Annulla", "Salva"]);
+    expect(within(drawer).getByText("web-research")).toBeInTheDocument();
+  });
+
+  // Nothing can be saved on the Versions tab, so the Save button is not there.
+  it("shows Save on the Content tab only", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SkillsPage />);
+    await user.click(await screen.findByText("Cerca in rete"));
+    const drawer = await screen.findByRole("dialog");
+    await within(drawer).findByLabelText("Nome");
+    expect(within(drawer).getByRole("button", { name: "Salva" })).toBeInTheDocument();
+
+    await user.click(within(drawer).getByRole("tab", { name: "Versioni" }));
+    await waitFor(() => expect(versions).toHaveBeenCalled());
+    expect(within(drawer).queryByRole("button", { name: "Salva" })).not.toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: "Elimina" })).toBeInTheDocument();
+  });
+
+  // The engine lists versions oldest first; the page used to mark the first
+  // (oldest) row "corrente". The newest is the current one.
+  it("lists versions newest first and marks the newest as current", async () => {
+    const user = userEvent.setup();
+    versions.mockResolvedValue({
+      versions: [
+        { id: "v1", skillId: "s", version: "0.1.0", content: "a", metadata: {}, scripts: [], changelog: "first", createdAt: "2026-01-01T10:00:00Z" },
+        { id: "v2", skillId: "s", version: "0.2.0", content: "b", metadata: {}, scripts: [], changelog: "second", createdAt: "2026-02-01T10:00:00Z" },
+      ],
+    });
+    renderWithProviders(<SkillsPage />);
+    await user.click(await screen.findByText("Cerca in rete"));
+    const drawer = await screen.findByRole("dialog");
+    await within(drawer).findByLabelText("Nome");
+    await user.click(within(drawer).getByRole("tab", { name: "Versioni" }));
+
+    const newest = (await within(drawer).findByText("v0.2.0")).closest("tr") as HTMLElement;
+    const oldest = within(drawer).getByText("v0.1.0").closest("tr") as HTMLElement;
+    expect(within(newest).getByText("corrente")).toBeInTheDocument();
+    expect(within(oldest).queryByText("corrente")).not.toBeInTheDocument();
+    const rows = within(drawer).getAllByRole("row");
+    expect(rows.indexOf(newest)).toBeLessThan(rows.indexOf(oldest));
   });
 });

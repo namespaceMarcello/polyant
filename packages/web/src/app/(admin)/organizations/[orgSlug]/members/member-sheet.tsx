@@ -3,7 +3,6 @@
 "use client";
 
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -52,24 +51,18 @@ export function MemberSheet({
         open={member !== null}
         onOpenChange={(open) => !open && onClose()}
         title={member ? member.name ?? member.email : ""}
-        description={member?.name ? member.email : undefined}
-        footer={
-          member && (
-            <>
-              {isSelf ? (
-                <span className="text-sm text-muted-foreground">{t("members.remove.self")}</span>
-              ) : (
-                <DrawerDeleteButton
-                  label={t("members.remove.button")}
-                  disabled={locked || busy}
-                  onClick={() => setConfirming(true)}
-                />
-              )}
-              <Button variant="outline" onClick={onClose}>
-                {t("common.close")}
-              </Button>
-            </>
-          )
+        description={member ? (member.name ? member.email : member.roleKey ? t(ROLE_LABEL_KEY[member.roleKey]) : "") : ""}
+        destructive={
+          member &&
+          (isSelf ? (
+            <span className="text-sm text-muted-foreground">{t("members.remove.self")}</span>
+          ) : (
+            <DrawerDeleteButton
+              label={t("members.remove.button")}
+              disabled={locked || busy}
+              onClick={() => setConfirming(true)}
+            />
+          ))
         }
       >
         {member && (

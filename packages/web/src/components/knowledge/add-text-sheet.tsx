@@ -52,18 +52,10 @@ export function AddTextSheet({
         onOpenChange={setOpen}
         title={t("knowledge.tab.uploadTitle")}
         description={t("knowledge.tab.uploadDescription")}
-        footer={
-          <>
-            <span />
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => setOpen(false)}>
-                {t("common.cancel")}
-              </Button>
-              <Button onClick={() => void add()} disabled={saving || !filename.trim() || !content.trim()}>
-                {saving ? t("common.saving") : t("knowledge.tab.upload")}
-              </Button>
-            </div>
-          </>
+        primary={
+          <Button onClick={() => void add()} disabled={saving || !filename.trim() || !content.trim()}>
+            {saving ? t("common.saving") : t("knowledge.tab.upload")}
+          </Button>
         }
       >
         <div className="space-y-2">

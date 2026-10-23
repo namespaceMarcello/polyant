@@ -157,6 +157,36 @@ describe("SkillsTab", () => {
     expect(screen.getByText("Nessun risultato")).toBeInTheDocument();
   });
 
+  // Enabled-first made a row jump to the top the moment its switch was flicked.
+  it("lists the skills alphabetically and keeps a row in place when it is switched on", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    const order = () => screen.getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("button")[0].textContent);
+    expect(order()).toEqual(["code-review", "email-sender", "web-search"]);
+    await user.click(switchOf("code-review"));
+    expect(order()).toEqual(["code-review", "email-sender", "web-search"]);
+  });
+
+  it("ends the drawer with Upgrade, then Close, and describes the skill in one line", async () => {
+    const user = userEvent.setup();
+    renderTab([
+      { name: "pinned", description: "Old", enabled: true, requiredEnv: [], envConfigured: true, pinnedVersion: "1", hasUpdate: true },
+      { name: "plain", description: "", enabled: true, requiredEnv: [], envConfigured: true },
+    ]);
+    await user.click(screen.getByRole("button", { name: "pinned" }));
+    let drawer = await screen.findByRole("dialog");
+    const footer = drawer.querySelector("[data-slot=sheet-footer]") as HTMLElement;
+    expect(within(footer).getAllByRole("button").map((b) => b.textContent)).toEqual(["Aggiorna", "Chiudi"]);
+    expect(drawer.querySelector("[data-slot=sheet-description]")).toHaveTextContent("Old");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    // A skill without a description still has its line.
+    await user.click(screen.getByRole("button", { name: "plain" }));
+    drawer = await screen.findByRole("dialog");
+    expect(drawer.querySelector("[data-slot=sheet-description]")).toHaveTextContent("Nessuna descrizione");
+  });
+
   it("shows one switch per row, in the last column, reflecting whether the skill is enabled", () => {
     renderTab();
     expect(screen.getAllByRole("switch")).toHaveLength(3);

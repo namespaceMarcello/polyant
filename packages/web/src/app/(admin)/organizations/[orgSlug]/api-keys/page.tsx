@@ -58,7 +58,9 @@ export default function ApiKeysPage() {
 
   const expiryText = (key: ManagementApiKey) =>
     key.expiresAt === null ? t("apiKeys.noExpiry") : isExpired(key) ? t("apiKeys.expired") : format.date(key.expiresAt);
-  const visible = keys.filter((key) => matchesSearch(search, key.name, expiryText(key)));
+  const visible = keys
+    .filter((key) => matchesSearch(search, key.name, expiryText(key)))
+    .sort((a, b) => a.name.localeCompare(b.name));
   const openKey = openKeyId === null ? null : keys.find((key) => key.id === openKeyId) ?? null;
 
   const header = (

@@ -227,4 +227,24 @@ describe("McpServersTab — the list", () => {
     expect(await screen.findByText("mcp.empty")).toBeInTheDocument();
     expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
   });
+
+  it("lists the servers alphabetically by name", async () => {
+    mockList.mockResolvedValue([
+      { id: "r2", slug: "notion", name: "Notion", url: "https://n.test/mcp", authMode: "static", enabled: true, config: {} },
+      { id: "r1", slug: "asana", name: "Asana", url: "https://a.test/mcp", authMode: "static", enabled: true, config: {} },
+    ]);
+    render(<McpServersTab slug="agent" />);
+    await screen.findByText("Notion");
+    const names = screen.getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("button")[0].textContent);
+    expect(names).toEqual(["Asana", "Notion"]);
+  });
+
+  it("ends the drawer with Delete on the left, then Cancel and Save", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue([{ id: "r2", slug: "notion", name: "Notion", url: "https://n.test/mcp", authMode: "static", enabled: true, config: {} }]);
+    render(<McpServersTab slug="agent" />);
+    const drawer = await openServer(user, "Notion");
+    const footer = drawer.querySelector("[data-slot=sheet-footer]") as HTMLElement;
+    expect(within(footer).getAllByRole("button").map((b) => b.textContent)).toEqual(["common.delete", "common.cancel", "common.save"]);
+  });
 });

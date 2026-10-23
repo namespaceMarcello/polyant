@@ -317,12 +317,14 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
   const summaryOf = (doc: KnowledgeDocument) =>
     [
       formatBytes(doc.sizeBytes),
-      doc.status === "ready" ? `${doc.chunkCount} chunks` : null,
+      doc.status === "ready" ? t("knowledge.tab.chunks", { count: doc.chunkCount }) : null,
       doc.status === "error" ? doc.errorMessage : null,
     ]
       .filter(Boolean)
       .join(" · ");
-  const visibleDocs = documents.filter((doc) => matchesSearch(search, doc.filename, summaryOf(doc), statusText(doc)));
+  const visibleDocs = documents
+    .filter((doc) => matchesSearch(search, doc.filename, summaryOf(doc), statusText(doc)))
+    .sort((a, b) => a.filename.localeCompare(b.filename));
   const viewedDoc = viewDocId ? documents.find((d) => d.id === viewDocId) ?? null : null;
 
   return (
@@ -369,15 +371,9 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
         }
         aria-disabled={!knowledgeEnabled}
       >
-      <div className="space-y-1">
-        <p className="text-sm text-muted-foreground">{t("knowledge.tab.description")}</p>
-        {/* Added, not substituted: what the list IS does not change when the
-            agent stops consulting it, so replacing the description hid a
-            standing fact to state a temporary one. */}
-        {!knowledgeEnabled && (
-          <p className="text-sm font-medium">{t("knowledge.tab.disabledNotice")}</p>
-        )}
-      </div>
+      {!knowledgeEnabled && (
+        <p className="text-sm font-medium">{t("knowledge.tab.disabledNotice")}</p>
+      )}
 
       {documents.length === 0 ? (
         <ListEmpty className="mt-8" title={t("knowledge.tab.empty")} description={t("knowledge.tab.emptyHint")} />
@@ -440,16 +436,7 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
         title={viewedDoc?.filename ?? ""}
         description={t("knowledge.tab.viewDescription")}
         header={viewedDoc && <div className="flex flex-wrap gap-2 pt-1"><KnowledgeStatusBadge status={viewedDoc.status} t={t} /></div>}
-        footer={
-          viewedDoc && (
-            <>
-              <DrawerDeleteButton onClick={() => setDeleting(viewedDoc)} />
-              <Button variant="outline" onClick={() => setViewDocId(null)}>
-                {t("common.close")}
-              </Button>
-            </>
-          )
-        }
+        destructive={viewedDoc && <DrawerDeleteButton onClick={() => setDeleting(viewedDoc)} />}
       >
         {viewLoading ? (
           <div className="flex items-center justify-center py-8">

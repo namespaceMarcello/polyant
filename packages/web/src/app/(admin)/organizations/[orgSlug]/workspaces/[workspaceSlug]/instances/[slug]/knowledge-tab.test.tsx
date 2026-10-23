@@ -316,7 +316,7 @@ describe("KnowledgeTab — the document list", () => {
   it("puts size and chunks under the filename, and the reason a document failed", async () => {
     renderWithProvider(<KnowledgeTab slug="a1" instance={makeInstance()} onUpdate={vi.fn()} />);
     await screen.findByText("guide.md");
-    expect(within(rowOf("guide.md")).getByText("2 KB · 2 chunks")).toBeInTheDocument();
+    expect(within(rowOf("guide.md")).getByText("2 KB · knowledge.tab.chunks 2")).toBeInTheDocument();
     expect(within(rowOf("broken.pdf")).getByText("5 B · no text layer")).toBeInTheDocument();
   });
 
@@ -406,6 +406,35 @@ describe("KnowledgeTab — the document list", () => {
     await screen.findByText("guide.md");
     expect(screen.getByRole("button", { name: "knowledge.tab.pasteText" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "knowledge.tab.import" })).toBeDisabled();
+  });
+
+  it("lists the documents alphabetically by filename", async () => {
+    mockList.mockResolvedValue({
+      documents: [
+        { id: "d9", filename: "zebra.md", sizeBytes: 1, status: "ready", enabled: true, chunkCount: 1, createdAt: "2026-01-01T00:00:00Z" },
+        { id: "d8", filename: "apple.md", sizeBytes: 1, status: "ready", enabled: true, chunkCount: 1, createdAt: "2026-01-01T00:00:00Z" },
+      ],
+    });
+    renderWithProvider(<KnowledgeTab slug="a1" instance={makeInstance()} onUpdate={vi.fn()} />);
+    await screen.findByText("zebra.md");
+    const names = screen.getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("button")[0].textContent);
+    expect(names).toEqual(["apple.md", "zebra.md"]);
+  });
+
+  // The section's own subtitle already says what the documents are.
+  it("does not repeat the section subtitle above the list", async () => {
+    renderWithProvider(<KnowledgeTab slug="a1" instance={makeInstance()} onUpdate={vi.fn()} />);
+    await screen.findByText("guide.md");
+    expect(screen.queryByText("knowledge.tab.description")).not.toBeInTheDocument();
+  });
+
+  it("ends a document's drawer with Delete on the left and Close on the right", async () => {
+    renderWithProvider(<KnowledgeTab slug="a1" instance={makeInstance()} onUpdate={vi.fn()} />);
+    await screen.findByText("guide.md");
+    await userEvent.click(rowOf("guide.md"));
+    const drawer = await screen.findByRole("dialog");
+    const footer = drawer.querySelector("[data-slot=sheet-footer]") as HTMLElement;
+    expect(within(footer).getAllByRole("button").map((b) => b.textContent)).toEqual(["common.delete", "common.close"]);
   });
 
   it("says there are no documents, with a hint, when the list is empty", async () => {

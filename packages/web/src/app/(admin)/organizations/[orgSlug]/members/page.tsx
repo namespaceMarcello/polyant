@@ -78,7 +78,9 @@ export default function MembersPage() {
   };
 
   const roleLabel = (m: OrganizationMember) => (m.roleKey ? t(ROLE_LABEL_KEY[m.roleKey]) : "");
-  const visible = members.filter((m) => matchesSearch(search, m.name, m.email, roleLabel(m)));
+  const visible = members
+    .filter((m) => matchesSearch(search, m.name, m.email, roleLabel(m)))
+    .sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email));
   const openMember = openUserId === null ? null : members.find((m) => m.userId === openUserId) ?? null;
 
   const header = <PageHeader title={t("members.title")} subtitle={t("members.subtitle")} />;

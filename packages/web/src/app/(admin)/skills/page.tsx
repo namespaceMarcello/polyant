@@ -74,7 +74,9 @@ function SkillsPageContent() {
     </Button>
   );
 
-  const visible = skills.filter((skill) => matchesSearch(search, skill.displayName, skill.name, skill.description, skill.category));
+  const visible = skills
+    .filter((skill) => matchesSearch(search, skill.displayName, skill.name, skill.description, skill.category))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName));
 
   return (
     <div>

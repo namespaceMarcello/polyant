@@ -101,7 +101,9 @@ export function SkillSheet({
     setVersionsLoading(true);
     try {
       const data = await api.skillLibrary.versions(name);
-      setVersions(data.versions);
+      // The engine lists oldest first. Publishing a version makes it the current one,
+      // so the newest is the current one: list it first.
+      setVersions([...data.versions].sort((a, b) => parseUTC(b.createdAt).getTime() - parseUTC(a.createdAt).getTime()));
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("skills.fetchFailed")));
     } finally {
@@ -318,21 +320,22 @@ export function SkillSheet({
         open={name !== null}
         onOpenChange={(open) => !open && onClose()}
         title={ready ? skill.displayName : loading ? t("common.loading") : t("skills.notFound")}
-        description={ready ? <code className="text-xs">{skill.name}</code> : undefined}
-        footer={
+        description={ready ? <code className="text-xs">{skill.name}</code> : (name ?? "")}
+        destructive={ready ? <DrawerDeleteButton onClick={() => setConfirmDelete(true)} /> : undefined}
+        actions={
           ready ? (
-            <>
-              <DrawerDeleteButton onClick={() => setConfirmDelete(true)} />
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={handleExport} disabled={exporting}>
-                  <Download className="size-4" aria-hidden />
-                  {exporting ? t("exportImport.export.downloading") : t("exportImport.export.button")}
-                </Button>
-                <Button onClick={handleSave} disabled={saving || displayName.trim() === ""}>
-                  {saving ? t("common.saving") : t("common.saveSingle")}
-                </Button>
-              </div>
-            </>
+            <Button variant="outline" onClick={handleExport} disabled={exporting}>
+              <Download className="size-4" aria-hidden />
+              {exporting ? t("exportImport.export.downloading") : t("exportImport.export.button")}
+            </Button>
+          ) : undefined
+        }
+        // Only the content tab has anything to save.
+        primary={
+          ready && tab === "content" ? (
+            <Button onClick={handleSave} disabled={saving || displayName.trim() === ""}>
+              {saving ? t("common.saving") : t("common.saveSingle")}
+            </Button>
           ) : undefined
         }
       >
