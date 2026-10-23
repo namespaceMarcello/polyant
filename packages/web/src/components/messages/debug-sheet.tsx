@@ -78,6 +78,12 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+/** The role of a message sent to the model, shown beside its index while it is closed. */
+function messageRole(message: unknown): string | undefined {
+  const role = message && typeof message === "object" ? (message as { role?: unknown }).role : undefined;
+  return typeof role === "string" ? role : undefined;
+}
+
 /** Model + token/cost breakdown for the turn. Rendered from the target metadata. */
 function UsageSection({ target }: { target: DebugSheetTarget }) {
   const { t } = useI18n();
@@ -90,7 +96,7 @@ function UsageSection({ target }: { target: DebugSheetTarget }) {
   const cost = target.cost;
 
   if (!target.model && prompt === 0 && completion === 0) {
-    return <p className="text-xs text-muted-foreground">—</p>;
+    return <p className="text-sm text-muted-foreground">—</p>;
   }
 
   const fmtCost = (usd: number | undefined) => (usd != null ? fmt.currency(usd) : "—");
@@ -112,13 +118,13 @@ function UsageSection({ target }: { target: DebugSheetTarget }) {
           <Cpu className="h-4 w-4 text-muted-foreground" />
           <span className="font-mono">{target.model}</span>
           {target.provider && (
-            <span className="rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground">
+            <span className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground">
               {target.provider}
             </span>
           )}
         </div>
       )}
-      <table className="w-full text-xs tabular-nums">
+      <table className="w-full text-sm tabular-nums">
         <thead>
           <tr className="text-muted-foreground">
             <th className="py-1 text-left font-normal"></th>
@@ -174,7 +180,7 @@ function DiagnosticsList({ target }: { target: DebugSheetTarget }) {
   if (rows.length === 0) return null;
 
   return (
-    <dl className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+    <dl className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
       {rows.map((r) => (
         <div key={r.label} className="flex justify-between border-t py-1.5">
           <dt className="text-muted-foreground">{r.label}</dt>
@@ -270,11 +276,11 @@ function DebugSheetBody({ target }: { target: DebugSheetTarget }) {
       <p className="text-sm text-destructive">{t("message.debug.error")}</p>
     ) : null;
   const noPayload = (
-    <p className="rounded-md border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
+    <p className="rounded-md border border-dashed bg-muted/30 p-3 text-sm text-muted-foreground">
       {t("message.debug.noPayload")}
     </p>
   );
-  const none = <p className="text-xs text-muted-foreground">—</p>;
+  const none = <p className="text-sm text-muted-foreground">—</p>;
 
   const tabs: ChipTab[] = [
     {
@@ -289,7 +295,7 @@ function DebugSheetBody({ target }: { target: DebugSheetTarget }) {
         pending ??
         (payload ? (
           <Section title={t("message.debug.systemPrompt")}>
-            <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-3 text-[11px] leading-relaxed">
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-3 text-[13px] leading-relaxed">
               {payload.system || "—"}
             </pre>
           </Section>
@@ -315,16 +321,16 @@ function DebugSheetBody({ target }: { target: DebugSheetTarget }) {
                 value={tool.name}
                 className="rounded-md border bg-background/50 last:border-b"
               >
-                <AccordionTrigger className="px-2 py-2 font-mono text-xs font-semibold">
+                <AccordionTrigger className="px-2 py-2 font-mono text-sm font-semibold">
                   {tool.name}
                 </AccordionTrigger>
                 <AccordionContent className="px-2">
                   {tool.description && (
-                    <p className="text-[11px] text-muted-foreground">{tool.description}</p>
+                    <p className="text-[13px] text-muted-foreground">{tool.description}</p>
                   )}
                   {tool.parameters != null && (
                     <div className="mt-2">
-                      <div className="mb-1 text-[11px] text-muted-foreground">
+                      <div className="mb-1 text-[13px] text-muted-foreground">
                         {t("message.debug.toolParams")}
                       </div>
                       <JsonTree value={tool.parameters} />
@@ -344,7 +350,7 @@ function DebugSheetBody({ target }: { target: DebugSheetTarget }) {
         pending ??
         (payload ? (
           <Section title={t("message.debug.messages")}>
-            <JsonTree value={payload.messages} />
+            <JsonTree value={payload.messages} hint={messageRole} />
           </Section>
         ) : (
           noPayload
@@ -362,7 +368,7 @@ function DebugSheetBody({ target }: { target: DebugSheetTarget }) {
       children:
         pending ??
         (!payload ? noPayload : turnState ? <JsonTree value={turnState} /> : (
-          <p className="text-xs text-muted-foreground">{t("message.debug.noContext")}</p>
+          <p className="text-sm text-muted-foreground">{t("message.debug.noContext")}</p>
         )),
     },
   ];

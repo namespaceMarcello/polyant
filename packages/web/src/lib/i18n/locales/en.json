@@ -677,6 +677,7 @@
   "common.previous": "Previous",
   "common.next": "Next",
   "common.copy": "Copy",
+  "common.copied": "Copied",
   "common.copyFailed": "Could not copy to the clipboard",
   "users.pagination.range": "{from}-{to} of {total}",
   "common.close": "Close",

@@ -677,6 +677,7 @@
   "common.previous": "Precedente",
   "common.next": "Successivo",
   "common.copy": "Copia",
+  "common.copied": "Copiato",
   "common.copyFailed": "Impossibile copiare negli appunti",
   "users.pagination.range": "{from}-{to} di {total}",
   "common.close": "Chiudi",
