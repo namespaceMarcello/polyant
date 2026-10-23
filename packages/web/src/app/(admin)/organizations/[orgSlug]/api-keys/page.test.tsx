@@ -94,7 +94,7 @@ describe("ApiKeysPage", () => {
     expect(mockList).toHaveBeenCalledWith("acme");
   });
 
-  it("creates a key and shows its token once, gone after the dialog closes", async () => {
+  it("creates a key and shows its token once, gone after the drawer closes", async () => {
     const user = userEvent.setup();
     mockList.mockResolvedValueOnce({ keys: [] }).mockResolvedValue({ keys: [key()] });
     mockCreate.mockResolvedValue({ key: key(), token: TOKEN });
@@ -110,7 +110,7 @@ describe("ApiKeysPage", () => {
     expect(screen.getByRole("button", { name: "apiKeys.created.copy" })).toBeInTheDocument();
     // No expiry chosen: the field is left out rather than sent empty.
     expect(mockCreate).toHaveBeenCalledWith("acme", { name: "ci" });
-    // The list behind the dialog already shows the new key.
+    // The list behind the drawer already shows the new key.
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
 
     await user.click(screen.getByRole("button", { name: "apiKeys.created.done" }));
@@ -136,20 +136,70 @@ describe("ApiKeysPage", () => {
     ]);
   });
 
-  it("revokes a key only after confirmation", async () => {
+  it("filters the keys on name and expiry as typed", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({
+      keys: [key({ id: "k1", name: "ci" }), key({ id: "k2", name: "old laptop", expiresAt: "2001-01-01T00:00:00.000Z" })],
+    });
+    render(<ApiKeysPage />);
+    await screen.findByText("ci");
+    const search = screen.getByRole("searchbox", { name: "common.search" });
+
+    await user.type(search, "laptop");
+    expect(screen.getByText("old laptop")).toBeInTheDocument();
+    expect(screen.queryByText("ci")).not.toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "apiKeys.noExpiry");
+    expect(screen.getByText("ci")).toBeInTheDocument();
+    expect(screen.queryByText("old laptop")).not.toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "zzz");
+    expect(screen.getByText("common.noResults")).toBeInTheDocument();
+  });
+
+  it("opens a drawer with the key's details when its row is clicked, and offers no revoke on the row", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({ keys: [key({ id: "k1", name: "ci" })] });
+    render(<ApiKeysPage />);
+
+    const row = (await screen.findByText("ci")).closest("tr")!;
+    expect(within(row).queryByRole("button", { name: "apiKeys.revoke.button" })).not.toBeInTheDocument();
+    await user.click(row);
+
+    const drawer = await screen.findByRole("dialog");
+    expect(within(drawer).getByRole("heading", { name: "ci" })).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: "apiKeys.revoke.button" })).toBeInTheDocument();
+  });
+
+  it("revokes a key only from the drawer and only after confirmation", async () => {
     const user = userEvent.setup();
     mockList.mockResolvedValueOnce({ keys: [key({ id: "k1", name: "ci" })] }).mockResolvedValue({ keys: [] });
     mockRemove.mockResolvedValue({ deleted: true });
 
     render(<ApiKeysPage />);
 
-    await user.click(await screen.findByRole("button", { name: "apiKeys.revoke.button" }));
+    await user.click((await screen.findByText("ci")).closest("tr")!);
+    const drawer = await screen.findByRole("dialog");
+    await user.click(within(drawer).getByRole("button", { name: "apiKeys.revoke.button" }));
     expect(mockRemove).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "apiKeys.revoke.confirm" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "apiKeys.revoke.confirm" }));
 
     expect(mockRemove).toHaveBeenCalledWith("acme", "k1");
     await waitFor(() => expect(screen.queryByText("ci")).not.toBeInTheDocument());
     expect(mockList).toHaveBeenCalledTimes(2);
+  });
+
+  it("revokes nothing when the confirmation is cancelled", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({ keys: [key({ id: "k1", name: "ci" })] });
+    render(<ApiKeysPage />);
+
+    await user.click((await screen.findByText("ci")).closest("tr")!);
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "apiKeys.revoke.button" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "common.cancel" }));
+    expect(mockRemove).not.toHaveBeenCalled();
   });
 
   it("takes the revoked key off the screen before the new list arrives", async () => {
@@ -159,8 +209,9 @@ describe("ApiKeysPage", () => {
 
     render(<ApiKeysPage />);
 
-    await user.click(await screen.findByRole("button", { name: "apiKeys.revoke.button" }));
-    await user.click(screen.getByRole("button", { name: "apiKeys.revoke.confirm" }));
+    await user.click((await screen.findByText("ci")).closest("tr")!);
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "apiKeys.revoke.button" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "apiKeys.revoke.confirm" }));
 
     await waitFor(() => expect(screen.queryByText("ci")).not.toBeInTheDocument());
   });
