@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`GET /api/instances/:slug/channels/web/endpoint`).
 - The conversation list shows the contact, can be filtered by it
   (`userIdentifier`), and its search box matches it.
+- A tool can ask a model through the engine: its context carries
+  `ctx.ai.chat({ system, messages, tier })` and `ctx.abortSignal`. The call runs
+  through the AI gateway on the agent's provider as a service call of the turn,
+  logged in the AI log and priced like the turn's own calls; the tier picks the
+  model. Both fields are optional in `@polyant-ai/plugin-sdk` 1.11.0, so a
+  plugin that also supports older engines keeps a fallback, and `ctx.apiKeys`
+  is unchanged.
 - A missing-permission 403 carries `code: "missing_permission"` and the
   `permission` it needed, next to the existing message.
 
