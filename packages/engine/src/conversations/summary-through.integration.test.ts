@@ -77,7 +77,7 @@ describe("conversation summary marker (integration)", () => {
     expect(await stateOf(CID)).toMatchObject({ summaryThrough: 1, userMessageCount: 3 });
   });
 
-  it.skipIf(!DB_AVAILABLE)("leaves a summary written before the marker without one through compaction", async () => {
+  it.skipIf(!DB_AVAILABLE)("leaves a summary an engine without the marker wrote without one through compaction", async () => {
     await conversationStore.ensureConversation(LEGACY, SLUG);
     await exchanges(LEGACY, 3);
     await conversationStore.updateSummary(LEGACY, "legacy");
