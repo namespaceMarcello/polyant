@@ -248,7 +248,6 @@ class BoundedMap<K, V> {
 const CACHE_MAX_SIZE = 1000;
 
 export class ConversationStore {
-  private summaryCache = new BoundedMap<string, string>(CACHE_MAX_SIZE);
   private titleCache = new BoundedMap<string, string>(CACHE_MAX_SIZE);
 
   /** Get conversation title. Checks in-memory cache first, falls back to DB. */
@@ -288,26 +287,22 @@ export class ConversationStore {
     this.titleCache.set(conversationId, safe);
   }
 
-  /** Get conversation summary. Checks in-memory cache first, falls back to DB. */
-  async getSummary(conversationId: string): Promise<string | null> {
-    const cached = this.summaryCache.get(conversationId);
-    if (cached !== undefined) return cached;
-
+  /**
+   * The stored `summary_through`, read fresh: a summary refresh checks that the
+   * marker it was planned on still stands before paying for its call. Undefined
+   * when the conversation row does not exist.
+   */
+  async getSummaryThrough(conversationId: string): Promise<number | null | undefined> {
     const rows = await db
-      .select({ summary: conversations.summary })
+      .select({ summaryThrough: conversations.summaryThrough })
       .from(conversations)
       .where(eq(conversations.conversationId, conversationId))
       .limit(1);
-
-    const summary = rows[0]?.summary ?? null;
-    if (summary) {
-      this.summaryCache.set(conversationId, summary);
-    }
-    return summary;
+    return rows.length === 0 ? undefined : (rows[0].summaryThrough ?? null);
   }
 
   /**
-   * Update conversation summary in DB and in-memory cache.
+   * Update conversation summary in DB.
    *
    * With `cover`, the write also moves `summary_through` and lands only while the
    * stored marker still equals `cover.expected`: a refresh that lost the race to
@@ -336,14 +331,9 @@ export class ConversationStore {
           ),
         )
         .returning({ id: conversations.id });
-      if (written.length === 0) {
-        // Another refresh moved the marker: the text this process cached is not the stored one.
-        this.summaryCache.delete(conversationId);
-        return false;
-      }
+      // Another refresh moved the marker: this one is dropped.
+      if (written.length === 0) return false;
     }
-
-    this.summaryCache.set(conversationId, safe);
     return true;
   }
 
@@ -578,7 +568,17 @@ export class ConversationStore {
       ORDER BY m.rn DESC
     `);
     const raw = result as unknown as Array<Record<string, unknown>>;
-    const json = <T>(v: unknown): T | null => (v == null ? null : ((typeof v === "string" ? JSON.parse(v) : v) as T));
+    // As drizzle's jsonb mapper: a string cell is parsed, and one that is not JSON
+    // (a legacy double-encoded value) is kept as it is instead of failing the read.
+    const json = <T>(v: unknown): T | null => {
+      if (v == null) return null;
+      if (typeof v !== "string") return v as T;
+      try {
+        return JSON.parse(v) as T;
+      } catch {
+        return v as T;
+      }
+    };
     // Rows come oldest first; the newest carries the summary text (see the CASE above).
     const newest = raw[raw.length - 1];
     return {
@@ -1348,10 +1348,8 @@ export class ConversationStore {
         .where(eq(conversations.conversationId, conversationId))
         .returning();
 
-      // Caches are keyed by the id — drop stale entries for both old and new.
-      this.summaryCache.delete(conversationId);
+      // The cache is keyed by the id — drop stale entries for both old and new.
       this.titleCache.delete(conversationId);
-      this.summaryCache.delete(newConversationId);
       this.titleCache.delete(newConversationId);
 
       return result.length > 0;
@@ -1412,7 +1410,6 @@ export class ConversationStore {
         .where(eq(conversations.conversationId, conversationId))
         .returning();
 
-      this.summaryCache.delete(conversationId);
       this.titleCache.delete(conversationId);
       return result.length > 0;
     });

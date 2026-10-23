@@ -20,7 +20,6 @@ vi.mock("./conversations/index.js", () => ({
     getRecentMessages: mockGetRecentMessages,
     getHistorySnapshot: mockSnapshot,
     getContextPrompt: vi.fn(async () => null),
-    getSummary: vi.fn(async () => null),
   },
 }));
 vi.mock("./conversations/state.buffer.js", () => ({
@@ -29,7 +28,10 @@ vi.mock("./conversations/state.buffer.js", () => ({
     seedChannel() {}
   },
 }));
-vi.mock("./instances/config-resolver.js", () => ({ resolveInstanceConfig: mockResolveConfig }));
+vi.mock("./instances/config-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./instances/config-resolver.js")>()),
+  resolveInstanceConfig: mockResolveConfig,
+}));
 vi.mock("./activity-stream/emit-helpers.js", () => ({ resolveInstanceMeta: vi.fn(async () => undefined) }));
 vi.mock("./activity-stream/emitters/emit-inbound.js", () => ({ emitInbound: vi.fn() }));
 vi.mock("./activity-stream/emitters/emit-conversation.js", () => ({ emitConversation: vi.fn() }));

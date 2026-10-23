@@ -90,12 +90,23 @@ export interface HistoryWindowPlan {
   unreadExchanges: number;
 }
 
+export interface HistoryWindowRow {
+  role: string;
+  content: string;
+  /**
+   * Characters the row adds to the request when they differ from its text: a
+   * replayed assistant row also carries its tool calls and results. Defaults to
+   * the length of `content`.
+   */
+  chars?: number;
+}
+
 /**
  * Plan the window over `rows` (the most recent persisted rows, oldest first).
  * Without a count, the rows are taken as the whole conversation.
  */
 export function planHistoryWindow(
-  rows: readonly { role: string; content: string }[],
+  rows: readonly HistoryWindowRow[],
   state: HistoryWindowState = {},
 ): HistoryWindowPlan {
   const userIdx: number[] = [];
@@ -104,9 +115,13 @@ export function planHistoryWindow(
   });
   const exchanges = Math.max(state.userMessageCount ?? userIdx.length, userIdx.length);
   const firstOrdinal = exchanges - userIdx.length;
-  /** Row of exchange `ordinal`; the oldest user row read when the read does not reach back to it. */
+  /**
+   * Row of exchange `ordinal`; the oldest user row read when the read does not
+   * reach back to it, so a window cut by the read never opens on the assistant
+   * or system rows of an exchange whose user row was not read.
+   */
   const rowOf = (ordinal: number): number => {
-    if (ordinal <= 0) return 0;
+    if (ordinal <= 0 && firstOrdinal === 0) return 0;
     const k = ordinal - firstOrdinal;
     if (k < 0) return userIdx[0] ?? 0;
     return k < userIdx.length ? userIdx[k] : rows.length;
@@ -127,15 +142,15 @@ export function planHistoryWindow(
   // Size cap: move to later exchanges while the window is over budget. The
   // refresh below folds what this drops, down to half the budget, so the start
   // moves once per half budget of new text instead of on every turn.
-  const lastUser = userIdx.length > 0 ? userIdx[userIdx.length - 1] : 0;
+  const size = (i: number): number => rows[i].chars ?? rows[i].content.length;
   const cut = (limit: number): number => {
     let start = coveredRow;
     let chars = 0;
-    for (let i = start; i < rows.length; i++) chars += rows[i].content.length;
+    for (let i = start; i < rows.length; i++) chars += size(i);
     for (const u of userIdx) {
-      if (chars <= limit || u > lastUser) break;
+      if (chars <= limit) break;
       if (u <= start) continue;
-      for (let i = start; i < u; i++) chars -= rows[i].content.length;
+      for (let i = start; i < u; i++) chars -= size(i);
       start = u;
     }
     return start;

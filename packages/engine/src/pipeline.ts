@@ -19,7 +19,7 @@ import { extractMemories } from "./memory/index.js";
 import { pipelineLog } from "./utils/pipeline-logger.js";
 import { contactConversationId } from "./channels/outbound-conversation.js";
 import { generateConversationTitle } from "./utils/title-generator.js";
-import { resolveInstanceConfig, type InstanceConfig } from "./instances/config-resolver.js";
+import { resolveEffectiveModelSelection, resolveInstanceConfig, type InstanceConfig } from "./instances/config-resolver.js";
 import { traceStore } from "./analytics/trace.store.js";
 import { uploadAttachment } from "./attachments/agent-storage.js";
 import type { AttachmentMeta, StepDetail, ReasoningDetail, LlmDebugPayload } from "./conversations/schema.js";
@@ -149,6 +149,27 @@ function buildLangsmithConfig(cfg: InstanceConfig): { apiKey: string; project: s
   return { apiKey: cfg.langsmith.apiKey, project: cfg.langsmith.project ?? "default" };
 }
 
+/**
+ * Whether the catalog prices a prompt cache for the model the gateway calls for
+ * this agent. A selection the gateway cannot resolve fails its call anyway; the
+ * window then slides as if uncached.
+ */
+function effectiveModelCached(cfg: InstanceConfig): boolean {
+  try {
+    const { provider, model } = resolveEffectiveModelSelection(cfg.provider, cfg.model);
+    return cacheSupported(provider, model);
+  } catch {
+    return false;
+  }
+}
+
+/** Characters a replayed row sends: its text, or the serialized parts of a tool turn. */
+function replayedChars(messages: readonly ModelMessage[]): number {
+  let chars = 0;
+  for (const m of messages) chars += typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
+  return chars;
+}
+
 export async function preparePipeline(
   msg: IncomingMessage,
   conversationIdOverride?: string | null,
@@ -268,15 +289,22 @@ export async function preparePipeline(
   // and advances 5 exchanges at a time, so the history stays append-only for the
   // prompt cache. The summary, its marker and the count come from the rows' own
   // statement, so they line up with the rows read.
-  const windowRows = conversationHistory.map((m) => ({
+  // Tool-result replay (opt-in per instance) rebuilds each row read from its
+  // persisted `steps`, with the tool calls and their (truncated) results, so the
+  // model retains tool outputs across turns. Rows rebuild independently, so the
+  // char budget counts what each replayed row sends, not only its text.
+  const replayed = replayRows?.map((row) => buildHistoryWithToolResults([row]));
+  const windowRows = conversationHistory.map((m, i) => ({
     role: m.role,
     content: typeof m.content === "string" ? m.content : "",
+    ...(replayed ? { chars: replayedChars(replayed[i]) } : {}),
   }));
   // Without a prompt cache (turned off for the agent, or a model the catalog marks
   // as uncached) the window slides one exchange at a time, as short as a fixed one.
-  const { provider, model } = instanceConfig;
+  // The model is the one the gateway calls: an unset model means the provider's
+  // standard tier, the one the supervisor asks for.
   const blockExchanges = historyBlockExchanges(
-    instanceConfig.cacheConfig.enabled && (!provider || !model || cacheSupported(provider, model)),
+    instanceConfig.cacheConfig.enabled && effectiveModelCached(instanceConfig),
   );
   // No rows read (a new conversation, or the read failed): the snapshot carries no
   // summary state, so there is no window and no summary; the client-side history
@@ -314,12 +342,10 @@ export async function preparePipeline(
       ? conversationHistory
       : (msg.metadata?.conversationHistory as ModelMessage[] | undefined);
 
-  // Tool-result replay (opt-in per instance): rebuild the in-window history from
-  // the raw rows read above, reconstructing tool_use/tool_result blocks from the
-  // persisted `steps` so the model retains tool outputs across turns. The dropped
-  // messages / summary stay text-only.
-  if (replayRows && replayRows.length > 0) {
-    history = buildHistoryWithToolResults(replayRows.slice(windowPlan.start));
+  // Replay agents see the in-window rows rebuilt above. The dropped messages and
+  // the summary stay text-only.
+  if (replayed && replayed.length > 0) {
+    history = replayed.slice(windowPlan.start).flat();
   }
 
   const langsmith = buildLangsmithConfig(instanceConfig);
@@ -595,8 +621,20 @@ export function afterResponse(opts: AfterResponseOptions): void {
 
     // 2. Update conversation summary (only when sliding window overflows)
     // A turn that starts before the previous turn's refresh lands plans the same
-    // one: it pays for its summary call, and the compare-and-set drops its write.
-    const dropped = opts.needsSummaryUpdate ? opts.droppedMessages : undefined;
+    // one. The marker is read again before the paid summary call: once that
+    // refresh has landed, the marker moved and this one is skipped. Two refreshes
+    // still in flight together both pay, and the compare-and-set drops the second
+    // write. A failed read skips too: the window keeps those exchanges verbatim
+    // and the next turn plans the refresh again.
+    let dropped = opts.needsSummaryUpdate ? opts.droppedMessages : undefined;
+    if (dropped?.length && opts.summaryCover) {
+      const current = await conversationStore.getSummaryThrough(opts.conversationId).catch((err: unknown) => {
+        log.warn("pipeline", `Summary marker read failed for conversation ${opts.conversationId}; refresh skipped`, err);
+        return undefined;
+      });
+      // Undefined (the read failed, or the conversation row is gone) never matches.
+      if (current !== opts.summaryCover.expected) dropped = undefined;
+    }
     if (dropped?.length) {
       const existing = opts.existingSummary
         ? `Previous summary: ${opts.existingSummary}\n\n`

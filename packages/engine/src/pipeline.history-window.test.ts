@@ -32,8 +32,6 @@ vi.mock("./conversations/index.js", () => {
       ensureConversation: mockEnsure,
       // The separate reads turns made before the snapshot, so a turn still making them shows in storeReads.
       getRecentMessages: read("getRecentMessages", mockGetRecentMessages),
-      getSummaryState: read("getSummaryState", mockSummaryState),
-      getSummary: read("getSummary", async () => "summary"),
       // One statement: the rows and, from the same snapshot, the summary state (none without rows).
       getHistorySnapshot: read("getHistorySnapshot", async (id: string, limit: number) => {
         const rows = await mockGetRecentMessages(id, limit);
@@ -55,7 +53,11 @@ vi.mock("./conversations/state.buffer.js", () => ({
     seedChannel() {}
   },
 }));
-vi.mock("./instances/config-resolver.js", () => ({ resolveInstanceConfig: mockConfig }));
+// The real model resolution (the gateway's fallback to the provider's standard tier); only the config is a fixture.
+vi.mock("./instances/config-resolver.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./instances/config-resolver.js")>()),
+  resolveInstanceConfig: mockConfig,
+}));
 
 /** The resolved agent config the pipeline reads; provider and model unset mean the deployment defaults. */
 function agent(over: { cacheEnabled?: boolean; provider?: string; model?: string; replay?: boolean } = {}) {
@@ -167,6 +169,25 @@ describe("preparePipeline — window without a prompt cache", () => {
     expect(firsts).toEqual(["u0", "u0", "u0", "u0", "u0", "u5", "u5"]);
     expect(lengths).toEqual([10, 12, 14, 16, 18, 10, 12]);
   });
+
+  it("slides one exchange per turn when the model is unset and the provider's standard model is uncached", async () => {
+    // The gateway calls nebius's standard tier, which the catalog prices without a cache discount.
+    agent({ provider: "nebius" });
+    const { firsts } = await converse(5, 12);
+    expect(firsts).toEqual(["u0", "u1", "u2", "u3", "u4", "u5", "u6"]);
+  });
+
+  it("keeps blocks when the model is unset and the provider's standard model caches", async () => {
+    agent({ provider: "anthropic" });
+    const { firsts } = await converse(5, 12);
+    expect(firsts).toEqual(["u0", "u0", "u0", "u0", "u0", "u5", "u5"]);
+  });
+
+  it("slides one exchange per turn when the provider cannot be resolved", async () => {
+    agent({ provider: "no-such-provider" });
+    const { firsts } = await converse(5, 12);
+    expect(firsts).toEqual(["u0", "u1", "u2", "u3", "u4", "u5", "u6"]);
+  });
 });
 
 describe("preparePipeline — block history window", () => {
@@ -271,6 +292,52 @@ describe("preparePipeline — block history window", () => {
     }
     expect(starts).toEqual([8, 10, 12]);
   });
+
+  /** Six short exchanges whose answers each replay five tool results of 5,000 chars (2,000 kept each). */
+  function persistToolTurns(stepsOf: (i: number) => unknown = (i) => [toolStep(i)]) {
+    const rows: { role: string; content: string; steps?: unknown }[] = [];
+    for (let i = 0; i < 6; i++) {
+      rows.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}`, steps: stepsOf(i) });
+    }
+    mockEnsure.mockResolvedValue({ created: false, userMessageCount: 6 });
+    mockGetRecentMessages.mockImplementation(async () => rows);
+    mockSummaryState.mockResolvedValue({ summary: null, summaryThrough: null, userMessageCount: 6 });
+  }
+  const toolStep = (i: number) => ({
+    index: 0,
+    stepType: "initial",
+    text: "",
+    finishReason: "tool-calls",
+    toolCalls: Array.from({ length: 5 }, (_, k) => ({ toolCallId: `c${i}_${k}`, toolName: "lookup", args: {} })),
+    toolResults: Array.from({ length: 5 }, (_, k) => ({ toolCallId: `c${i}_${k}`, result: "r".repeat(5_000) })),
+  });
+
+  it("cuts a replayed window by the size of its tool calls and results, not only its text", async () => {
+    // Each answer replays about 11k chars: the 40k budget holds three exchanges,
+    // and the refresh folds down to half the budget (the last exchange).
+    agent({ replay: true });
+    persistToolTurns();
+    const ctx = await preparePipeline(msg);
+    expect(ctx.history?.[0]).toEqual({ role: "user", content: "u3" });
+    expect(ctx.history?.filter((m) => m.role === "tool")).toHaveLength(3);
+    expect(texts(ctx.droppedMessages)).toEqual(["u0", "a0", "u1", "a1", "u2", "a2", "u3", "a3", "u4", "a4"]);
+    expect(ctx.summaryCover).toEqual({ expected: null, through: 5 });
+    // The same rows without replay are a few chars of text: the whole conversation fits.
+    agent({ replay: false });
+    expect((await preparePipeline(msg)).history?.[0]?.content).toBe("u0");
+  });
+
+  it("replays the text of an answer whose steps cell could not be decoded, and the tool calls of the others", async () => {
+    agent({ replay: true });
+    // The snapshot keeps an undecodable legacy cell as its raw string (store.ts).
+    persistToolTurns((i) => (i === 5 ? "not json" : i === 4 ? [toolStep(i)] : null));
+    const ctx = await preparePipeline(msg);
+    expect(ctx.history?.slice(-3)).toEqual([
+      expect.objectContaining({ role: "tool" }),
+      { role: "user", content: "u5" },
+      { role: "assistant", content: "a5" },
+    ]);
+  });
 });
 
 describe("preparePipeline — history read edge cases", () => {
@@ -331,6 +398,20 @@ describe("preparePipeline — history read edge cases", () => {
       expect({ through, first: auto.history?.[0]?.content }).toEqual({ through, first: "u10" });
       expect(auto.hasOverflow).toBe(true);
       expect(auto.conversationSummary).toBe("old summary");
+    }
+  });
+
+  it("opens the window on a user row when the rows read start inside an exchange the summary does not cover", async () => {
+    // 23 exchanges; the rows read start at a3, whose user row was not read.
+    const rows = [{ role: "assistant", content: "a3" }];
+    for (let i = 4; i < 23; i++) rows.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}` });
+    for (const through of [0, null]) {
+      mockGetRecentMessages.mockImplementation(async () => rows);
+      mockSummaryState.mockResolvedValue({ summary: "old summary", summaryThrough: through, userMessageCount: 23 });
+      const ctx = await preparePipeline(msg);
+      expect({ through, first: ctx.history?.[0]?.content }).toEqual({ through, first: "u4" });
+      expect({ through, folded: texts(ctx.droppedMessages)?.[0] }).toEqual({ through, folded: "u4" });
+      expect(ctx.conversationSummary).toBe("old summary");
     }
   });
 
