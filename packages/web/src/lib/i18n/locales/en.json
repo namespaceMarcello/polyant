@@ -360,7 +360,6 @@
   "skills.empty": "No skills yet.",
   "skills.empty.cta": "Add",
   "skills.table.name": "Name",
-  "skills.table.description": "Description",
   "skills.table.actions": "Actions",
   "skills.deleteTitle": "Delete skill",
   "skills.deleteDescription": "This will permanently remove \"{name}\" from the library. This action cannot be undone.",

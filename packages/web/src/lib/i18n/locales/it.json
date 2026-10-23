@@ -360,7 +360,6 @@
   "skills.empty": "Nessuna skill presente.",
   "skills.empty.cta": "Aggiungi",
   "skills.table.name": "Nome",
-  "skills.table.description": "Descrizione",
   "skills.table.actions": "Azioni",
   "skills.deleteTitle": "Elimina skill",
   "skills.deleteDescription": "Questo rimuoverà permanentemente \"{name}\" dalla libreria. Questa azione non può essere annullata.",

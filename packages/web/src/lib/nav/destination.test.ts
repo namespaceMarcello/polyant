@@ -11,7 +11,6 @@ import {
 import {
   AGENT_MACROS,
   AGENT_SECTIONS,
-  agentSectionsByMacro,
   DEFAULT_AGENT_TAB,
   macroOfTab,
   resolveAgentTab,
