@@ -1,17 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The Context section of the Debug sheet: which state it finds in the captured
- * request, and how it lays the fields out.
+ * The Context tab of the Debug sheet: which state it finds in the captured
+ * request.
  */
 
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
-import { TurnState, extractTurnState } from "./turn-state";
-
-vi.mock("@/lib/i18n/context", () => ({
-  useI18n: () => ({ locale: "en", setLocale: vi.fn(), t: (key: string) => key }),
-}));
+import { describe, it, expect } from "vitest";
+import { extractTurnState } from "./turn-state";
 
 function userTurn(state: unknown, words = "hello") {
   return {
@@ -43,28 +38,5 @@ describe("extractTurnState", () => {
     expect(extractTurnState([{ role: "user", content: "hi" }])).toBeNull();
     expect(extractTurnState([{ role: "user", content: "<conversation_state>{nope</conversation_state>" }])).toBeNull();
     expect(extractTurnState([{ role: "user", content: "<conversation_state>[1]</conversation_state>" }])).toBeNull();
-  });
-});
-
-describe("TurnState", () => {
-  it("renders labelled fields, nested objects and lists", () => {
-    render(
-      <TurnState
-        state={{
-          customer_name: "Ada",
-          confirmed: true,
-          notes: null,
-          tags: ["vip", "returning"],
-          clinic: { city: "Torino" },
-        }}
-      />,
-    );
-    expect(screen.getByText("customer_name")).toBeTruthy();
-    expect(screen.getByText("Ada")).toBeTruthy();
-    expect(screen.getByText("message.debug.stateYes")).toBeTruthy();
-    expect(screen.getByText("—")).toBeTruthy();
-    expect(screen.getByText("vip")).toBeTruthy();
-    expect(screen.getByText("city")).toBeTruthy();
-    expect(screen.getByText("Torino")).toBeTruthy();
   });
 });

@@ -6,8 +6,9 @@
  * DebugSheet
  *
  * Right-side panel that shows, for a single assistant turn, everything exchanged
- * with the AI API: the exact LLM request payload (full system prompt, the messages
- * array sent, and the tool definitions) plus the per-step tool I/O timeline.
+ * with the AI API, one tab per part: usage, the exact LLM request (system prompt
+ * and the messages array sent), the tool definitions, the per-step tool I/O
+ * timeline, and the conversation state the model read.
  *
  * The heavy payload is fetched on-demand (on open) via the per-message debug
  * endpoint, so the message list stays light. The payload is only present when the
@@ -39,7 +40,9 @@ import {
   AccordionContent,
 } from "@/components/ui/accordion";
 import { MessageExtras } from "./message-extras";
-import { TurnState, extractTurnState } from "./turn-state";
+import { JsonTree } from "./json-tree";
+import { extractTurnState } from "./turn-state";
+import { ChipTabs, type ChipTab } from "@/components/layout/chip-tabs";
 import { useFormat } from "@/lib/use-format";
 
 export interface DebugSheetTarget {
@@ -66,20 +69,6 @@ export interface DebugSheetProps {
   target: DebugSheetTarget | null;
 }
 
-function JsonBlock({ value }: { value: unknown }) {
-  let text: string;
-  try {
-    text = JSON.stringify(value, null, 2);
-  } catch {
-    text = String(value);
-  }
-  return (
-    <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-md border bg-muted/30 p-3 text-[11px] leading-relaxed">
-      {text}
-    </pre>
-  );
-}
-
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-2">
@@ -100,7 +89,9 @@ function UsageSection({ target }: { target: DebugSheetTarget }) {
   const regularInput = Math.max(0, prompt - cacheRead - cacheWrite);
   const cost = target.cost;
 
-  if (!target.model && prompt === 0 && completion === 0) return null;
+  if (!target.model && prompt === 0 && completion === 0) {
+    return <p className="text-xs text-muted-foreground">—</p>;
+  }
 
   const fmtCost = (usd: number | undefined) => (usd != null ? fmt.currency(usd) : "—");
   const rows: Array<{ label: string; tokens: number; cost: number | undefined }> = [
@@ -115,7 +106,7 @@ function UsageSection({ target }: { target: DebugSheetTarget }) {
   ];
 
   return (
-    <Section title={t("message.debug.usage")}>
+    <div className="flex flex-col gap-2">
       {target.model && (
         <div className="flex items-center gap-2 text-sm">
           <Cpu className="h-4 w-4 text-muted-foreground" />
@@ -151,7 +142,7 @@ function UsageSection({ target }: { target: DebugSheetTarget }) {
         </tbody>
       </table>
       <DiagnosticsList target={target} />
-    </Section>
+    </div>
   );
 }
 
@@ -267,7 +258,105 @@ function DebugSheetBody({ target }: { target: DebugSheetTarget }) {
   );
 
   const payload = data?.debugPayload ?? null;
+  const steps = data?.steps ?? [];
   const turnState = payload ? extractTurnState(payload.messages) : null;
+
+  // The payload tabs wait for the fetch and say why they are empty; Usage is
+  // drawn from the message list and is there from the first frame.
+  const pending =
+    loading ? (
+      <p className="text-sm text-muted-foreground">{t("message.debug.loading")}</p>
+    ) : error !== undefined || !data ? (
+      <p className="text-sm text-destructive">{t("message.debug.error")}</p>
+    ) : null;
+  const noPayload = (
+    <p className="rounded-md border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
+      {t("message.debug.noPayload")}
+    </p>
+  );
+  const none = <p className="text-xs text-muted-foreground">—</p>;
+
+  const tabs: ChipTab[] = [
+    {
+      value: "usage",
+      label: t("message.debug.usage"),
+      children: <UsageSection target={target} />,
+    },
+    {
+      value: "prompt",
+      label: t("message.debug.prompt"),
+      children:
+        pending ??
+        (payload ? (
+          <div className="flex flex-col gap-5">
+            <Section title={t("message.debug.systemPrompt")}>
+              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-3 text-[11px] leading-relaxed">
+                {payload.system || "—"}
+              </pre>
+            </Section>
+            <Section title={t("message.debug.messages")}>
+              <JsonTree value={payload.messages} />
+            </Section>
+          </div>
+        ) : (
+          noPayload
+        )),
+    },
+    {
+      value: "tools",
+      label: t("message.debug.tools"),
+      count: payload?.tools.length,
+      children:
+        pending ??
+        (!payload ? (
+          noPayload
+        ) : payload.tools.length === 0 ? (
+          none
+        ) : (
+          <Accordion type="multiple" className="flex flex-col gap-2">
+            {payload.tools.map((tool) => (
+              <AccordionItem
+                key={tool.name}
+                value={tool.name}
+                className="rounded-md border bg-background/50 last:border-b"
+              >
+                <AccordionTrigger className="px-2 py-2 font-mono text-xs font-semibold">
+                  {tool.name}
+                </AccordionTrigger>
+                <AccordionContent className="px-2">
+                  {tool.description && (
+                    <p className="text-[11px] text-muted-foreground">{tool.description}</p>
+                  )}
+                  {tool.parameters != null && (
+                    <div className="mt-2">
+                      <div className="mb-1 text-[11px] text-muted-foreground">
+                        {t("message.debug.toolParams")}
+                      </div>
+                      <JsonTree value={tool.parameters} />
+                    </div>
+                  )}
+                </AccordionContent>
+              </AccordionItem>
+            ))}
+          </Accordion>
+        )),
+    },
+    {
+      value: "steps",
+      label: t("message.debug.steps"),
+      count: data ? steps.length : undefined,
+      children: pending ?? (steps.length > 0 ? <MessageExtras steps={steps} /> : none),
+    },
+    {
+      value: "context",
+      label: t("message.debug.context"),
+      children:
+        pending ??
+        (!payload ? noPayload : turnState ? <JsonTree value={turnState} /> : (
+          <p className="text-xs text-muted-foreground">{t("message.debug.noContext")}</p>
+        )),
+    },
+  ];
 
   return (
     <>
@@ -283,78 +372,12 @@ function DebugSheetBody({ target }: { target: DebugSheetTarget }) {
         <SheetDescription className="sr-only">{t("message.debug.description")}</SheetDescription>
       </SheetHeader>
 
-      <div className="flex flex-col gap-5 px-4 pb-8">
-        <UsageSection target={target} />
-        {loading && <p className="text-sm text-muted-foreground">{t("message.debug.loading")}</p>}
-        {error !== undefined && <p className="text-sm text-destructive">{t("message.debug.error")}</p>}
-
-        {!loading && error === undefined && data && (
-          <>
-            {payload ? (
-              <>
-                <Section title={t("message.debug.systemPrompt")}>
-                  <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-3 text-[11px] leading-relaxed">
-                    {payload.system || "—"}
-                  </pre>
-                </Section>
-
-                <Section title={t("message.debug.messages")}>
-                  <JsonBlock value={payload.messages} />
-                </Section>
-
-                <Section title={t("message.debug.tools")}>
-                  {payload.tools.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">—</p>
-                  ) : (
-                    <Accordion type="multiple" className="flex flex-col gap-2">
-                      {payload.tools.map((tool) => (
-                        <AccordionItem
-                          key={tool.name}
-                          value={tool.name}
-                          className="rounded-md border bg-background/50 last:border-b"
-                        >
-                          <AccordionTrigger className="px-2 py-2 font-mono text-xs font-semibold">
-                            {tool.name}
-                          </AccordionTrigger>
-                          <AccordionContent className="px-2">
-                            {tool.description && (
-                              <p className="text-[11px] text-muted-foreground">{tool.description}</p>
-                            )}
-                            {tool.parameters != null && (
-                              <div className="mt-2">
-                                <div className="mb-1 text-[11px] text-muted-foreground">
-                                  {t("message.debug.toolParams")}
-                                </div>
-                                <JsonBlock value={tool.parameters} />
-                              </div>
-                            )}
-                          </AccordionContent>
-                        </AccordionItem>
-                      ))}
-                    </Accordion>
-                  )}
-                </Section>
-              </>
-            ) : (
-              <p className="rounded-md border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
-                {t("message.debug.noPayload")}
-              </p>
-            )}
-
-            {data.steps && data.steps.length > 0 && (
-              <Section title={t("message.debug.steps")}>
-                <MessageExtras steps={data.steps} />
-              </Section>
-            )}
-
-            {turnState && (
-              <Section title={t("message.debug.context")}>
-                <TurnState state={turnState} />
-              </Section>
-            )}
-          </>
-        )}
-      </div>
+      <ChipTabs
+        tabs={tabs}
+        ariaLabel={t("message.debug.title")}
+        className="gap-4 px-4 pb-8"
+        listClassName="flex-wrap"
+      />
     </>
   );
 }
