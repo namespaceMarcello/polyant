@@ -207,7 +207,6 @@ export default function InstancesPage() {
       <PageHeader
         title={t("instances.title")}
         subtitle={t("instances.subtitle")}
-        subtitleClassName="mt-2 text-muted-foreground"
         actions={<>
           <div className="flex items-center rounded-md border">
             <Button
