@@ -141,6 +141,7 @@
   "message.debug.messages": "Messages sent to the model",
   "message.debug.tools": "Tools",
   "message.debug.toolParams": "Parameters",
+  "message.debug.history": "History",
   "message.debug.copyAll": "Copy all",
   "message.debug.copied": "Copied",
   "message.debug.copyFailed": "Copy failed: the clipboard is not available.",

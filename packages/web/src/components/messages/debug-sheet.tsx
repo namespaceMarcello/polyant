@@ -6,8 +6,8 @@
  * DebugSheet
  *
  * Right-side panel that shows, for a single assistant turn, everything exchanged
- * with the AI API, one tab per part: usage, the exact LLM request (system prompt
- * and the messages array sent), the tool definitions, the per-step tool I/O
+ * with the AI API, one tab per part: usage, the system prompt, the tool
+ * definitions, the history (the messages array sent), the per-step tool I/O
  * timeline, and the conversation state the model read.
  *
  * The heavy payload is fetched on-demand (on open) via the per-message debug
@@ -288,16 +288,11 @@ function DebugSheetBody({ target }: { target: DebugSheetTarget }) {
       children:
         pending ??
         (payload ? (
-          <div className="flex flex-col gap-5">
-            <Section title={t("message.debug.systemPrompt")}>
-              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-3 text-[11px] leading-relaxed">
-                {payload.system || "—"}
-              </pre>
-            </Section>
-            <Section title={t("message.debug.messages")}>
-              <JsonTree value={payload.messages} />
-            </Section>
-          </div>
+          <Section title={t("message.debug.systemPrompt")}>
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-3 text-[11px] leading-relaxed">
+              {payload.system || "—"}
+            </pre>
+          </Section>
         ) : (
           noPayload
         )),
@@ -339,6 +334,20 @@ function DebugSheetBody({ target }: { target: DebugSheetTarget }) {
               </AccordionItem>
             ))}
           </Accordion>
+        )),
+    },
+    {
+      value: "history",
+      label: t("message.debug.history"),
+      count: payload?.messages.length,
+      children:
+        pending ??
+        (payload ? (
+          <Section title={t("message.debug.messages")}>
+            <JsonTree value={payload.messages} />
+          </Section>
+        ) : (
+          noPayload
         )),
     },
     {

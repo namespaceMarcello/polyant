@@ -141,6 +141,7 @@
   "message.debug.messages": "Messaggi inviati al modello",
   "message.debug.tools": "Tool",
   "message.debug.toolParams": "Parametri",
+  "message.debug.history": "Cronologia",
   "message.debug.copyAll": "Copia tutto",
   "message.debug.copied": "Copiato",
   "message.debug.copyFailed": "Copia non riuscita: gli appunti non sono accessibili.",
