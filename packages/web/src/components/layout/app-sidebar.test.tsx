@@ -73,12 +73,15 @@ describe("AppSidebar — a destination takes over the sidebar", () => {
     expect(within(content).getByRole("link", { name: /agenti/i })).toBeInTheDocument();
     // Its macros are HEADINGS now, and each section under them is its own row —
     // it was one row per macro, with the sections behind a tab row.
-    expect(within(content).getByText("Comportamento")).toBeInTheDocument();
-    expect(within(content).queryByRole("link", { name: /^comportamento$/i })).not.toBeInTheDocument();
+    expect(within(content).getByText("Risorse")).toBeInTheDocument();
+    expect(within(content).queryByRole("link", { name: /^risorse$/i })).not.toBeInTheDocument();
     expect(within(content).getByRole("link", { name: /^prompt$/i })).toBeInTheDocument();
     expect(within(content).getByRole("link", { name: /^strumenti$/i })).toBeInTheDocument();
-    expect(within(content).getByRole("link", { name: /^automazioni$/i })).toBeInTheDocument();
-    expect(within(content).queryByRole("link", { name: /^webhook$/i })).not.toBeInTheDocument();
+    // Automazioni is a heading over four rows, and Webhook is one of them.
+    expect(within(content).getByText("Automazioni")).toBeInTheDocument();
+    expect(within(content).queryByRole("link", { name: /^automazioni$/i })).not.toBeInTheDocument();
+    expect(within(content).getByRole("link", { name: /^webhook$/i })).toBeInTheDocument();
+    expect(within(content).getByRole("link", { name: /^hook$/i })).toBeInTheDocument();
 
     /*
       And none of the daily work. Conversazioni and Memoria are the trap here:
@@ -119,7 +122,7 @@ describe("AppSidebar — a destination takes over the sidebar", () => {
 
     const content = document.querySelector<HTMLElement>('[data-sidebar="content"]')!;
     expect(within(content).getByRole("link", { name: /conversazioni/i })).toBeInTheDocument();
-    expect(within(content).queryByText("Comportamento")).not.toBeInTheDocument();
+    expect(within(content).queryByText("Risorse")).not.toBeInTheDocument();
     expect(within(content).queryByRole("link", { name: /^prompt$/i })).not.toBeInTheDocument();
   });
 });
