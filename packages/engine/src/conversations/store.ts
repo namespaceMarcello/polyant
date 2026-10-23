@@ -164,6 +164,35 @@ export interface ConversationSearchResult extends ConversationListItem {
  * user message; completion tokens + cache + model + cost land on the assistant
  * message. Cache/model/cost are null for legacy rows without a linked trace.
  */
+/** One model call made during a turn, as `ai_logs` recorded it. */
+export interface TurnModelCall {
+  /** "conversation" for the agent's answer, "service" for the calls around it, "embedding" for an embedder. */
+  callType: string;
+  provider: string;
+  model: string;
+  durationMs: number;
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number;
+  outcome: string;
+  errorKind: string | null;
+  createdAt: string | null;
+}
+
+/** Everything the per-message Debug sheet loads on open. */
+export interface MessageDebug {
+  /** Null when the turn was generated with DEBUG off. */
+  debugPayload: LlmDebugPayload | null;
+  steps: StepDetail[] | null;
+  /** How the turn arrived; null for a message with no pipeline trace. */
+  turn: {
+    channel: string;
+    streaming: boolean;
+    speechToText: { provider: string; durationMs: number | null; audioDurationSec: number | null } | null;
+  } | null;
+  modelCalls: TurnModelCall[];
+}
+
 export interface MessageMetadata {
   promptTokens: number;
   completionTokens: number;
@@ -789,18 +818,17 @@ export class ConversationStore {
 
   /**
    * Fetch the heavy per-turn debug data for a single message: the captured LLM
-   * request payload (DEBUG mode only) plus the multi-step tool trace. Scoped by
-   * conversationId so a message id cannot be read out of its conversation.
-   * Returns null when the message does not exist in that conversation.
+   * request payload (DEBUG mode only), the multi-step tool trace, how the turn
+   * arrived (channel, streaming, speech-to-text) and the model calls it made.
+   * Scoped by conversationId so a message id cannot be read out of its
+   * conversation. Returns null when the message does not exist in that conversation.
    */
-  async getMessageDebug(
-    conversationId: string,
-    messageId: string,
-  ): Promise<{ debugPayload: LlmDebugPayload | null; steps: StepDetail[] | null } | null> {
+  async getMessageDebug(conversationId: string, messageId: string): Promise<MessageDebug | null> {
     const rows = await db
       .select({
         debugPayload: conversationMessages.debugPayload,
         steps: conversationMessages.steps,
+        createdAt: conversationMessages.createdAt,
       })
       .from(conversationMessages)
       .where(and(eq(conversationMessages.id, messageId), eq(conversationMessages.conversationId, conversationId)))
@@ -808,9 +836,79 @@ export class ConversationStore {
 
     const row = rows[0];
     if (!row) return null;
+
+    // `ai_logs` has no message id, so the turn's calls are the conversation's
+    // calls from the user message that opened the turn up to the next one:
+    // the calls that answered it and the post-response ones after it.
+    // An ISO string cast in SQL: the raw fragments below do not serialize a Date.
+    const at = sql`${(row.createdAt ?? new Date()).toISOString()}::timestamptz`;
+    const turnStart = sql`COALESCE((
+      SELECT MAX(${conversationMessages.createdAt}) FROM ${conversationMessages}
+      WHERE ${conversationMessages.conversationId} = ${conversationId}
+        AND ${conversationMessages.role} = 'user' AND ${conversationMessages.createdAt} <= ${at}
+    ), ${at})`;
+    const turnEnd = sql`COALESCE((
+      SELECT MIN(${conversationMessages.createdAt}) FROM ${conversationMessages}
+      WHERE ${conversationMessages.conversationId} = ${conversationId}
+        AND ${conversationMessages.role} = 'user' AND ${conversationMessages.createdAt} > ${at}
+    ), 'infinity'::timestamptz)`;
+
+    const [traces, calls] = await Promise.all([
+      db
+        .select({
+          channel: pipelineTraces.channel,
+          isStreaming: pipelineTraces.isStreaming,
+          sttProvider: pipelineTraces.sttProvider,
+          sttDurationMs: pipelineTraces.sttDurationMs,
+          audioDurationSec: pipelineTraces.audioDurationSec,
+        })
+        .from(pipelineTraces)
+        .where(and(eq(pipelineTraces.messageId, messageId), eq(pipelineTraces.conversationId, conversationId)))
+        .limit(1),
+      db
+        .select({
+          callType: aiLogs.callType,
+          provider: aiLogs.provider,
+          model: aiLogs.model,
+          durationMs: aiLogs.durationMs,
+          promptTokens: aiLogs.promptTokens,
+          completionTokens: aiLogs.completionTokens,
+          costUsd: aiLogs.estimatedCostUsd,
+          outcome: aiLogs.outcome,
+          errorKind: aiLogs.errorKind,
+          createdAt: aiLogs.createdAt,
+        })
+        .from(aiLogs)
+        .where(
+          and(
+            eq(aiLogs.conversationId, conversationId),
+            sql`${aiLogs.createdAt} >= ${turnStart}`,
+            sql`${aiLogs.createdAt} < ${turnEnd}`,
+          ),
+        )
+        .orderBy(asc(aiLogs.createdAt)),
+    ]);
+
+    const trace = traces[0];
     return {
       debugPayload: (row.debugPayload as LlmDebugPayload | null) ?? null,
       steps: (row.steps as StepDetail[] | null) ?? null,
+      turn: trace
+        ? {
+            channel: trace.channel,
+            streaming: trace.isStreaming,
+            // Only a voice turn has a transcription.
+            speechToText:
+              trace.sttProvider != null
+                ? {
+                    provider: trace.sttProvider,
+                    durationMs: trace.sttDurationMs ?? null,
+                    audioDurationSec: trace.audioDurationSec != null ? Number(trace.audioDurationSec) : null,
+                  }
+                : null,
+          }
+        : null,
+      modelCalls: calls.map((c) => ({ ...c, createdAt: c.createdAt?.toISOString() ?? null })),
     };
   }
 

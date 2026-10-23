@@ -64,15 +64,11 @@ function Empty({ value }: { value: Composite }) {
   return <span className="text-muted-foreground">{Array.isArray(value) ? "[]" : "{}"}</span>;
 }
 
-/** A short hint shown beside a first-level key, e.g. the role of a message in a list of messages. */
-type Hint = (value: unknown) => string | undefined;
-
-function Node({ name, value, hint }: { name: string; value: unknown; hint?: Hint }) {
+function Node({ name, value }: { name: string; value: unknown }) {
   const [open, setOpen] = useState(false);
   const composite = isComposite(value);
   const empty = composite && entriesOf(value).length === 0;
   const keyClass = "shrink-0 font-semibold text-foreground";
-  const label = composite ? hint?.(value) : undefined;
 
   return (
     <li>
@@ -81,7 +77,6 @@ function Node({ name, value, hint }: { name: string; value: unknown; hint?: Hint
         <button
           type="button"
           aria-expanded={open}
-          aria-label={label ? `${name} ${label}` : name}
           onClick={() => setOpen((o) => !o)}
           className="-mx-1 flex items-start gap-1 rounded-sm px-1 text-left hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
@@ -92,7 +87,6 @@ function Node({ name, value, hint }: { name: string; value: unknown; hint?: Hint
             {open ? "−" : "+"}
           </span>
           <span className={keyClass}>{name}</span>
-          {label && <span className="text-muted-foreground">{label}</span>}
         </button>
       ) : (
         <div className="flex items-start gap-1">
@@ -106,21 +100,21 @@ function Node({ name, value, hint }: { name: string; value: unknown; hint?: Hint
   );
 }
 
-function Entries({ value, nested = false, hint }: { value: Composite; nested?: boolean; hint?: Hint }) {
+function Entries({ value, nested = false }: { value: Composite; nested?: boolean }) {
   return (
     <ul className={cn("flex flex-col gap-0.5", nested && "ml-2 mt-0.5 border-l pl-3")}>
       {entriesOf(value).map(([key, item]) => (
-        <Node key={key} name={key} value={item} hint={hint} />
+        <Node key={key} name={key} value={item} />
       ))}
     </ul>
   );
 }
 
-export function JsonTree({ value, hint, className }: { value: unknown; hint?: Hint; className?: string }) {
+export function JsonTree({ value, className }: { value: unknown; className?: string }) {
   return (
     <div className={cn("overflow-x-auto rounded-md border bg-muted/30 p-3 font-mono text-[13px] leading-relaxed", className)}>
       {isComposite(value) && entriesOf(value).length > 0 ? (
-        <Entries value={value} hint={hint} />
+        <Entries value={value} />
       ) : isComposite(value) ? (
         <Empty value={value} />
       ) : (

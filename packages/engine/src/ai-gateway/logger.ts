@@ -82,7 +82,9 @@ export class AILogger {
   }
 
   log(entry: AILogEntry) {
-    this.queue.push(entry);
+    // Stamped here, not by the column default: the queue writes every few
+    // seconds, and the time of the write would put a call in the wrong turn.
+    this.queue.push({ ...entry, createdAt: entry.createdAt ?? new Date() });
   }
 
   flush() {
