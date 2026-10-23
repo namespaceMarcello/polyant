@@ -11,12 +11,17 @@ import { describe, it, expect, afterAll } from "vitest";
 import { conversationStore } from "./store.js";
 import { asInstanceSlug } from "../instances/identifiers.js";
 import { allTenantsScope } from "../authz/scope-filter.js";
+import { db } from "../database/client.js";
+import { sql } from "drizzle-orm";
+import { HISTORY_READ_LIMIT, planHistoryWindow } from "../history-window.js";
 
 const DB_AVAILABLE = await resolveDatabaseAvailability();
 const CID = `itest:summary-through:${Date.now()}`;
 const LEGACY = `${CID}:legacy`;
 const SNAP = `${CID}:snapshot`;
 const RACE = `${CID}:race`;
+const PLAN = `${CID}:plan`;
+const PIN = `${CID}:pin`;
 const SLUG = asInstanceSlug("itest-summary-through");
 
 /** The summary state a turn reads with its rows (`getHistorySnapshot`). */
@@ -38,7 +43,7 @@ async function exchanges(cid: string, n: number) {
 describe("conversation summary marker (integration)", () => {
   afterAll(async () => {
     if (!DB_AVAILABLE) return;
-    for (const cid of [CID, LEGACY, SNAP, RACE]) {
+    for (const cid of [CID, LEGACY, SNAP, RACE, PLAN, PIN]) {
       await conversationStore.deleteConversation(cid, allTenantsScope("integration test cleanup")).catch(() => {});
     }
   });
@@ -131,5 +136,58 @@ describe("conversation summary marker (integration)", () => {
     await turns;
     expect(reads).toBeGreaterThan(0);
     expect((await stateOf(RACE)).userMessageCount).toBe(25);
+  });
+
+  it.skipIf(!DB_AVAILABLE)("stamps the marker on a stored summary without one, once, and never without a summary", async () => {
+    await conversationStore.ensureConversation(PIN, SLUG);
+    await exchanges(PIN, 3);
+    expect(await conversationStore.pinSummaryThrough(PIN, { expected: null, through: 1 })).toBe(false);
+    await conversationStore.updateSummary(PIN, "old summary");
+    expect(await conversationStore.pinSummaryThrough(PIN, { expected: null, through: 1 })).toBe(true);
+    // A second turn that computed the coverage from newer rows finds the marker already set.
+    expect(await conversationStore.pinSummaryThrough(PIN, { expected: null, through: 2 })).toBe(false);
+    expect(await stateOf(PIN)).toEqual({ summary: "old summary", summaryThrough: 1, userMessageCount: 3 });
+  });
+
+  it.skipIf(!DB_AVAILABLE)("gives every row the planned window holds its replay columns, whatever the stored state", async () => {
+    // A greeting row before the first user row, then 8 exchanges; every assistant row has steps.
+    await conversationStore.ensureConversation(PLAN, SLUG);
+    const t0 = Date.now() - 60_000;
+    const step = (c: string) => ({ steps: [{ stepIndex: c }] as never, reasoning: [{ text: c }] as never });
+    await conversationStore.appendMessages(PLAN, [
+      { role: "assistant", content: "greeting", createdAt: new Date(t0 - 1000), ...step("greeting") },
+    ]);
+    for (let i = 0; i < 8; i++) {
+      await conversationStore.appendMessages(PLAN, [
+        { role: "user", content: `u${i}`, createdAt: new Date(t0 + i * 2000) },
+        { role: "assistant", content: `a${i}`, createdAt: new Date(t0 + i * 2000 + 1000), ...step(`a${i}`) },
+      ]);
+    }
+    const shapes: Record<string, { summary: string | null; through: number | null; count: number }> = {
+      "marker inside the count": { summary: "s", through: 5, count: 8 },
+      "stored count below the user rows": { summary: "s", through: 3, count: 6 },
+      "marker 0 (room compaction)": { summary: "s", through: 0, count: 8 },
+      "summary without a marker": { summary: "s", through: null, count: 8 },
+      "marker past the count": { summary: "s", through: 12, count: 8 },
+      "no summary": { summary: null, through: null, count: 8 },
+    };
+    for (const [shape, state] of Object.entries(shapes)) {
+      await db.execute(sql`UPDATE conversations SET summary = ${state.summary}, summary_through = ${state.through},
+        user_message_count = ${state.count} WHERE conversation_id = ${PLAN}`);
+      const snap = await conversationStore.getHistorySnapshot(PLAN, HISTORY_READ_LIMIT, { steps: true });
+      for (const blockExchanges of [5, 1]) {
+        // The inputs preparePipeline plans the window on (pipeline.ts).
+        const plan = planHistoryWindow(snap.rows, {
+          blockExchanges,
+          userMessageCount: snap.userMessageCount ?? undefined,
+          summaryThrough: snap.summaryThrough,
+          hasSummary: Boolean(snap.summary),
+        });
+        const window = snap.rows.slice(plan.start);
+        expect(window.length).toBeGreaterThan(0);
+        const missing = window.filter((r) => r.role === "assistant" && (!r.steps || !r.reasoning)).map((r) => r.content);
+        expect({ shape, blockExchanges, missing }).toEqual({ shape, blockExchanges, missing: [] });
+      }
+    }
   });
 });

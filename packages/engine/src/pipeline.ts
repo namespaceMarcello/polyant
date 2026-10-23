@@ -114,6 +114,8 @@ export interface PipelineContext {
   instanceId: InstanceSlug;
   conversationId: string;
   conversationSummary: string | undefined;
+  /** The stored summary the refresh builds on, shown to the model or not. */
+  storedSummary?: string;
   contextPrompt: string | undefined;
   channelIdentity: { channel: string; channelId: string; userName?: string } | undefined;
   /** Per-run shared conversation state buffer (commit-on-success). Undefined on auto-task turns. */
@@ -276,18 +278,24 @@ export async function preparePipeline(
   const blockExchanges = historyBlockExchanges(
     instanceConfig.cacheConfig.enabled && (!provider || !model || cacheSupported(provider, model)),
   );
-  // No rows read (a new conversation, or the read failed): no window and no
-  // summary; the client-side history in the metadata stands in, as before.
-  const summaryState = conversationHistory.length > 0 ? snapshot : undefined;
-  const windowPlan =
-    conversationHistory.length > 0
-      ? planHistoryWindow(windowRows, {
-          blockExchanges,
-          userMessageCount: summaryState?.userMessageCount ?? undefined,
-          summaryThrough: summaryState?.summaryThrough ?? null,
-          hasSummary: Boolean(summaryState?.summary),
-        })
-      : { start: 0, hasOverflow: false, summarize: undefined, unreadExchanges: 0 };
+  // No rows read (a new conversation, or the read failed): the snapshot carries no
+  // summary state, so there is no window and no summary; the client-side history
+  // in the metadata stands in, as before.
+  const windowPlan = planHistoryWindow(windowRows, {
+    blockExchanges,
+    userMessageCount: snapshot?.userMessageCount ?? undefined,
+    summaryThrough: snapshot?.summaryThrough ?? null,
+    hasSummary: Boolean(snapshot?.summary),
+  });
+  // Fix the coverage of a summary without a valid marker the first time it is
+  // computed (history-window.ts `pin`). No summary call; the planned refresh
+  // expects the stamped value. Auto-task turns write nothing, as before.
+  if (windowPlan.pin && !isAutoTaskTurn) {
+    await conversationStore.pinSummaryThrough(conversationId, windowPlan.pin).catch((err) => {
+      log.error("pipeline", `Failed to pin the summary marker of conversation ${conversationId}`, err);
+      return false;
+    });
+  }
   if (windowPlan.unreadExchanges > 0) {
     log.warn(
       "pipeline",
@@ -301,9 +309,13 @@ export async function preparePipeline(
   const summaryCover = windowPlan.summarize
     ? { expected: windowPlan.summarize.expected, through: windowPlan.summarize.through }
     : undefined;
-  // A stored summary is always shown, and the refresh always builds on it: a
-  // marker at 0 (room compaction) still has text the model must not lose.
-  const conversationSummary: string | undefined = summaryState?.summary ?? undefined;
+  // The refresh always builds on the stored summary. The model sees it when rows
+  // left the window, or when the marker is 0 (room compaction removed the rows it
+  // covered); not for a summary trusted for no exchange, and on auto-task turns
+  // only past the window, as the 15-row threshold did.
+  const storedSummary: string | undefined = snapshot?.summary ?? undefined;
+  const showSummary = hasOverflow || (!isAutoTaskTurn && snapshot?.summaryThrough === 0);
+  const conversationSummary: string | undefined = showSummary ? storedSummary : undefined;
   let history: ModelMessage[] | undefined = hasOverflow
     ? conversationHistory.slice(windowPlan.start)
     : conversationHistory.length > 0
@@ -341,6 +353,7 @@ export async function preparePipeline(
     instanceId,
     conversationId,
     conversationSummary,
+    storedSummary,
     contextPrompt,
     channelIdentity,
     stateBuffer,
@@ -488,34 +501,6 @@ export interface AfterResponseOptions {
   receivedAt?: Date;
 }
 
-/**
- * Summary refreshes running in this process, or landed in the last minute, by
- * conversation and the marker they start from. A turn that starts before the
- * previous turn's refresh lands plans the same one; the compare-and-set write
- * would discard it, but only after paying for its summary call. Skipping it is
- * safe: the marker stays, so the window keeps those exchanges and a later turn
- * plans the refresh again. Value: until when the claim holds.
- */
-const summaryClaims = new Map<string, number>();
-const SUMMARY_CLAIM_LANDED_MS = 60_000;
-const SUMMARY_CLAIMS_MAX = 10_000;
-
-function claimSummaryRefresh(opts: AfterResponseOptions): { landed(): void; release(): void } | undefined {
-  if (!opts.summaryCover) return { landed() {}, release() {} };
-  const key = `${opts.conversationId}|${opts.summaryCover.expected ?? "null"}`;
-  if ((summaryClaims.get(key) ?? 0) > Date.now()) return undefined;
-  summaryClaims.delete(key);
-  summaryClaims.set(key, Number.POSITIVE_INFINITY);
-  if (summaryClaims.size > SUMMARY_CLAIMS_MAX) {
-    const oldest = summaryClaims.keys().next().value;
-    if (oldest !== undefined) summaryClaims.delete(oldest);
-  }
-  return {
-    landed: () => void summaryClaims.set(key, Date.now() + SUMMARY_CLAIM_LANDED_MS),
-    release: () => void summaryClaims.delete(key),
-  };
-}
-
 export function afterResponse(opts: AfterResponseOptions): void {
   // Skip automated Open WebUI tasks entirely
   if (isAutoTask(opts.userMessage)) return;
@@ -617,9 +602,10 @@ export function afterResponse(opts: AfterResponseOptions): void {
     });
 
     // 2. Update conversation summary (only when sliding window overflows)
+    // A turn that starts before the previous turn's refresh lands plans the same
+    // one: it pays for its summary call, and the compare-and-set drops its write.
     const dropped = opts.needsSummaryUpdate ? opts.droppedMessages : undefined;
-    const claim = dropped?.length ? claimSummaryRefresh(opts) : undefined;
-    if (claim && dropped) {
+    if (dropped?.length) {
       const existing = opts.existingSummary
         ? `Previous summary: ${opts.existingSummary}\n\n`
         : "";
@@ -651,14 +637,8 @@ export function afterResponse(opts: AfterResponseOptions): void {
         const summary = summaryResponse.text.trim();
         if (summary) {
           await conversationStore.updateSummary(opts.conversationId, summary, opts.summaryCover);
-          // Written, or lost the compare-and-set to another refresh: either way the
-          // marker left `expected`, and a refresh from it would only be discarded.
-          claim.landed();
-        } else {
-          claim.release();
         }
       } catch (err) {
-        claim.release();
         log.error("pipeline", "Summary generation failed", err);
       }
     }
@@ -902,7 +882,7 @@ export async function runPipelinePost(opts: PipelinePostOptions): Promise<Pipeli
       reasoning: opts.reasoning,
       debugPayload: opts.debugPayload,
       assistantMessageId: opts.assistantMessageId,
-      existingSummary: ctx.conversationSummary,
+      existingSummary: ctx.storedSummary,
       needsSummaryUpdate: (ctx.droppedMessages?.length ?? 0) > 0,
       droppedMessages: ctx.droppedMessages,
       summaryCover: ctx.summaryCover,

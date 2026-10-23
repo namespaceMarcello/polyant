@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { eq, and, desc, asc, sql, count, inArray } from "drizzle-orm";
+import { eq, and, desc, asc, sql, count, inArray, isNotNull } from "drizzle-orm";
 import type { ModelMessage } from "ai";
 import { db, type DbTransaction } from "../database/client.js";
 import { conversations, conversationMessages, conversationState, type AttachmentMeta, type LlmDebugPayload, type ReasoningDetail, type StepDetail } from "./schema.js";
@@ -347,6 +347,26 @@ export class ConversationStore {
     return true;
   }
 
+  /**
+   * Stamp `summary_through` on a stored summary without rewriting it, only while
+   * the marker still equals `cover.expected` (history-window.ts `pin`). Returns
+   * whether the row was written.
+   */
+  async pinSummaryThrough(conversationId: string, cover: { expected: number | null; through: number }): Promise<boolean> {
+    const written = await db
+      .update(conversations)
+      .set({ summaryThrough: cover.through })
+      .where(
+        and(
+          eq(conversations.conversationId, conversationId),
+          isNotNull(conversations.summary),
+          sql`${conversations.summaryThrough} IS NOT DISTINCT FROM ${cover.expected}`,
+        ),
+      )
+      .returning({ id: conversations.id });
+    return written.length > 0;
+  }
+
   /** Get context prompt for a webhook-triggered conversation. Returns null if not set. */
   async getContextPrompt(conversationId: string): Promise<string | null> {
     const rows = await db
@@ -487,7 +507,7 @@ export class ConversationStore {
    *
    * Returns ModelMessage shape for direct use by the AI gateway. Reasoning is
    * NOT included here — Anthropic signed-block re-injection is handled by a
-   * dedicated helper that consumes raw rows via `getRecentMessageRows()`.
+   * dedicated helper that consumes raw rows via `getHistorySnapshot()`.
    */
   async getRecentMessages(conversationId: string, limit = 15): Promise<ModelMessage[]> {
     const rows = await db
@@ -531,36 +551,6 @@ export class ConversationStore {
   }
 
   /**
-   * Get the most recent N messages with full reasoning + steps detail.
-   *
-   * Used by the AI gateway's reasoning-injector to rebuild Anthropic
-   * multi-turn payloads that include the previous turn's signed thinking
-   * blocks. Returns chronologically ordered rows.
-   */
-  async getRecentMessageRows(conversationId: string, limit = 15): Promise<MessageRow[]> {
-    const rows = await db
-      .select({
-        role: conversationMessages.role,
-        content: conversationMessages.content,
-        steps: conversationMessages.steps,
-        reasoning: conversationMessages.reasoning,
-        createdAt: conversationMessages.createdAt,
-      })
-      .from(conversationMessages)
-      .where(eq(conversationMessages.conversationId, conversationId))
-      .orderBy(desc(conversationMessages.createdAt))
-      .limit(limit);
-
-    return rows.reverse().map((r) => ({
-      role: r.role,
-      content: r.content,
-      steps: (r.steps as StepDetail[] | null) ?? null,
-      reasoning: (r.reasoning as ReasoningDetail[] | null) ?? null,
-      createdAt: r.createdAt ?? null,
-    }));
-  }
-
-  /**
    * The most recent `limit` rows of a conversation, oldest first, with the summary,
    * its `summary_through` marker and the persisted user-message count read in the
    * same statement, hence the same snapshot: `appendMessages` moves the rows and the
@@ -569,8 +559,9 @@ export class ConversationStore {
    *
    * With `steps`, the replay columns (`steps`, `reasoning`) come back only for the
    * rows the window can hold, the exchanges after the marker (every row read when
-   * no marker within the count is stored); older rows carry them as null. Ordered
-   * like `getRecentMessages`, ties included.
+   * the marker is 0, missing or past the count); older rows carry them as null. The
+   * exchange count is the one `planHistoryWindow` uses: the stored count, or the
+   * user rows read when more. Ordered like `getRecentMessages`, ties included.
    */
   async getHistorySnapshot(
     conversationId: string,
@@ -578,9 +569,10 @@ export class ConversationStore {
     options: { steps?: boolean } = {},
   ): Promise<HistorySnapshot> {
     // In the window: fewer user rows after the row than the exchanges the marker leaves uncovered.
+    const exchanges = sql`GREATEST(s.user_message_count, m.users_read)`;
     const inWindow = sql`m.users_after < CASE
-        WHEN s.summary_through IS NULL OR s.summary_through > s.user_message_count THEN ${limit}
-        ELSE s.user_message_count - s.summary_through END`;
+        WHEN s.summary_through IS NULL OR s.summary_through <= 0 OR s.summary_through > ${exchanges} THEN ${limit}
+        ELSE ${exchanges} - s.summary_through END`;
     const replayColumns = options.steps
       ? sql`CASE WHEN ${inWindow} THEN m.steps END AS steps, CASE WHEN ${inWindow} THEN m.reasoning END AS reasoning,`
       : sql``;
@@ -589,14 +581,18 @@ export class ConversationStore {
              -- The summary text rides on the newest row only: once, not once per row read.
              CASE WHEN m.rn = 1 THEN s.summary END AS summary, s.summary_through, s.user_message_count
       FROM (
-        SELECT role, content, created_at, ${options.steps ? sql`steps, reasoning,` : sql``}
-               row_number() OVER (ORDER BY created_at DESC) AS rn,
-               count(*) FILTER (WHERE role = 'user')
-                 OVER (ORDER BY created_at DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS users_after
-        FROM conversation_messages
-        WHERE conversation_id = ${conversationId}
-        ORDER BY created_at DESC
-        LIMIT ${limit}
+        -- User rows among the rows read, counted after the LIMIT.
+        SELECT r.*, count(*) FILTER (WHERE r.role = 'user') OVER () AS users_read
+        FROM (
+          SELECT role, content, created_at, ${options.steps ? sql`steps, reasoning,` : sql``}
+                 row_number() OVER (ORDER BY created_at DESC) AS rn,
+                 count(*) FILTER (WHERE role = 'user')
+                   OVER (ORDER BY created_at DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS users_after
+          FROM conversation_messages
+          WHERE conversation_id = ${conversationId}
+          ORDER BY created_at DESC
+          LIMIT ${limit}
+        ) r
       ) m
       LEFT JOIN conversations s ON s.conversation_id = ${conversationId}
       ORDER BY m.rn DESC

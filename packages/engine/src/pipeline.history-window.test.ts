@@ -9,10 +9,12 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockGetRecentMessages, mockEnsure, mockSummaryState, mockConfig, storeReads } = vi.hoisted(() => ({
+const { mockGetRecentMessages, mockEnsure, mockSummaryState, mockConfig, mockPin, storeReads } = vi.hoisted(() => ({
   /** The persisted rows, newest `limit` (fixture). */
   mockGetRecentMessages: vi.fn(),
   mockEnsure: vi.fn(),
+  /** The marker stamp on a summary without one (`pinSummaryThrough`). */
+  mockPin: vi.fn(async (..._args: unknown[]) => true),
   /** The stored summary, marker and user-message count (fixture). */
   mockSummaryState: vi.fn(),
   mockConfig: vi.fn(),
@@ -32,7 +34,6 @@ vi.mock("./conversations/index.js", () => {
       ensureConversation: mockEnsure,
       // The separate reads turns made before the snapshot, so a turn still making them shows in storeReads.
       getRecentMessages: read("getRecentMessages", mockGetRecentMessages),
-      getRecentMessageRows: read("getRecentMessageRows", (id: string, limit: number) => mockGetRecentMessages(id, limit)),
       getSummaryState: read("getSummaryState", mockSummaryState),
       getSummary: read("getSummary", async () => "summary"),
       // One statement: the rows and, from the same snapshot, the summary state (none without rows).
@@ -47,6 +48,7 @@ vi.mock("./conversations/index.js", () => {
         };
       }),
       getContextPrompt: vi.fn(async () => null),
+      pinSummaryThrough: mockPin,
     },
   };
 });
@@ -295,10 +297,12 @@ describe("preparePipeline — summary written before the marker existed", () => 
 
   /**
    * Old-code turns up to `oldTurns` exchanges (each folding what it dropped), then
-   * new-code turns writing back the marker of every refresh. On every new turn,
-   * each exchange is in the window or in what the summary folded.
+   * new-code turns writing back, as the store does, the marker stamp and the
+   * refreshes whose compare-and-set still matches; the first `failedRefreshes`
+   * refreshes fail. On every new turn, each exchange is in the window or in what
+   * the summary folded.
    */
-  async function upgrade(oldTurns: number, cacheEnabled: boolean, systemOnLastOldTurn = false) {
+  async function upgrade(oldTurns: number, cacheEnabled: boolean, systemOnLastOldTurn = false, failedRefreshes = 0) {
     agent({ cacheEnabled });
     const rows: Row[] = [];
     const folded = new Set<string>();
@@ -308,9 +312,13 @@ describe("preparePipeline — summary written before the marker existed", () => 
       rows.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}` });
     }
     let through: number | null = null;
+    let failures = failedRefreshes;
     for (let i = oldTurns; i < oldTurns + 12; i++) {
       persistRows(rows, { through, summary: folded.size > 0 ? "summary" : null });
+      mockPin.mockClear();
       const ctx = await preparePipeline(msg);
+      const pin = mockPin.mock.calls[0]?.[1] as { expected: number | null; through: number } | undefined;
+      if (pin && pin.expected === through) through = pin.through;
       const seen = new Set(texts(ctx.history));
       const missing = rows.filter((r) => r.role === "user" && !seen.has(r.content) && !folded.has(r.content));
       expect({ oldTurns, cacheEnabled, turn: i, missing: missing.map((r) => r.content) }).toEqual({
@@ -319,11 +327,26 @@ describe("preparePipeline — summary written before the marker existed", () => 
         turn: i,
         missing: [],
       });
-      for (const m of texts(ctx.droppedMessages) ?? []) folded.add(m);
-      if (ctx.summaryCover) through = ctx.summaryCover.through;
+      if (ctx.summaryCover && failures > 0) {
+        failures--;
+      } else if (ctx.summaryCover && ctx.summaryCover.expected === through) {
+        for (const m of texts(ctx.droppedMessages) ?? []) folded.add(m);
+        through = ctx.summaryCover.through;
+      }
       rows.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}` });
     }
   }
+
+  it("stamps the old summary's coverage once, so a failed first refresh drops no exchange", async () => {
+    for (let oldTurns = 8; oldTurns <= 24; oldTurns++) {
+      for (const failed of [1, 2]) {
+        await upgrade(oldTurns, true, false, failed);
+        await upgrade(oldTurns, false, false, failed);
+        await upgrade(oldTurns, true, true, failed);
+        await upgrade(oldTurns, false, true, failed);
+      }
+    }
+  });
 
   it("keeps every exchange the old window had not folded, with or without blocks", async () => {
     for (let oldTurns = 8; oldTurns <= 24; oldTurns++) {
@@ -370,6 +393,45 @@ describe("preparePipeline — history read edge cases", () => {
     expect(ctx.history?.[0]?.content).toBe("u0");
     expect(ctx.conversationSummary).toBe("room summary");
     expect(ctx.summaryCover).toEqual({ expected: 0, through: 10 });
+  });
+
+  it("shows the summary past the window or at marker 0, not when it covers no exchange outside the window", async () => {
+    const autoTask = { ...(msg as object), text: "### Task: title" } as never;
+    // Rows before the start exist: shown, on auto-task turns too (as past the 15-row threshold).
+    persist(20, { through: 15 });
+    expect((await preparePipeline(msg)).conversationSummary).toBe("summary");
+    expect((await preparePipeline(autoTask)).conversationSummary).toBe("summary");
+    // Marker 0 (room compaction): shown on a user turn; an auto-task turn gets no more than the window gives.
+    persist(8, { through: 0 });
+    mockSummaryState.mockResolvedValue({ summary: "room summary", summaryThrough: 0, userMessageCount: 8 });
+    expect((await preparePipeline(msg)).conversationSummary).toBe("room summary");
+    const autoCtx = await preparePipeline(autoTask);
+    expect(autoCtx.hasOverflow).toBe(false);
+    expect(autoCtx.conversationSummary).toBeUndefined();
+    // A summary without a marker whose coverage computes to 0 (9 exchanges, block start 0): the window
+    // holds everything, so the model does not see it, the refresh still builds on it, and the 0 is stamped.
+    persist(9, { through: null });
+    mockSummaryState.mockResolvedValue({ summary: "old summary", summaryThrough: null, userMessageCount: 9 });
+    const ctx = await preparePipeline(msg);
+    expect(ctx.hasOverflow).toBe(false);
+    expect(ctx.history?.[0]?.content).toBe("u0");
+    expect(ctx.conversationSummary).toBeUndefined();
+    expect(ctx.storedSummary).toBe("old summary");
+    expect(ctx.summaryCover).toEqual({ expected: 0, through: 5 });
+    expect(mockPin).toHaveBeenCalledWith(expect.any(String), { expected: null, through: 0 });
+    // Auto-task turns write nothing.
+    mockPin.mockClear();
+    await preparePipeline(autoTask);
+    expect(mockPin).not.toHaveBeenCalled();
+  });
+
+  it("stamps the old window's coverage on a marker past the count, and plans the refresh from the stamp", async () => {
+    // 20 exchanges, marker 25 (rows deleted since): the old window folded up to u14 (the 10 rows before u19).
+    persist(20, { through: 25 });
+    const ctx = await preparePipeline(msg);
+    expect(mockPin).toHaveBeenCalledWith(expect.any(String), { expected: 25, through: 14 });
+    expect(ctx.history?.[0]?.content).toBe("u14");
+    expect(ctx.summaryCover).toEqual({ expected: 14, through: 15 });
   });
 
   it("warns, with ids only, when the marker is older than the rows read", async () => {

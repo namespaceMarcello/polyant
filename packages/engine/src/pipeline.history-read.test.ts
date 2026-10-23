@@ -8,9 +8,8 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockGetRecentMessages, mockGetRecentMessageRows, mockSnapshot, mockResolveConfig } = vi.hoisted(() => ({
+const { mockGetRecentMessages, mockSnapshot, mockResolveConfig } = vi.hoisted(() => ({
   mockGetRecentMessages: vi.fn(),
-  mockGetRecentMessageRows: vi.fn(),
   mockSnapshot: vi.fn(),
   mockResolveConfig: vi.fn(),
 }));
@@ -19,7 +18,6 @@ vi.mock("./conversations/index.js", () => ({
   conversationStore: {
     ensureConversation: vi.fn(async () => ({ created: false })),
     getRecentMessages: mockGetRecentMessages,
-    getRecentMessageRows: mockGetRecentMessageRows,
     getHistorySnapshot: mockSnapshot,
     getContextPrompt: vi.fn(async () => null),
     getSummary: vi.fn(async () => null),
@@ -77,7 +75,6 @@ describe("preparePipeline — recent messages are read once", () => {
 
     expect(mockSnapshot).toHaveBeenCalledTimes(1);
     expect(mockSnapshot.mock.calls[0][2]).toEqual({ steps: true });
-    expect(mockGetRecentMessageRows).not.toHaveBeenCalled();
     expect(mockGetRecentMessages).not.toHaveBeenCalled();
     expect(ctx.isFirstTurn).toBe(false);
     expect(ctx.history).toHaveLength(2);
@@ -90,7 +87,6 @@ describe("preparePipeline — recent messages are read once", () => {
 
     expect(mockSnapshot).toHaveBeenCalledTimes(1);
     expect(mockSnapshot.mock.calls[0][2]).toBeUndefined();
-    expect(mockGetRecentMessageRows).not.toHaveBeenCalled();
     expect(ctx.history).toEqual([{ role: "user", content: "hi" }]);
   });
 

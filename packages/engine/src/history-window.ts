@@ -78,6 +78,14 @@ export interface HistoryWindowPlan {
    * failed refreshes): the planned refresh marks them covered without reading them.
    */
   unreadExchanges: number;
+  /**
+   * The marker to stamp, without a summary call, on a summary whose own marker is
+   * missing or past the count: the coverage computed here from the rows read. That
+   * value grows with every new row, so it is fixed the first time it is computed,
+   * and a failed refresh cannot make a later turn trust the old summary further.
+   * `summarize.expected` assumes the stamp landed.
+   */
+  pin: { expected: number | null; through: number } | undefined;
 }
 
 /**
@@ -124,8 +132,10 @@ export function planHistoryWindow(
   };
   const stored = state.summaryThrough ?? null;
   // A marker past the count (rows deleted since) or a summary written before the
-  // marker existed: trust it only as far as the old window folded.
-  const covered = stored !== null && stored <= exchanges ? stored : state.hasSummary ? legacyCovered() : 0;
+  // marker existed: trust it only as far as the old window folded, and pin that.
+  const markerValid = stored !== null && stored <= exchanges;
+  const legacy = !markerValid && Boolean(state.hasSummary);
+  const covered = markerValid ? stored : legacy ? legacyCovered() : 0;
   const coveredRow = rowOf(covered);
 
   // Size cap: move to later exchanges while the window is over budget. The
@@ -153,7 +163,7 @@ export function planHistoryWindow(
   const to = rowOf(through);
   const summarize =
     through > covered && to > coveredRow
-      ? { from: coveredRow, to, expected: stored, through }
+      ? { from: coveredRow, to, expected: legacy ? covered : stored, through }
       : undefined;
 
   return {
@@ -161,5 +171,6 @@ export function planHistoryWindow(
     hasOverflow: covered > 0 || start > 0,
     summarize,
     unreadExchanges: summarize ? Math.max(0, firstOrdinal - covered) : 0,
+    pin: legacy ? { expected: stored, through: covered } : undefined,
   };
 }
