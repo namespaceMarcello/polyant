@@ -108,3 +108,35 @@ describe("DebugSheet copy action", () => {
     expect(screen.queryByText("message.debug.copied")).not.toBeInTheDocument();
   });
 });
+
+describe("DebugSheet tabs", () => {
+  const stateMessage = {
+    role: "user",
+    content: `hi\n<context>\n<conversation_state>{"booking":{"day":"monday"}}</conversation_state>\n</context>`,
+  };
+
+  it("opens on Usage and shows the turn's state as a closed tree in Context", async () => {
+    renderSheet({
+      debugPayload: { system: "You are a test.", messages: [stateMessage], tools: [] },
+      steps: [step],
+    });
+
+    expect(screen.getByRole("tab", { name: "message.debug.usage" })).toHaveAttribute("aria-selected", "true");
+
+    await userEvent.click(screen.getByRole("tab", { name: "message.debug.context" }));
+    const branch = await screen.findByRole("button", { name: "booking" });
+    expect(branch).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(branch);
+    expect(screen.getByText('"monday"')).toBeInTheDocument();
+  });
+
+  it("says the payload was not captured in the payload tabs, and keeps the steps", async () => {
+    renderSheet({ debugPayload: null, steps: [step] });
+
+    await userEvent.click(screen.getByRole("tab", { name: "message.debug.prompt" }));
+    expect(await screen.findByText("message.debug.noPayload")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: /message\.debug\.steps/ }));
+    expect(await screen.findByText("lookup")).toBeInTheDocument();
+  });
+});
