@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The agent's sidebar has six groups (Overview, Configuration, Knowledge,
+  Resources, Automations, Governance) with every section on its own row,
+  automations included; `?tab=` values are unchanged, so existing links keep
+  working. Analytics is called Dashboard, the Polyant mark at the top of the
+  sidebar leads home, and skill lists show the description under the name.
 - The message Debug sheet is now "Message details", in tabs: Model, Prompt,
   Tools, Messages, Steps and Context. Prompt, Messages and Context each have a
   Copy action; the conversation state and the messages render as a JSON tree
