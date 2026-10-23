@@ -5,10 +5,10 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { AlertTriangle, MinusCircle, Plus, Search, X } from "lucide-react";
+import { AlertTriangle, Plus, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,6 +22,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ListControlCell, ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListSearch, matchesSearch } from "@/components/list-search";
+import { ListEmpty, ListNoResults } from "@/components/list-states";
 import {
   Tooltip,
   TooltipContent,
@@ -160,9 +162,8 @@ export function ToolsTab({
   const categoryOptions = [...new Set([...listed, ...alwaysOn].map((tool) => tool.category))].sort();
   const originName = (origin: string) => (origin === CORE_ORIGIN ? t("tools.originCore") : nameOfPlugin(origin));
 
-  const needle = search.trim().toLowerCase();
   const matches = (tool: ToolState) =>
-    (!needle || `${tool.name} ${capabilitySummary(tool, locale)} ${tool.description}`.toLowerCase().includes(needle)) &&
+    matchesSearch(search, toolDisplayName(tool.name), tool.name, capabilitySummary(tool, locale), tool.description, categoryLabel(tool.category, locale)) &&
     (originFilter === null || (pluginNamespaceOf(tool.name) ?? CORE_ORIGIN) === originFilter) &&
     (categoryFilter === null || tool.category === categoryFilter);
   const rows = listed.filter(matches).sort((a, b) => a.name.localeCompare(b.name));
@@ -335,33 +336,23 @@ export function ToolsTab({
     <TooltipProvider delayDuration={200}>
       <SectionActions>
         <Button size="sm" onClick={() => setPickerOpen(true)}>
+          <Plus className="mr-1 size-4" aria-hidden />
           {t("tools.enable")}
         </Button>
       </SectionActions>
 
       {listed.length === 0 && alwaysOn.length === 0 ? (
-        <p className="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">
-          {t("tools.noneEnabled")}
-        </p>
+        <ListEmpty className="mt-8" title={t("tools.noneEnabled")} />
       ) : (
         <>
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t("tools.searchEnabled")}
-              aria-label={t("tools.searchEnabled")}
-              className="pl-9"
-            />
-          </div>
+          <ListSearch value={search} onChange={setSearch} label={t("tools.searchEnabled")} className="relative" />
           <div className="mt-2.5 flex flex-wrap gap-1.5">
             {filterPill(t("tools.filterOrigin"), originFilter, originOptions, originName, setOriginFilter)}
             {filterPill(t("tools.filterCategory"), categoryFilter, categoryOptions, (cat) => categoryLabel(cat, locale), setCategoryFilter)}
           </div>
 
           {rows.length === 0 && systemRows.length === 0 ? (
-            <p className="py-12 text-center text-sm text-muted-foreground">{t("tools.noMatch")}</p>
+            <ListNoResults />
           ) : (
             <ListTable>
               <TableHeader>
@@ -369,9 +360,7 @@ export function ToolsTab({
                   <ListHead className="w-[32%]">{t("tools.columnName")}</ListHead>
                   <ListHead className="hidden md:table-cell">{t("tools.columnDescription")}</ListHead>
                   <ListHead className="hidden w-40 sm:table-cell">{t("tools.columnOrigin")}</ListHead>
-                  <ListHead align="end" className="w-32">
-                    <span className="sr-only">{t("tools.columnActions")}</span>
-                  </ListHead>
+                  <ListHead align="end" className="w-28">{t("common.active")}</ListHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -388,6 +377,7 @@ export function ToolsTab({
                       : [categoryLabel(tool.category, locale), linkedSkill && t("capabilities.linkedToSkill", { skill: linkedSkill })]
                           .filter(Boolean)
                           .join(" · ");
+                  // A tool about to be removed has no panel to open: its switch brings it back.
                   const open = removing ? undefined : () => setOpenTool(tool.name);
                   return (
                     <ListRow key={tool.name} onOpen={open} selected={openTool === tool.name} muted={Boolean(removing) || (memoryOff(tool) && !adding)} accent={Boolean(adding)}>
@@ -396,8 +386,8 @@ export function ToolsTab({
                         onOpen={open}
                         openLabel={t("tools.open", { tool: tool.name })}
                         summary={
-                          <span className={cn("block truncate", adding || removing ? "text-xs font-medium" : "text-xs text-muted-foreground")}>
-                            {subtitle}
+                          <>
+                            <span className={cn(adding || removing ? "font-medium" : undefined)}>{subtitle}</span>
                             {memoryOff(tool) && !removing && (
                               <>
                                 {" · "}
@@ -410,7 +400,7 @@ export function ToolsTab({
                                 </Link>
                               </>
                             )}
-                          </span>
+                          </>
                         }
                       />
                       <TableCell
@@ -424,46 +414,29 @@ export function ToolsTab({
                         </Badge>
                       </TableCell>
                       <ListControlCell>
-                        <div className="flex items-center justify-end gap-0.5">
-                          {removing ? (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => restore(tool.name)}
-                            >
-                              {t("tools.restore")}
-                            </Button>
-                          ) : (
-                            <>
-                              {warning && (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <span
-                                      tabIndex={0}
-                                      role="img"
-                                      aria-label={warning}
-                                      className="grid size-8 place-items-center rounded-md text-warning"
-                                    >
-                                      <AlertTriangle className="size-4" aria-hidden />
-                                    </span>
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top" className="max-w-72">
-                                    {warning}
-                                  </TooltipContent>
-                                </Tooltip>
-                              )}
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="size-8 text-muted-foreground"
-                                aria-label={t("tools.disableTool", { tool: tool.name })}
-                                title={t("tools.disable")}
-                                onClick={() => requestDisable(tool.name)}
-                              >
-                                <MinusCircle className="size-4" aria-hidden />
-                              </Button>
-                            </>
+                        <div className="flex items-center justify-end gap-2">
+                          {warning && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span
+                                  tabIndex={0}
+                                  role="img"
+                                  aria-label={warning}
+                                  className="grid size-8 place-items-center rounded-md text-warning"
+                                >
+                                  <AlertTriangle className="size-4" aria-hidden />
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="max-w-72">
+                                {warning}
+                              </TooltipContent>
+                            </Tooltip>
                           )}
+                          <Switch
+                            checked={isEnabled(tool.name)}
+                            onCheckedChange={(checked) => (checked ? restore(tool.name) : requestDisable(tool.name))}
+                            aria-label={t("tools.toggleTool", { tool: tool.name })}
+                          />
                         </div>
                       </ListControlCell>
                     </ListRow>
@@ -481,11 +454,12 @@ export function ToolsTab({
                     <ListControlCell>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <span
-                            tabIndex={0}
-                            className="cursor-help text-xs text-muted-foreground underline decoration-dotted underline-offset-4"
-                          >
-                            {t("tools.alwaysEnabled")}
+                          <span tabIndex={0} className="inline-flex cursor-help">
+                            <Switch
+                              checked
+                              disabled
+                              aria-label={t("tools.alwaysEnabledTool", { tool: tool.name })}
+                            />
                           </span>
                         </TooltipTrigger>
                         <TooltipContent side="top" className="max-w-72">

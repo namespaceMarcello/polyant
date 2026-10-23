@@ -150,10 +150,10 @@ export function ToolSheet({
   return (
     <>
     <Sheet open={tool !== null} onOpenChange={(open) => !open && requestClose()}>
-      <SheetContent side="right" className="gap-0">
+      <SheetContent side="right" className="w-full gap-0">
         {tool && (
           <>
-            <SheetHeader className="gap-2 border-b p-5 pr-12">
+            <SheetHeader className="gap-1 border-b p-5 pr-12">
               <SheetTitle className="font-mono text-base font-medium">{toolDisplayName(tool.name)}</SheetTitle>
               <ToolDescription key={tool.name} summary={capabilitySummary(tool, locale)} description={tool.description} />
               <div className="flex flex-wrap gap-2 pt-1">
