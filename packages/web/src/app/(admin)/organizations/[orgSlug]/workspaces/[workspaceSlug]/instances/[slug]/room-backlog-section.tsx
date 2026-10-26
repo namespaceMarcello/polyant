@@ -2,8 +2,15 @@
 
 "use client";
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListSearch } from "@/components/list-search";
+import { ListEmpty, ListNoResults } from "@/components/list-states";
+import { ListDrawer } from "@/components/list-drawer";
+import { useListView } from "@/components/use-list-view";
 import { useI18n } from "@/lib/i18n/context";
 import type { TranslationKey } from "@/lib/i18n/types";
 import { useFormat } from "@/lib/use-format";
@@ -30,9 +37,21 @@ interface Props {
   onStatusChange: (status: string) => void;
 }
 
+const payloadText = (event: BacklogEvent): string =>
+  typeof event.rawPayload === "object" ? JSON.stringify(event.rawPayload) : String(event.rawPayload);
+
+/**
+ * The events waiting for the Room agent, per status. Records in time order: the
+ * engine's order (newest first) is kept. A row opens the event's full payload.
+ */
 export function BacklogSection({ backlog, status, onStatusChange }: Props) {
   const { t } = useI18n();
   const fmt = useFormat();
+  const [search, setSearch] = useState("");
+  const [openId, setOpenId] = useState<string | null>(null);
+  const visible = useListView(backlog, search, (event) => [payloadText(event), event.reactNotes, event.status], null);
+  const open = backlog.find((event) => event.id === openId) ?? null;
+
   return (
     <section className="space-y-4">
       <h2 className="text-lg font-semibold">{t("room.backlog.title")}</h2>
@@ -49,25 +68,57 @@ export function BacklogSection({ backlog, status, onStatusChange }: Props) {
         ))}
       </div>
       {backlog.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{t("room.backlog.empty")}</p>
+        <ListEmpty className="mt-4" title={t("room.backlog.empty")} />
       ) : (
-        <div className="rounded-lg border divide-y">
-          {backlog.map((event) => (
-            <div key={event.id} className="px-4 py-3 text-sm flex items-start justify-between gap-4">
-              <div className="flex-1 min-w-0">
-                <code className="block text-xs text-muted-foreground truncate">
-                  {typeof event.rawPayload === "object" ? JSON.stringify(event.rawPayload).slice(0, 120) : String(event.rawPayload)}
-                </code>
-                {event.reactNotes && <p className="mt-1 text-xs">{event.reactNotes}</p>}
-              </div>
-              <div className="shrink-0 text-right">
-                <Badge variant="secondary">{event.status}</Badge>
-                <p className="mt-1 text-xs text-muted-foreground">{fmt.dateTime(event.createdAt)}</p>
-              </div>
-            </div>
-          ))}
-        </div>
+        <>
+          <ListSearch value={search} onChange={setSearch} className="relative" />
+          {visible.length === 0 ? (
+            <ListNoResults />
+          ) : (
+            <ListTable className="mt-0">
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <ListHead>{t("room.backlog.event")}</ListHead>
+                  <ListHead className="w-36">{t("room.backlog.status")}</ListHead>
+                  <ListHead className="w-44">{t("room.backlog.received")}</ListHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visible.map((event) => (
+                  <ListRow key={event.id} onOpen={() => setOpenId(event.id)} selected={openId === event.id}>
+                    <ListNameCell
+                      name={payloadText(event).slice(0, 120)}
+                      onOpen={() => setOpenId(event.id)}
+                      summary={event.reactNotes || undefined}
+                    />
+                    <TableCell>
+                      <Badge variant="secondary">{event.status}</Badge>
+                    </TableCell>
+                    <TableCell>{fmt.dateTime(event.createdAt)}</TableCell>
+                  </ListRow>
+                ))}
+              </TableBody>
+            </ListTable>
+          )}
+        </>
       )}
+
+      <ListDrawer
+        open={open !== null}
+        onOpenChange={(next) => !next && setOpenId(null)}
+        title={t("room.backlog.event")}
+        description={open ? fmt.dateTime(open.createdAt) : ""}
+        header={open && <Badge variant="secondary">{open.status}</Badge>}
+      >
+        {open && (
+          <>
+            <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">
+              {JSON.stringify(open.rawPayload, null, 2)}
+            </pre>
+            {open.reactNotes && <p className="text-sm">{open.reactNotes}</p>}
+          </>
+        )}
+      </ListDrawer>
     </section>
   );
 }

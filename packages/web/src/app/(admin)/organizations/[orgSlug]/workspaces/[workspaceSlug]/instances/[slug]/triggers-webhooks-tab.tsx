@@ -17,11 +17,14 @@ import {
 } from "@/components/ui/select";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { useResource } from "@/hooks/use-resource";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
+import { ListDrawer } from "@/components/list-drawer";
+import { ListEmpty, ListLoading } from "@/components/list-states";
+import { SwitchList } from "@/components/switch-list";
 import { api, getUserErrorMessage } from "@/lib/api";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useI18n } from "@/lib/i18n/context";
-import { EventSourceCard, type EventSource } from "./room-event-source-card";
+import { EventSourceSheet, type EventSource } from "./room-event-source-sheet";
 import { SectionActions } from "./section-actions";
 
 const EVENT_SOURCE_TYPES = [
@@ -34,6 +37,11 @@ interface Props {
 
 const NO_SOURCES: EventSource[] = [];
 
+type DefinitionUpdate = {
+  name: string; matchingPrompt: string; interpretationPrompt: string; enabled: boolean;
+  action?: string; contextPrompt?: string | null; outboundChannel?: string | null; outboundTarget?: string | null;
+};
+
 export function TriggersWebhooksTab({ slug }: Props) {
   const { t } = useI18n();
   const { copy } = useCopyToClipboard();
@@ -41,9 +49,9 @@ export function TriggersWebhooksTab({ slug }: Props) {
     (await api.eventSources.list(slug)) as EventSource[],
   );
   const sources = data ?? NO_SOURCES;
-  const [expandedSources, setExpandedSources] = useState<Record<string, boolean>>({});
+  const [openSourceId, setOpenSourceId] = useState<string | null>(null);
   // The list endpoint deliberately omits the bearer-equivalent webhook URL
-  // (see EventSource in room-event-source-card.tsx), so it is fetched on
+  // (see EventSource in room-event-source-sheet.tsx), so it is fetched on
   // demand per source — never eagerly for the whole list — and cached here.
   const [webhookUrls, setWebhookUrls] = useState<Record<string, string>>({});
   const [newSourceForm, setNewSourceForm] = useState({ name: "", sourceType: "webhook", showForm: false });
@@ -67,10 +75,11 @@ export function TriggersWebhooksTab({ slug }: Props) {
   async function handleToggleSourceEnabled(id: string, enabled: boolean) {
     try {
       await api.eventSources.update(slug, id, { enabled });
-      loadSources();
+      await loadSources();
       toast.success(enabled ? t("common.enabled") : t("common.disabled"));
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("room.source.updateFailed")));
+      throw err;
     }
   }
 
@@ -78,6 +87,7 @@ export function TriggersWebhooksTab({ slug }: Props) {
     try {
       await api.eventSources.delete(slug, id);
       toast.success(t("room.source.deleted"));
+      setOpenSourceId(null);
       loadSources();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("room.source.deleteFailed")));
@@ -116,12 +126,19 @@ export function TriggersWebhooksTab({ slug }: Props) {
     }
   }
 
-  /** Expand toggles the row and, on first expand only, fetches its webhook URL. */
-  function handleToggleExpand(id: string) {
-    const willExpand = !expandedSources[id];
-    setExpandedSources((prev) => ({ ...prev, [id]: willExpand }));
-    if (willExpand && !webhookUrls[id]) {
-      void revealWebhookUrl(id);
+  /** Opens the source's drawer and, on first open only, fetches its webhook URL. */
+  function handleOpenSource(id: string) {
+    setOpenSourceId(id);
+    if (!webhookUrls[id]) void revealWebhookUrl(id);
+  }
+
+  async function handleToggleDefinition(sourceId: string, data: DefinitionUpdate & { enabled: boolean }, defId: string) {
+    try {
+      await api.eventSources.updateDefinition(slug, sourceId, defId, data);
+      await loadSources();
+    } catch (err) {
+      toast.error(getUserErrorMessage(err, t("room.definition.saveFailed")));
+      throw err;
     }
   }
 
@@ -138,10 +155,7 @@ export function TriggersWebhooksTab({ slug }: Props) {
     }
   }
 
-  async function handleUpdateDefinition(sourceId: string, defId: string, data: {
-    name: string; matchingPrompt: string; interpretationPrompt: string; enabled: boolean;
-    action?: string; contextPrompt?: string | null; outboundChannel?: string | null; outboundTarget?: string | null;
-  }) {
+  async function handleUpdateDefinition(sourceId: string, defId: string, data: DefinitionUpdate) {
     try {
       await api.eventSources.updateDefinition(slug, sourceId, defId, data);
       toast.success(t("room.definition.saved"));
@@ -167,73 +181,84 @@ export function TriggersWebhooksTab({ slug }: Props) {
 
   if (error && data === undefined) return <LoadFailed onRetry={loadSources} />;
 
-  if (loading && data === undefined) {
-    return (
-      <div className="space-y-4">
-        <Skeleton className="h-32 rounded-lg" />
-        <Skeleton className="h-24 rounded-lg" />
-      </div>
-    );
-  }
+  if (loading && data === undefined) return <ListLoading className="" />;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <SectionActions>
-        <Button size="sm" onClick={() => setNewSourceForm((p) => ({ ...p, showForm: !p.showForm }))}>
-          <Plus className="h-4 w-4 mr-1" />
+        <Button size="sm" onClick={() => setNewSourceForm((p) => ({ ...p, showForm: true }))}>
+          <Plus className="mr-1 size-4" />
           {t("room.sources.add")}
         </Button>
       </SectionActions>
 
-      {newSourceForm.showForm && (
-        <div className="rounded-lg border p-4 space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label>{t("room.sources.name")}</Label>
-              <Input value={newSourceForm.name} onChange={(e) => setNewSourceForm((p) => ({ ...p, name: e.target.value }))} />
-            </div>
-            <div className="space-y-1">
-              <Label>{t("room.sources.type")}</Label>
-              <Select value={newSourceForm.sourceType} onValueChange={(v) => setNewSourceForm((p) => ({ ...p, sourceType: v }))}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {EVENT_SOURCE_TYPES.map((type) => (
-                    <SelectItem key={type.value} value={type.value}>{type.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button size="sm" variant="outline" onClick={() => setNewSourceForm((p) => ({ ...p, showForm: false }))}>
-              {t("common.cancel")}
-            </Button>
-            <Button size="sm" onClick={handleAddSource} disabled={!newSourceForm.name}>
-              {t("common.save")}
-            </Button>
-          </div>
-        </div>
+      {sources.length === 0 ? (
+        <ListEmpty className="mt-8" title={t("room.sources.empty")} />
+      ) : (
+        <SwitchList
+          rows={sources}
+          rowKey={(source) => source.id}
+          name={(source) => source.name}
+          nameHeader={t("room.sources.name")}
+          summary={(source) => source.definitions.map((d) => d.name).join(", ") || undefined}
+          searchText={(source) => [source.sourceType]}
+          columns={[
+            { header: t("room.sources.type"), className: "w-32", cell: (source) => <Badge variant="secondary">{source.sourceType}</Badge> },
+            { header: t("room.definitions.title"), className: "w-36", cell: (source) => source.definitions.length },
+          ]}
+          isOn={(source) => source.enabled}
+          onToggle={(source, enabled) => handleToggleSourceEnabled(source.id, enabled)}
+          switchLabel={(source) => t("common.activeNamed", { name: source.name })}
+          onOpen={(source) => handleOpenSource(source.id)}
+          selectedKey={openSourceId}
+        />
       )}
 
-      {sources.map((source) => (
-        <EventSourceCard
-          key={source.id}
-          source={source}
-          expanded={!!expandedSources[source.id]}
-          webhookUrl={webhookUrls[source.id]}
-          onToggleExpand={() => handleToggleExpand(source.id)}
-          onToggleEnabled={handleToggleSourceEnabled}
-          onCopyWebhook={copyWebhookUrl}
-          onRotateToken={handleRotateToken}
-          onUpdateSource={handleUpdateSource}
-          onDeleteSource={handleDeleteSource}
-          onAddDefinition={handleAddDefinition}
-          onUpdateDefinition={handleUpdateDefinition}
-          onDeleteDefinition={handleDeleteDefinition}
-        />
-      ))}
+      <ListDrawer
+        open={newSourceForm.showForm}
+        onOpenChange={(open) => !open && setNewSourceForm((p) => ({ ...p, showForm: false }))}
+        title={t("room.sources.add")}
+        description={t("room.sources.title")}
+        primary={
+          <Button onClick={handleAddSource} disabled={!newSourceForm.name}>
+            {t("common.save")}
+          </Button>
+        }
+      >
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <Label htmlFor="new-source-name">{t("room.sources.name")}</Label>
+            <Input id="new-source-name" value={newSourceForm.name} onChange={(e) => setNewSourceForm((p) => ({ ...p, name: e.target.value }))} />
+          </div>
+          <div className="space-y-1">
+            <Label>{t("room.sources.type")}</Label>
+            <Select value={newSourceForm.sourceType} onValueChange={(v) => setNewSourceForm((p) => ({ ...p, sourceType: v }))}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EVENT_SOURCE_TYPES.map((type) => (
+                  <SelectItem key={type.value} value={type.value}>{type.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      </ListDrawer>
+
+      <EventSourceSheet
+        source={sources.find((source) => source.id === openSourceId) ?? null}
+        webhookUrl={openSourceId ? webhookUrls[openSourceId] : undefined}
+        onClose={() => setOpenSourceId(null)}
+        onCopyWebhook={copyWebhookUrl}
+        onRotateToken={handleRotateToken}
+        onUpdateSource={handleUpdateSource}
+        onDeleteSource={handleDeleteSource}
+        onAddDefinition={handleAddDefinition}
+        onUpdateDefinition={handleUpdateDefinition}
+        onDeleteDefinition={handleDeleteDefinition}
+        onToggleDefinition={handleToggleDefinition}
+      />
     </div>
   );
 }

@@ -43,7 +43,7 @@ export function WebhookAuthSection({ currentMasked, onSave }: Props) {
     <div className="space-y-1">
       <div className="flex items-center gap-2">
         <Label className="text-xs text-muted-foreground">{t("room.sources.auth")}</Label>
-        <Badge variant={isProtected ? "default" : "secondary"} className="text-xs">
+        <Badge variant={isProtected ? "default" : "secondary"}>
           {isProtected ? t("room.sources.authProtected") : t("room.sources.authNone")}
         </Badge>
       </div>

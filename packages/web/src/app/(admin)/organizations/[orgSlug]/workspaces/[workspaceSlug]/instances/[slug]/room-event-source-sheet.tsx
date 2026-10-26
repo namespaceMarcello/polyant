@@ -3,12 +3,11 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, Trash2, Copy, RotateCcw, ChevronDown, ChevronRight, Pencil, Check as CheckIcon, X as XIcon } from "lucide-react";
+import { Plus, Copy, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
@@ -17,24 +16,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { DrawerDeleteButton, ListDrawer } from "@/components/list-drawer";
+import { SwitchList } from "@/components/switch-list";
 import { useI18n } from "@/lib/i18n/context";
 import type { TranslationKey } from "@/lib/i18n/types";
 import { WebhookAuthSection } from "./room-event-source-auth";
 
 /**
  * The list response (ROOM_READ) deliberately omits `webhookUrl`/`webhookToken`
- * — the token is bearer-equivalent. The card receives the revealed URL (if
+ * — the token is bearer-equivalent. The drawer receives the revealed URL (if
  * any) as a separate prop, fetched on demand by the parent.
  */
 export interface EventSource {
@@ -76,36 +67,42 @@ interface DefinitionFormState {
   outboundTarget: string;
 }
 
-function DefinitionForm({
+const EMPTY_DEFINITION: DefinitionFormState = {
+  name: "", matchingPrompt: "", interpretationPrompt: "",
+  action: "backlog", contextPrompt: "", outboundChannel: "", outboundTarget: "",
+};
+
+function formOf(def: EventDefinition): DefinitionFormState {
+  return {
+    name: def.name,
+    matchingPrompt: def.matchingPrompt,
+    interpretationPrompt: def.interpretationPrompt,
+    action: def.action ?? "backlog",
+    contextPrompt: def.contextPrompt ?? "",
+    outboundChannel: def.outboundChannel ?? "",
+    outboundTarget: def.outboundTarget ?? "",
+  };
+}
+
+function DefinitionFields({
   value,
   onChange,
-  onSubmit,
-  onCancel,
-  submitLabel,
-  t,
-  className,
-  children,
 }: {
   value: DefinitionFormState;
   onChange: (next: DefinitionFormState) => void;
-  onSubmit: () => void;
-  onCancel: () => void;
-  submitLabel: string;
-  t: (key: TranslationKey) => string;
-  className?: string;
-  children?: React.ReactNode;
 }) {
+  const { t } = useI18n();
   return (
-    <div className={className ?? "space-y-3"}>
-      <div className="grid grid-cols-2 gap-2">
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1">
-          <Label className="text-xs">{t("room.definitions.name")}</Label>
-          <Input className="h-8 text-sm" value={value.name} onChange={(e) => onChange({ ...value, name: e.target.value })} />
+          <Label>{t("room.definitions.name")}</Label>
+          <Input value={value.name} onChange={(e) => onChange({ ...value, name: e.target.value })} />
         </div>
         <div className="space-y-1">
-          <Label className="text-xs">{t("room.definitions.action")}</Label>
+          <Label>{t("room.definitions.action")}</Label>
           <Select value={value.action} onValueChange={(v: "backlog" | "conversation") => onChange({ ...value, action: v })}>
-            <SelectTrigger className="h-8 text-sm">
+            <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -116,27 +113,27 @@ function DefinitionForm({
         </div>
       </div>
       <div className="space-y-1">
-        <Label className="text-xs">{t("room.definitions.matchingPrompt")}</Label>
-        <p className="text-xs text-muted-foreground mb-1">{t("room.definitions.matchingPromptHelp")}</p>
-        <Textarea className="text-sm min-h-[60px]" placeholder={t("room.definitions.matchingPromptPlaceholder")} value={value.matchingPrompt} onChange={(e) => onChange({ ...value, matchingPrompt: e.target.value })} />
+        <Label>{t("room.definitions.matchingPrompt")}</Label>
+        <p className="mb-1 text-xs text-muted-foreground">{t("room.definitions.matchingPromptHelp")}</p>
+        <Textarea className="min-h-[60px]" placeholder={t("room.definitions.matchingPromptPlaceholder")} value={value.matchingPrompt} onChange={(e) => onChange({ ...value, matchingPrompt: e.target.value })} />
       </div>
       {value.action === "backlog" && (
         <div className="space-y-1">
-          <Label className="text-xs">{t("room.definitions.interpretationPrompt")}</Label>
-          <p className="text-xs text-muted-foreground mb-1">{t("room.definitions.interpretationPromptHelp")}</p>
-          <Textarea className="text-sm min-h-[60px]" placeholder={t("room.definitions.interpretationPromptPlaceholder")} value={value.interpretationPrompt} onChange={(e) => onChange({ ...value, interpretationPrompt: e.target.value })} />
+          <Label>{t("room.definitions.interpretationPrompt")}</Label>
+          <p className="mb-1 text-xs text-muted-foreground">{t("room.definitions.interpretationPromptHelp")}</p>
+          <Textarea className="min-h-[60px]" placeholder={t("room.definitions.interpretationPromptPlaceholder")} value={value.interpretationPrompt} onChange={(e) => onChange({ ...value, interpretationPrompt: e.target.value })} />
         </div>
       )}
       {value.action === "conversation" && (
         <>
           <div className="space-y-1">
-            <Label className="text-xs">{t("room.definitions.contextPrompt")}</Label>
-            <p className="text-xs text-muted-foreground mb-1">{t("room.definitions.contextPromptHelp")}</p>
-            <Textarea className="text-sm min-h-[80px]" placeholder={t("room.definitions.contextPromptPlaceholder")} value={value.contextPrompt} onChange={(e) => onChange({ ...value, contextPrompt: e.target.value })} />
+            <Label>{t("room.definitions.contextPrompt")}</Label>
+            <p className="mb-1 text-xs text-muted-foreground">{t("room.definitions.contextPromptHelp")}</p>
+            <Textarea className="min-h-[80px]" placeholder={t("room.definitions.contextPromptPlaceholder")} value={value.contextPrompt} onChange={(e) => onChange({ ...value, contextPrompt: e.target.value })} />
           </div>
-          <div className={value.outboundChannel && value.outboundChannel !== OUTBOUND_CHANNEL_NONE ? "grid grid-cols-2 gap-2" : ""}>
+          <div className={value.outboundChannel && value.outboundChannel !== OUTBOUND_CHANNEL_NONE ? "grid grid-cols-2 gap-3" : ""}>
             <div className="space-y-1">
-              <Label className="text-xs">{t("room.definitions.outboundChannel")}</Label>
+              <Label>{t("room.definitions.outboundChannel")}</Label>
               <Select
                 value={value.outboundChannel || OUTBOUND_CHANNEL_NONE}
                 onValueChange={(v) => onChange({
@@ -145,7 +142,7 @@ function DefinitionForm({
                   outboundTarget: v === OUTBOUND_CHANNEL_NONE ? "" : value.outboundTarget,
                 })}
               >
-                <SelectTrigger className="h-8 text-sm">
+                <SelectTrigger>
                   <SelectValue placeholder={t("room.definitions.outboundChannelPlaceholder")} />
                 </SelectTrigger>
                 <SelectContent>
@@ -158,8 +155,8 @@ function DefinitionForm({
             </div>
             {value.outboundChannel && value.outboundChannel !== OUTBOUND_CHANNEL_NONE ? (
               <div className="space-y-1">
-                <Label className="text-xs">{t("room.definitions.outboundTarget")}</Label>
-                <Input className="h-8 text-sm" placeholder={t("room.definitions.outboundTargetPlaceholder")} value={value.outboundTarget} onChange={(e) => onChange({ ...value, outboundTarget: e.target.value })} />
+                <Label>{t("room.definitions.outboundTarget")}</Label>
+                <Input placeholder={t("room.definitions.outboundTargetPlaceholder")} value={value.outboundTarget} onChange={(e) => onChange({ ...value, outboundTarget: e.target.value })} />
               </div>
             ) : null}
           </div>
@@ -168,26 +165,89 @@ function DefinitionForm({
           )}
         </>
       )}
-      {children}
-      <div className="flex justify-end gap-2">
-        <Button size="sm" variant="outline" onClick={onCancel}>{t("common.cancel")}</Button>
-        <Button size="sm" onClick={onSubmit}>{submitLabel}</Button>
-      </div>
     </div>
   );
 }
 
+type DefinitionPayload = {
+  name: string; matchingPrompt: string; interpretationPrompt: string;
+  action: "backlog" | "conversation";
+  contextPrompt: string | null; outboundChannel: string | null; outboundTarget: string | null;
+};
+
+/** What the engine stores of a form: a conversation's context and channel only when they apply. */
+function payloadOf(form: DefinitionFormState): DefinitionPayload {
+  const isConversation = form.action === "conversation";
+  const channelSet = isConversation && !!form.outboundChannel;
+  return {
+    name: form.name,
+    matchingPrompt: form.matchingPrompt,
+    interpretationPrompt: form.interpretationPrompt,
+    action: form.action,
+    contextPrompt: isConversation ? form.contextPrompt : null,
+    outboundChannel: channelSet ? form.outboundChannel : null,
+    outboundTarget: channelSet ? form.outboundTarget : null,
+  };
+}
+
+/** One event definition of a source, or a new one (`definition` null): fields in a drawer, delete with confirmation. */
+function DefinitionSheet({
+  open,
+  definition,
+  onOpenChange,
+  onSave,
+  onDelete,
+}: {
+  open: boolean;
+  /** The definition being edited; null while creating. */
+  definition: EventDefinition | null;
+  onOpenChange: (open: boolean) => void;
+  onSave: (payload: DefinitionPayload) => void;
+  onDelete: () => void;
+}) {
+  const { t } = useI18n();
+  const [form, setForm] = useState<DefinitionFormState>(definition ? formOf(definition) : EMPTY_DEFINITION);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  return (
+    <>
+      <ListDrawer
+        open={open}
+        onOpenChange={onOpenChange}
+        title={definition ? definition.name : t("room.definitions.add")}
+        description={t("room.definitions.title")}
+        destructive={definition && <DrawerDeleteButton onClick={() => setConfirmDelete(true)} />}
+        primary={
+          <Button onClick={() => onSave(payloadOf(form))} disabled={!form.name.trim()}>
+            {t("common.save")}
+          </Button>
+        }
+      >
+        <DefinitionFields value={form} onChange={setForm} />
+      </ListDrawer>
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={t("room.definition.deleteConfirm")}
+        confirmLabel={t("common.delete")}
+        onConfirm={() => {
+          setConfirmDelete(false);
+          onDelete();
+        }}
+      />
+    </>
+  );
+}
+
 interface Props {
-  source: EventSource;
-  expanded: boolean;
+  /** The source being shown; null keeps the drawer closed. */
+  source: EventSource | null;
   /**
    * The revealed webhook URL for this source, or `undefined` while it has
-   * not been fetched yet (the parent fetches it lazily on first expand, not
+   * not been fetched yet (the parent fetches it when the drawer opens, not
    * eagerly for every source in the list).
    */
   webhookUrl: string | undefined;
-  onToggleExpand: () => void;
-  onToggleEnabled: (id: string, enabled: boolean) => void;
+  onClose: () => void;
   onCopyWebhook: (url: string) => void;
   onRotateToken: (id: string) => void;
   onUpdateSource: (id: string, data: { name?: string; config?: Record<string, unknown> }) => void;
@@ -201,229 +261,172 @@ interface Props {
     action?: string; contextPrompt?: string | null; outboundChannel?: string | null; outboundTarget?: string | null;
   }) => void;
   onDeleteDefinition: (sourceId: string, defId: string) => void;
+  /** Switches a definition on or off; rejects when the engine refuses, so the switch goes back. */
+  onToggleDefinition: (sourceId: string, data: DefinitionPayload & { enabled: boolean }, defId: string) => Promise<void>;
 }
 
-export function EventSourceCard({
-  source, expanded, webhookUrl, onToggleExpand, onToggleEnabled, onCopyWebhook, onRotateToken,
-  onUpdateSource, onDeleteSource, onAddDefinition, onUpdateDefinition, onDeleteDefinition,
+/**
+ * One webhook source, opened from its row: its name, the webhook URL (copy,
+ * rotate), the authentication secret and its event definitions, each of which
+ * opens a drawer of its own.
+ */
+export function EventSourceSheet({
+  source, webhookUrl, onClose, onCopyWebhook, onRotateToken,
+  onUpdateSource, onDeleteSource, onAddDefinition, onUpdateDefinition, onDeleteDefinition, onToggleDefinition,
 }: Props) {
   const { t } = useI18n();
-  const [editingName, setEditingName] = useState<string | null>(null);
-  const [showNewDef, setShowNewDef] = useState(false);
-  const [newDef, setNewDef] = useState({
-    name: "", matchingPrompt: "", interpretationPrompt: "",
-    action: "backlog" as "backlog" | "conversation",
-    contextPrompt: "", outboundChannel: "", outboundTarget: "",
-  });
-  const [editingDef, setEditingDef] = useState<{
-    defId: string; name: string; matchingPrompt: string; interpretationPrompt: string; enabled: boolean;
-    action: "backlog" | "conversation";
-    contextPrompt: string; outboundChannel: string; outboundTarget: string;
-  } | null>(null);
+  const [name, setName] = useState(source?.name ?? "");
+  const [shown, setShown] = useState(source?.id ?? null);
+  const [confirmRotate, setConfirmRotate] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  // `"new"` while a definition is being added, otherwise the id of the one open.
+  const [openDefinition, setOpenDefinition] = useState<string | "new" | null>(null);
 
-  function handleSubmitNewDef() {
-    const isConversation = newDef.action === "conversation";
-    const channelSet = isConversation && !!newDef.outboundChannel;
-    onAddDefinition(source.id, {
-      ...newDef,
-      contextPrompt: isConversation ? newDef.contextPrompt : undefined,
-      outboundChannel: channelSet ? newDef.outboundChannel : undefined,
-      outboundTarget: channelSet ? newDef.outboundTarget : undefined,
-    });
-    setNewDef({ name: "", matchingPrompt: "", interpretationPrompt: "", action: "backlog", contextPrompt: "", outboundChannel: "", outboundTarget: "" });
-    setShowNewDef(false);
+  // Another source opened: start from its name.
+  if ((source?.id ?? null) !== shown) {
+    setShown(source?.id ?? null);
+    setName(source?.name ?? "");
   }
 
-  function handleSubmitEditDef() {
-    if (!editingDef) return;
-    const isConversation = editingDef.action === "conversation";
-    const channelSet = isConversation && !!editingDef.outboundChannel;
-    onUpdateDefinition(source.id, editingDef.defId, {
-      name: editingDef.name,
-      matchingPrompt: editingDef.matchingPrompt,
-      interpretationPrompt: editingDef.interpretationPrompt,
-      enabled: editingDef.enabled,
-      action: editingDef.action,
-      contextPrompt: isConversation ? editingDef.contextPrompt : null,
-      outboundChannel: channelSet ? editingDef.outboundChannel : null,
-      outboundTarget: channelSet ? editingDef.outboundTarget : null,
-    });
-    setEditingDef(null);
-  }
+  const definition = source?.definitions.find((d) => d.id === openDefinition) ?? null;
+  const nameChanged = source !== null && name.trim() !== "" && name !== source.name;
 
   return (
-    <div className="rounded-lg border">
-      <div className="flex items-center justify-between p-4">
-        <div className="flex items-center gap-2">
-          <button className="flex items-center gap-1" onClick={onToggleExpand}>
-            {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-          </button>
-          {editingName !== null ? (
-            <form className="flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); onUpdateSource(source.id, { name: editingName }); setEditingName(null); }}>
-              <Input className="h-7 w-48 text-sm font-medium" value={editingName} onChange={(e) => setEditingName(e.target.value)} autoFocus />
-              <Button type="submit" size="icon" variant="ghost" className="h-7 w-7" disabled={!editingName.trim()}>
-                <CheckIcon className="h-3 w-3" />
-              </Button>
-              <Button type="button" size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditingName(null)}>
-                <XIcon className="h-3 w-3" />
-              </Button>
-            </form>
-          ) : (
-            <button className="flex items-center gap-2 text-left" onClick={onToggleExpand}>
-              <span className="font-medium">{source.name}</span>
-            </button>
-          )}
-          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditingName(source.name)}>
-            <Pencil className="h-3 w-3" />
+    <>
+      <ListDrawer
+        open={source !== null}
+        onOpenChange={(open) => !open && onClose()}
+        title={source?.name ?? ""}
+        description={t("room.sources.title")}
+        header={source && <Badge variant="secondary">{source.sourceType}</Badge>}
+        destructive={source && <DrawerDeleteButton onClick={() => setConfirmDelete(true)} />}
+        primary={
+          <Button
+            disabled={!nameChanged}
+            onClick={() => source && onUpdateSource(source.id, { name })}
+          >
+            {t("common.save")}
           </Button>
-          <Badge variant="secondary">{source.sourceType}</Badge>
-          <Badge variant={source.enabled ? "default" : "secondary"}>{source.enabled ? t("common.enabled") : t("common.disabled")}</Badge>
-        </div>
-        <div className="flex items-center gap-2">
-          <Switch
-            checked={source.enabled}
-            onCheckedChange={(v) => onToggleEnabled(source.id, v)}
-          />
-          {webhookUrl && (
-            <Button size="icon" variant="ghost" onClick={() => onCopyWebhook(webhookUrl)}>
-              <Copy className="h-4 w-4" />
-            </Button>
-          )}
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button size="icon" variant="ghost" className="text-muted-foreground">
-                <RotateCcw className="h-4 w-4" />
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>{t("room.sources.rotateToken")}</AlertDialogTitle>
-                <AlertDialogDescription>{t("room.sources.rotateConfirm")}</AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-                <AlertDialogAction onClick={() => onRotateToken(source.id)}>{t("common.save")}</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button size="icon" variant="ghost" className="text-destructive">
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>{t("room.source.deleteConfirm")}</AlertDialogTitle>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-                <AlertDialogAction variant="destructive" onClick={() => onDeleteSource(source.id)}>{t("common.delete")}</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </div>
-      </div>
-
-      {expanded && (
-        <div className="border-t px-4 pb-4 pt-3 space-y-4">
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">{t("room.sources.webhookUrl")}</Label>
-            <code className="block text-xs bg-muted rounded px-2 py-1 break-all">
-              {webhookUrl ?? t("room.sources.webhookUrlLoading")}
-            </code>
-          </div>
-
-          <WebhookAuthSection
-            currentMasked={typeof source.config?.authKey === "string" ? source.config.authKey : ""}
-            onSave={(authKey) => onUpdateSource(source.id, { config: { authKey } })}
-          />
-
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium">{t("room.definitions.title")}</h3>
-              <Button size="sm" variant="outline" onClick={() => setShowNewDef(true)}>
-                <Plus className="h-3 w-3 mr-1" />
-                {t("room.definitions.add")}
-              </Button>
+        }
+      >
+        {source && (
+          <>
+            <div className="space-y-2">
+              <Label htmlFor="source-name">{t("room.sources.name")}</Label>
+              <Input id="source-name" value={name} onChange={(e) => setName(e.target.value)} />
             </div>
 
-            {showNewDef && (
-              <div className="rounded border p-3 bg-muted/30">
-                <DefinitionForm
-                  value={newDef}
-                  onChange={setNewDef}
-                  onSubmit={handleSubmitNewDef}
-                  onCancel={() => setShowNewDef(false)}
-                  submitLabel={t("common.save")}
-                  t={t}
-                  className="space-y-2"
-                />
-              </div>
-            )}
-
-            {source.definitions.map((def) => (
-              <div key={def.id} className="rounded border">
-                <div className="flex items-center justify-between px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">{def.name}</span>
-                    <Badge variant={def.action === "conversation" ? "outline" : "secondary"} className="text-xs">
-                      {def.action === "conversation" ? t("room.definitions.actionConversation") : t("room.definitions.actionBacklog")}
-                    </Badge>
-                    <Badge variant={def.enabled ? "default" : "secondary"} className="text-xs">{def.enabled ? t("common.enabled") : t("common.disabled")}</Badge>
-                  </div>
-                  <div className="flex gap-1">
-                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditingDef({
-                      defId: def.id, name: def.name,
-                      matchingPrompt: def.matchingPrompt, interpretationPrompt: def.interpretationPrompt, enabled: def.enabled,
-                      action: (def.action ?? "backlog") as "backlog" | "conversation",
-                      contextPrompt: def.contextPrompt ?? "",
-                      outboundChannel: def.outboundChannel ?? "",
-                      outboundTarget: def.outboundTarget ?? "",
-                    })}>
-                      <Pencil className="h-3 w-3" />
-                    </Button>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button size="icon" variant="ghost" className="text-destructive h-7 w-7">
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>{t("room.definition.deleteConfirm")}</AlertDialogTitle>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-                          <AlertDialogAction variant="destructive" onClick={() => onDeleteDefinition(source.id, def.id)}>{t("common.delete")}</AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  </div>
-                </div>
-                {editingDef?.defId === def.id && (
-                  <div className="border-t px-3 py-3">
-                    <DefinitionForm
-                      value={editingDef}
-                      onChange={(next) => setEditingDef({ ...editingDef, ...next })}
-                      onSubmit={handleSubmitEditDef}
-                      onCancel={() => setEditingDef(null)}
-                      submitLabel={t("common.save")}
-                      t={t}
-                      className="space-y-3"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Switch checked={editingDef.enabled} onCheckedChange={(v) => setEditingDef({ ...editingDef, enabled: v })} />
-                        <Label className="text-xs">{t("common.enabled")}</Label>
-                      </div>
-                    </DefinitionForm>
-                  </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">{t("room.sources.webhookUrl")}</Label>
+              <code className="block break-all rounded bg-muted px-2 py-1 text-xs">
+                {webhookUrl ?? t("room.sources.webhookUrlLoading")}
+              </code>
+              <div className="flex gap-2 pt-1">
+                {webhookUrl && (
+                  <Button size="sm" variant="outline" onClick={() => onCopyWebhook(webhookUrl)}>
+                    <Copy className="size-4" aria-hidden />
+                    {t("common.copy")}
+                  </Button>
                 )}
+                <Button size="sm" variant="outline" onClick={() => setConfirmRotate(true)}>
+                  <RotateCcw className="size-4" aria-hidden />
+                  {t("room.sources.rotateToken")}
+                </Button>
               </div>
-            ))}
-          </div>
-        </div>
+            </div>
+
+            <WebhookAuthSection
+              currentMasked={typeof source.config?.authKey === "string" ? source.config.authKey : ""}
+              onSave={(authKey) => onUpdateSource(source.id, { config: { authKey } })}
+            />
+
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium">{t("room.definitions.title")}</h3>
+                <Button size="sm" variant="outline" onClick={() => setOpenDefinition("new")}>
+                  <Plus className="size-4" aria-hidden />
+                  {t("room.definitions.add")}
+                </Button>
+              </div>
+              {source.definitions.length > 0 && (
+                <SwitchList
+                  rows={source.definitions}
+                  rowKey={(def) => def.id}
+                  name={(def) => def.name}
+                  nameHeader={t("room.definitions.name")}
+                  searchText={(def) => [actionLabel(def.action, t)]}
+                  columns={[
+                    {
+                      header: t("room.definitions.action"),
+                      className: "w-36",
+                      cell: (def) => <Badge variant="secondary">{actionLabel(def.action, t)}</Badge>,
+                    },
+                  ]}
+                  isOn={(def) => def.enabled}
+                  onToggle={(def, enabled) => onToggleDefinition(source.id, { ...payloadOf(formOf(def)), enabled }, def.id)}
+                  switchLabel={(def) => t("common.activeNamed", { name: def.name })}
+                  onOpen={(def) => setOpenDefinition(def.id)}
+                  selectedKey={openDefinition}
+                />
+              )}
+            </section>
+          </>
+        )}
+      </ListDrawer>
+
+      {source && openDefinition !== null && (
+        <DefinitionSheet
+          key={openDefinition}
+          open
+          definition={definition}
+          onOpenChange={(open) => !open && setOpenDefinition(null)}
+          onSave={(payload) => {
+            if (definition) {
+              onUpdateDefinition(source.id, definition.id, { ...payload, enabled: definition.enabled });
+            } else {
+              const channelSet = payload.outboundChannel !== null;
+              onAddDefinition(source.id, {
+                ...payload,
+                contextPrompt: payload.contextPrompt ?? undefined,
+                outboundChannel: channelSet ? payload.outboundChannel ?? undefined : undefined,
+                outboundTarget: channelSet ? payload.outboundTarget ?? undefined : undefined,
+              });
+            }
+            setOpenDefinition(null);
+          }}
+          onDelete={() => {
+            if (definition) onDeleteDefinition(source.id, definition.id);
+            setOpenDefinition(null);
+          }}
+        />
       )}
-    </div>
+
+      <ConfirmDialog
+        open={confirmRotate}
+        onOpenChange={setConfirmRotate}
+        title={t("room.sources.rotateToken")}
+        description={t("room.sources.rotateConfirm")}
+        confirmLabel={t("room.sources.rotateToken")}
+        onConfirm={() => {
+          setConfirmRotate(false);
+          if (source) onRotateToken(source.id);
+        }}
+      />
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={t("room.source.deleteConfirm")}
+        confirmLabel={t("common.delete")}
+        onConfirm={() => {
+          setConfirmDelete(false);
+          if (source) onDeleteSource(source.id);
+          onClose();
+        }}
+      />
+    </>
   );
+}
+
+function actionLabel(action: EventDefinition["action"], t: (key: TranslationKey) => string): string {
+  return action === "conversation" ? t("room.definitions.actionConversation") : t("room.definitions.actionBacklog");
 }

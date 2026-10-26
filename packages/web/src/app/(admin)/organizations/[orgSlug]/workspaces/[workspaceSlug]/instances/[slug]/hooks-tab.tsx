@@ -7,17 +7,7 @@ import { toast } from "sonner";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -36,11 +26,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { LoadFailed } from "@/components/ui/load-failed";
+import { ListDrawer } from "@/components/list-drawer";
+import { ListEmpty, ListLoading } from "@/components/list-states";
+import { SwitchList } from "@/components/switch-list";
 import { useResource } from "@/hooks/use-resource";
 import { useReloadFailureToast } from "@/hooks/use-reload-failure-toast";
-import { useOptimisticToggle } from "@/hooks/use-optimistic-toggle";
 import { api, getUserErrorMessage, type HookEvent, type InstanceHook, type HookFunctionInfo, type RequiredSecretSpec } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n/context";
 import { PROVIDER_CREDENTIAL_KEYS } from "@/lib/provider-secrets";
 import { useSecretSpecs } from "@/components/instance-secret/use-secret-specs";
@@ -86,7 +77,6 @@ export function HooksTab({ slug }: Props) {
   useReloadFailureToast(error, data !== undefined, t("hooks.loadFailed"));
   const hooks = data?.hooks ?? NO_HOOKS;
   const catalog = data?.catalog ?? NO_CATALOG;
-  const { value: enabledOf, toggle } = useOptimisticToggle(data, slug);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [openHookId, setOpenHookId] = useState<string | null>(null);
@@ -158,16 +148,16 @@ export function HooksTab({ slug }: Props) {
     load();
   };
 
-  const handleToggle = (hook: InstanceHook, enabled: boolean) =>
-    toggle(
-      hook.id,
-      enabled,
-      async () => {
-        await api.hooks.update(slug, hook.id, { enabled });
-        toast.success(t(enabled ? "hooks.enabled" : "hooks.disabled"));
-      },
-      (err) => toast.error(getUserErrorMessage(err, t("hooks.saveFailed"))),
-    );
+  const handleToggle = async (hook: InstanceHook, enabled: boolean) => {
+    try {
+      await api.hooks.update(slug, hook.id, { enabled });
+      toast.success(t(enabled ? "hooks.enabled" : "hooks.disabled"));
+      await load();
+    } catch (err) {
+      toast.error(getUserErrorMessage(err, t("hooks.saveFailed")));
+      throw err;
+    }
+  };
 
   const handleDelete = async () => {
     if (!deleting) return;
@@ -185,17 +175,13 @@ export function HooksTab({ slug }: Props) {
 
   if (error && data === undefined) return <LoadFailed message={t("hooks.loadFailed")} onRetry={load} />;
 
-  if (loading && data === undefined) {
-    return (
-      <div className="space-y-4">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-32 w-full" />
-      </div>
-    );
-  }
+  if (loading && data === undefined) return <ListLoading className="" />;
 
   const knownFunctions = new Set(catalog.map((fn) => fn.name));
   const selectedFn = catalog.find((fn) => fn.name === form.functionName);
+  const orderedHooks = HOOK_EVENTS.flatMap((event) =>
+    hooks.filter((h) => h.event === event).sort((a, b) => a.position - b.position),
+  );
   const openHook = openHookId ? hooks.find((h) => h.id === openHookId) ?? null : null;
 
   return (
@@ -208,136 +194,97 @@ export function HooksTab({ slug }: Props) {
       </SectionActions>
 
       {hooks.length === 0 ? (
-        <p className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-          {t("hooks.empty")}
-        </p>
+        <ListEmpty className="mt-8" title={t("hooks.empty")} />
       ) : (
-        <div className="space-y-6">
-          {HOOK_EVENTS.map((event) => {
-            const eventHooks = hooks.filter((h) => h.event === event);
-            if (eventHooks.length === 0) return null;
+        <SwitchList
+          rows={orderedHooks}
+          rowKey={(hook) => hook.id}
+          // A row is ALWAYS named: a hook whose action lost its function would
+          // otherwise be a row with a red badge and nothing saying which hook it was.
+          name={(hook) => (hook.actionConfig.functionName?.trim() ? hook.actionConfig.functionName : t("hooks.unknownAction"))}
+          nameHeader={t("hooks.function")}
+          summary={(hook) => {
+            const fn = catalog.find((entry) => entry.name === hook.actionConfig.functionName);
+            return fn ? hookSummary(fn, locale) || undefined : undefined;
+          }}
+          badges={(hook) => {
+            const fnName = hook.actionConfig.functionName;
             return (
-              <div key={event}>
-                <h3 className="mb-2 text-sm font-medium text-muted-foreground">
-                  {t(`hooks.events.${event}`)}
-                </h3>
-                <div className="divide-y rounded-md border">
-                  {eventHooks.map((hook) => {
-                    /*
-                      A row is ALWAYS named. A hook whose action lost its function
-                      rendered an empty `<code>` followed by a red badge — a row
-                      with a destructive-looking state and nothing saying which
-                      hook it was, so the only way to identify it was to open the
-                      edit dialog. The fallback names the condition instead.
-                    */
-                    const fnName = hook.actionConfig.functionName;
-                    const named = fnName && fnName.trim().length > 0;
-
-                    return (
-                      <div
-                        key={hook.id}
-                        data-state={openHookId === hook.id ? "selected" : undefined}
-                        className={cn(
-                          "flex cursor-pointer items-center gap-3 p-3 hover:bg-muted/50",
-                          "data-[state=selected]:bg-muted",
-                        )}
-                        onClick={() => setOpenHookId(hook.id)}
-                      >
-                        <button
-                          type="button"
-                          className="text-left hover:underline"
-                          aria-label={t("hooks.open", { function: named ? fnName : t("hooks.unknownAction") })}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setOpenHookId(hook.id);
-                          }}
-                        >
-                          {named ? (
-                            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{fnName}</code>
-                          ) : (
-                            <span className="text-sm text-muted-foreground">{t("hooks.unknownAction")}</span>
-                          )}
-                        </button>
-                        {named && !knownFunctions.has(fnName) && (
-                          <Badge variant="destructive">{t("hooks.unknownFunction")}</Badge>
-                        )}
-                        {hook.enabled && missingParams(hook) && (
-                          <Badge variant="outline" className="text-warning">{t("hooks.paramsMissing")}</Badge>
-                        )}
-                        {/* Both metadata are LABELLED: "10s" and "0" beside a name
-                            said nothing about which number was which. */}
-                        <span className="text-xs text-muted-foreground">
-                          {t("hooks.timeoutLabel")} {hook.timeoutMs / 1000}s
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {t("hooks.position")} {hook.position}
-                        </span>
-                        <div className="ml-auto flex items-center gap-2">
-                          <Switch
-                            checked={enabledOf(hook.id, hook.enabled)}
-                            onClick={(e) => e.stopPropagation()}
-                            aria-label={t("hooks.enabledLabel")}
-                            onCheckedChange={(v) => handleToggle(hook, v)}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+              <>
+                {fnName?.trim() && !knownFunctions.has(fnName) && (
+                  <Badge variant="destructive">{t("hooks.unknownFunction")}</Badge>
+                )}
+                {hook.enabled && missingParams(hook) && (
+                  <Badge variant="outline" className="text-warning">{t("hooks.paramsMissing")}</Badge>
+                )}
+              </>
             );
-          })}
-        </div>
+          }}
+          searchText={(hook) => [t(`hooks.events.${hook.event}`)]}
+          // Hooks run in order: by the event's place in the conversation, then by their position.
+          sortKey={null}
+          columns={[
+            {
+              header: t("hooks.event"),
+              className: "w-44",
+              cell: (hook) => <Badge variant="secondary">{t(`hooks.events.${hook.event}`)}</Badge>,
+            },
+            { header: t("hooks.timeoutLabel"), className: "w-28", cell: (hook) => `${hook.timeoutMs / 1000}s` },
+            { header: t("hooks.position"), className: "w-24", cell: (hook) => hook.position },
+          ]}
+          isOn={(hook) => hook.enabled}
+          onToggle={handleToggle}
+          switchLabel={(hook) => t("common.activeNamed", { name: hook.actionConfig.functionName || t("hooks.unknownAction") })}
+          onOpen={(hook) => setOpenHookId(hook.id)}
+          openLabel={(hook) => t("hooks.open", { function: hook.actionConfig.functionName || t("hooks.unknownAction") })}
+          selectedKey={openHookId}
+        />
       )}
 
-      <Dialog open={dialogOpen} onOpenChange={onDialogOpenChange}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{t("hooks.createTitle")}</DialogTitle>
-            <DialogDescription>{t("hooks.dialogDescription")}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <HookEventField value={form} onChange={(next) => setForm((f) => ({ ...f, ...next }))} />
-            <div className="space-y-2">
-              <Label>{t("hooks.function")}</Label>
-              <Select
-                value={form.functionName || undefined}
-                onValueChange={(v) => setForm((f) => ({ ...f, functionName: v }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder={t("hooks.functionPlaceholder")} />
-                </SelectTrigger>
-                <SelectContent>
-                  {catalog.map((fn) => (
-                    <SelectItem key={fn.name} value={fn.name}>
-                      {fn.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {selectedFn && hookSummary(selectedFn, locale) && (
-                <p className="text-xs text-muted-foreground">{hookSummary(selectedFn, locale)}</p>
-              )}
-              {selectedFn?.mutatesResponse && <StreamingWarning />}
-            </div>
-            <HookRunFields value={form} onChange={(next) => setForm((f) => ({ ...f, ...next }))} />
-            {selectedFn && specsOf(selectedFn.name).length > 0 && (
-              <section className="space-y-4 border-t pt-4">
-                <h3 className="text-sm font-medium">{t("hooks.params")}</h3>
-                <HookParamFields specs={specsOf(selectedFn.name)} params={params} />
-              </section>
+      <ListDrawer
+        open={dialogOpen}
+        onOpenChange={onDialogOpenChange}
+        title={t("hooks.createTitle")}
+        description={t("hooks.dialogDescription")}
+        primary={
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? t("common.saving") : t("common.save")}
+          </Button>
+        }
+      >
+        <div className="space-y-4">
+          <HookEventField value={form} onChange={(next) => setForm((f) => ({ ...f, ...next }))} />
+          <div className="space-y-2">
+            <Label>{t("hooks.function")}</Label>
+            <Select
+              value={form.functionName || undefined}
+              onValueChange={(v) => setForm((f) => ({ ...f, functionName: v }))}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder={t("hooks.functionPlaceholder")} />
+              </SelectTrigger>
+              <SelectContent>
+                {catalog.map((fn) => (
+                  <SelectItem key={fn.name} value={fn.name}>
+                    {fn.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedFn && hookSummary(selectedFn, locale) && (
+              <p className="text-xs text-muted-foreground">{hookSummary(selectedFn, locale)}</p>
             )}
+            {selectedFn?.mutatesResponse && <StreamingWarning />}
           </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => onDialogOpenChange(false)}>
-              {t("common.cancel")}
-            </Button>
-            <Button onClick={handleSave} disabled={saving}>
-              {saving ? t("common.saving") : t("common.save")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          <HookRunFields value={form} onChange={(next) => setForm((f) => ({ ...f, ...next }))} />
+          {selectedFn && specsOf(selectedFn.name).length > 0 && (
+            <section className="space-y-4 border-t pt-4">
+              <h3 className="text-sm font-medium">{t("hooks.params")}</h3>
+              <HookParamFields specs={specsOf(selectedFn.name)} params={params} />
+            </section>
+          )}
+        </div>
+      </ListDrawer>
 
       <HookSheet
         hook={openHook}
