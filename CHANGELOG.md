@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Every list page has one shape: title with the primary action top right,
+  search above the list, a table sorted by the visible name with the secondary
+  line under it, an «Active» switch for on/off state, and a right-hand drawer
+  that holds edit and delete. Badges, empty, loading and no-results states are
+  the same everywhere.
 - The agent's sidebar has six groups (Overview, Configuration, Knowledge,
   Resources, Automations, Governance) with every section on its own row,
   automations included; `?tab=` values are unchanged, so existing links keep
