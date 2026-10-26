@@ -52,7 +52,8 @@ export function ListRow({ onOpen, selected, muted, accent, children }: {
 
 /**
  * The row's identity: optional icon, the name (a button when the row opens),
- * badges beside it, and one muted line under it.
+ * badges beside it, and the secondary information under it, at most two lines
+ * (the full text is in `title` when it is a string).
  */
 export function ListNameCell({
   name,
@@ -93,7 +94,14 @@ export function ListNameCell({
             )}
             {badges}
           </div>
-          {summary && <div className="mt-0.5 text-sm text-muted-foreground">{summary}</div>}
+          {summary && (
+            <div
+              className="mt-0.5 line-clamp-2 text-sm text-muted-foreground"
+              title={typeof summary === "string" ? summary : undefined}
+            >
+              {summary}
+            </div>
+          )}
         </div>
       </div>
     </TableCell>

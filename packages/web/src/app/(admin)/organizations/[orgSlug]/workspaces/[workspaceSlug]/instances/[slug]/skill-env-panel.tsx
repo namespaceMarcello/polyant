@@ -8,48 +8,34 @@ import { Loader2, Eye, EyeOff, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { useResource } from "@/hooks/use-resource";
 import { api, getUserErrorMessage, type SkillEnvStatus } from "@/lib/api";
 import { useI18n } from "@/lib/i18n/context";
 
-interface SkillEnvDialogProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  slug: string;
-  skillName: string;
-  onSaved: () => void;
-}
-
-export function SkillEnvDialog({
-  open,
-  onOpenChange,
+/**
+ * The environment variables a skill needs, for one agent: read when the panel
+ * opens, saved with its own button (they belong to the agent, not to the page's
+ * Save). It lives inside the skill's drawer.
+ */
+export function SkillEnvPanel({
   slug,
   skillName,
   onSaved,
-}: SkillEnvDialogProps) {
+}: {
+  slug: string;
+  skillName: string;
+  onSaved: () => void;
+}) {
   const { t } = useI18n();
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{t("skills.env.title", { name: skillName })}</DialogTitle>
-          <DialogDescription>
-            {t("skills.env.description")}
-          </DialogDescription>
-        </DialogHeader>
-        {/* Mounted only while the dialog is open, so the variables are read when it opens. */}
-        <SkillEnvBody slug={slug} skillName={skillName} onSaved={onSaved} onClose={() => onOpenChange(false)} />
-      </DialogContent>
-    </Dialog>
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-sm font-medium">{t("skills.env.title", { name: skillName })}</h3>
+        <p className="text-sm text-muted-foreground">{t("skills.env.description")}</p>
+      </div>
+      <SkillEnvBody slug={slug} skillName={skillName} onSaved={onSaved} />
+    </section>
   );
 }
 
@@ -57,12 +43,10 @@ function SkillEnvBody({
   slug,
   skillName,
   onSaved,
-  onClose,
 }: {
   slug: string;
   skillName: string;
   onSaved: () => void;
-  onClose: () => void;
 }) {
   const { t } = useI18n();
   const { data, error, reload } = useResource(["skill-env", slug, skillName], () => api.skills.getEnv(slug, skillName));
@@ -74,13 +58,13 @@ function SkillEnvBody({
         <div className="flex items-center justify-center py-8">
           <Loader2 className="size-5 animate-spin text-muted-foreground" />
         </div>
-        <DialogFooter>
+        <div className="flex justify-end">
           <Button disabled>{t("common.saveSingle")}</Button>
-        </DialogFooter>
+        </div>
       </>
     );
   }
-  return <SkillEnvForm slug={slug} skillName={skillName} envStatus={data.env} onSaved={onSaved} onClose={onClose} />;
+  return <SkillEnvForm slug={slug} skillName={skillName} envStatus={data.env} onSaved={onSaved} />;
 }
 
 function SkillEnvForm({
@@ -88,13 +72,11 @@ function SkillEnvForm({
   skillName,
   envStatus,
   onSaved,
-  onClose,
 }: {
   slug: string;
   skillName: string;
   envStatus: SkillEnvStatus[];
   onSaved: () => void;
-  onClose: () => void;
 }) {
   const { t } = useI18n();
   const [values, setValues] = useState<Record<string, string>>(() =>
@@ -114,7 +96,6 @@ function SkillEnvForm({
       await api.skills.setEnv(slug, skillName, env);
       toast.success(t("skills.env.saved"));
       onSaved();
-      onClose();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("general.saveFailed")));
     } finally {
@@ -183,11 +164,11 @@ function SkillEnvForm({
           )}
         </div>
 
-      <DialogFooter>
+      <div className="flex justify-end">
         <Button onClick={handleSave} disabled={saving}>
           {saving ? t("common.saving") : t("common.saveSingle")}
         </Button>
-      </DialogFooter>
+      </div>
     </>
   );
 }

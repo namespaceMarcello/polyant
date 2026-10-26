@@ -37,7 +37,6 @@ export default function SettingsPage() {
       <PageHeader
         title={t("settings.title")}
         subtitle={t("settings.subtitle")}
-        subtitleClassName="mt-2 text-muted-foreground"
       />
 
       <ChipTabs

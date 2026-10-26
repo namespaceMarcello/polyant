@@ -2,43 +2,41 @@
 
 "use client";
 
-import { useState, useRef } from "react";
+import { Suspense, useRef, useState } from "react";
 import Link from "next/link";
-import { Plus, Pencil, Trash2, Upload } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Plus, Upload } from "lucide-react";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
+import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { api, getUserErrorMessage, type LibrarySkillSummary } from "@/lib/api";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { useResource } from "@/hooks/use-resource";
 import { PageHeader } from "@/components/layout/page-header";
+import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListSearch, matchesSearch } from "@/components/list-search";
+import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
+import { SkillSheet } from "@/components/skills/skill-sheet";
 import { useI18n } from "@/lib/i18n/context";
 
 const NO_SKILLS: LibrarySkillSummary[] = [];
 
-export default function SkillsPage() {
+function SkillsPageContent() {
   const { t } = useI18n();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { data, error, loading, reload } = useResource("skill-library", () => api.skillLibrary.list());
   const skills: LibrarySkillSummary[] = Array.isArray(data?.skills) ? data.skills : NO_SKILLS;
+
+  const [search, setSearch] = useState("");
+  // `?skill=<slug>` opens that skill's drawer: it is how an old `/skills/<slug>` link still lands on the skill.
+  const linked = searchParams.get("skill");
+  const [openName, setOpenName] = useState<string | null>(linked);
+  const closeDrawer = () => {
+    setOpenName(null);
+    if (linked) router.replace("/skills");
+  };
 
   const [importingSkills, setImportingSkills] = useState(false);
   const importSkillsRef = useRef<HTMLInputElement>(null);
@@ -67,14 +65,18 @@ export default function SkillsPage() {
     }
   };
 
-  const handleDelete = async (name: string) => {
-    try {
-      await api.skillLibrary.delete(name);
-      reload();
-    } catch (err) {
-      toast.error(getUserErrorMessage(err, t("skills.deleteFailed")));
-    }
-  };
+  const addButton = (
+    <Button asChild>
+      <Link href="/skills/new">
+        <Plus className="size-4" />
+        {t("skills.newSkill")}
+      </Link>
+    </Button>
+  );
+
+  const visible = skills
+    .filter((skill) => matchesSearch(search, skill.displayName, skill.name, skill.description, skill.category))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName));
 
   return (
     <div>
@@ -86,12 +88,10 @@ export default function SkillsPage() {
             <>
               <Button
                 variant="outline"
-                size="sm"
                 onClick={() => importSkillsRef.current?.click()}
                 disabled={importingSkills}
-                className="gap-2"
               >
-                <Upload className="h-4 w-4" />
+                <Upload className="size-4" />
                 {importingSkills ? t("exportImport.import.uploading") : t("exportImport.skills.import.button")}
               </Button>
               <input
@@ -101,12 +101,7 @@ export default function SkillsPage() {
                 className="hidden"
                 onChange={handleImportSkills}
               />
-              <Button asChild>
-                <Link href="/skills/new">
-                  <Plus className="mr-2 size-4" />
-                  {t("skills.newSkill")}
-                </Link>
-              </Button>
+              {addButton}
             </>
           )
         }
@@ -115,95 +110,61 @@ export default function SkillsPage() {
       {error && data === undefined ? (
         <LoadFailed message={t("skills.fetchFailed")} onRetry={reload} />
       ) : loading && data === undefined ? (
-        <p className="mt-2 text-muted-foreground">{t("common.loading")}</p>
+        <ListLoading />
       ) : skills.length === 0 ? (
-        <div className="mt-16 flex flex-col items-center text-center">
-          <p className="text-muted-foreground">{t("skills.empty")}</p>
-          <Button asChild className="mt-4" variant="outline">
-            <Link href="/skills/new">{t("skills.empty.cta")}</Link>
-          </Button>
-        </div>
+        <ListEmpty
+          title={t("skills.empty")}
+          action={
+            <Button asChild variant="outline">
+              <Link href="/skills/new">{t("skills.empty.cta")}</Link>
+            </Button>
+          }
+        />
       ) : (
-        <div className="mt-6 [&_[data-slot=table-container]]:overflow-hidden">
-          <Table className="table-fixed w-full">
-            <TableHeader>
-              <TableRow>
-                <TableHead>{t("skills.table.name")}</TableHead>
-                <TableHead className="w-[100px]">{t("skills.table.category")}</TableHead>
-                <TableHead className="w-[100px]">
-                  {t("skills.table.actions")}
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {skills.map((skill) => (
-                <TableRow key={skill.name}>
-                  <TableCell className="max-w-0 font-medium">
-                    <Link
-                      href={`/skills/${skill.name}`}
-                      className="inline-block max-w-full truncate align-bottom underline underline-offset-4 hover:text-accent-strong"
-                    >
-                      {skill.displayName}
-                    </Link>
-                    {skill.displayName !== skill.name && (
-                      <span className="block truncate font-mono text-xs font-normal text-muted-foreground">{skill.name}</span>
-                    )}
-                    {skill.description && (
-                      <span
-                        title={skill.description}
-                        className="mt-0.5 line-clamp-2 block whitespace-normal text-xs font-normal text-muted-foreground"
-                      >
-                        {skill.description}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {skill.category ? (
-                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                        {skill.category}
-                      </Badge>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-1">
-                      <Button variant="ghost" size="icon" asChild>
-                        <Link href={`/skills/${skill.name}`}>
-                          <Pencil className="size-4" />
-                        </Link>
-                      </Button>
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button variant="ghost" size="icon">
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>
-                              {t("skills.deleteTitle")}
-                            </AlertDialogTitle>
-                            <AlertDialogDescription>
-                              {t("skills.deleteDescription", { name: skill.displayName })}
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-                            <AlertDialogAction onClick={() => handleDelete(skill.name)}>
-                              {t("common.delete")}
-                            </AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
-                    </div>
-                  </TableCell>
+        <>
+          <ListSearch value={search} onChange={setSearch} />
+          {visible.length === 0 ? (
+            <ListNoResults />
+          ) : (
+            <ListTable>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <ListHead>{t("skills.table.name")}</ListHead>
+                  <ListHead className="w-40">{t("skills.table.category")}</ListHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+              </TableHeader>
+              <TableBody>
+                {visible.map((skill) => (
+                  <ListRow key={skill.name} onOpen={() => setOpenName(skill.name)} selected={openName === skill.name}>
+                    <ListNameCell
+                      name={skill.displayName}
+                      onOpen={() => setOpenName(skill.name)}
+                      summary={skill.description || undefined}
+                    />
+                    <TableCell>
+                      {skill.category ? (
+                        <Badge variant="secondary">{skill.category}</Badge>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                  </ListRow>
+                ))}
+              </TableBody>
+            </ListTable>
+          )}
+        </>
       )}
+
+      <SkillSheet key={openName ?? "closed"} name={openName} onClose={closeDrawer} onChanged={reload} />
     </div>
+  );
+}
+
+export default function SkillsPage() {
+  return (
+    <Suspense fallback={null}>
+      <SkillsPageContent />
+    </Suspense>
   );
 }

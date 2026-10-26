@@ -12,6 +12,9 @@
  * - A table cell or heading carries no padding of its own: rows are as tall as
  *   their content under the table's one padding. A cell spanning the whole row
  *   (`colSpan`: an empty state, an expanded detail) is the exception.
+ * - A badge in a list is the default `Badge`: the size overrides (`text-xs`,
+ *   `text-[10px]`, `px-1.5`, `py-0`) made the same status read at four sizes. A
+ *   file that draws a list with `ListTable` leaves them off.
  * - A visible tab bar is `ChipTabs`. shadcn `Tabs` may still switch content with
  *   no bar of its own (the agent page's sections are driven by its rail).
  *
@@ -66,6 +69,18 @@ describe("UI conventions", () => {
   it("should_draw_every_visible_tab_bar_as_chip_tabs", () => {
     const offenders = sources()
       .filter(({ text }) => /from "@\/components\/ui\/tabs"/.test(text) && /\bTabs(?:List|Trigger)\b/.test(text))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it("should_draw_the_badges_of_every_list_at_the_one_size", () => {
+    const lists = sources().filter(({ text }) => /from "@\/components\/list-table"/.test(text));
+    // Non-vacuity: the lists are discovered, and there are several of them.
+    expect(lists.length).toBeGreaterThan(5);
+    const offenders = lists
+      .filter(({ text }) =>
+        openingTags(text, ["Badge"]).some((attributes) => /\b(?:text-xs|text-\[\d+px\]|px-1\.5|py-0)\b/.test(attributes)),
+      )
       .map(({ file }) => file);
     expect(offenders).toEqual([]);
   });

@@ -2,7 +2,7 @@
 
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SkillEnvDialog } from "./skill-env-dialog";
+import { SkillEnvPanel } from "./skill-env-panel";
 
 // ── Mocks ───────────────────────────────────────────────────────────
 
@@ -62,41 +62,33 @@ const envData = [
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function renderDialog(
-  props: Partial<React.ComponentProps<typeof SkillEnvDialog>> = {},
+  props: Partial<React.ComponentProps<typeof SkillEnvPanel>> = {},
 ) {
   const defaults = {
-    open: true,
-    onOpenChange: vi.fn(),
     slug: "test-instance",
     skillName: "my-skill",
     onSaved: vi.fn(),
   };
   return {
-    ...render(<SkillEnvDialog {...defaults} {...props} />),
+    ...render(<SkillEnvPanel {...defaults} {...props} />),
     defaults,
   };
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
 
-describe("SkillEnvDialog", () => {
+describe("SkillEnvPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("renders title with skill name", async () => {
+  it("renders a heading with the skill name", async () => {
     getEnvMock.mockResolvedValueOnce({ env: [] });
 
     renderDialog();
 
     // The t function substitutes {name} with "my-skill"
     expect(screen.getByText("skills.env.title")).toBeInTheDocument();
-  });
-
-  it("does not render when closed", () => {
-    renderDialog({ open: false });
-
-    expect(screen.queryByText(/skills\.env\.title/)).not.toBeInTheDocument();
   });
 
   it("fetches env vars on open and renders input fields", async () => {
@@ -182,11 +174,10 @@ describe("SkillEnvDialog", () => {
   it("calls api.skills.setEnv on save with correct data", async () => {
     const user = userEvent.setup();
     const onSaved = vi.fn();
-    const onOpenChange = vi.fn();
     getEnvMock.mockResolvedValueOnce({ env: envData });
     setEnvMock.mockResolvedValueOnce({ env: envData });
 
-    renderDialog({ onSaved, onOpenChange });
+    renderDialog({ onSaved });
 
     await waitFor(() => {
       expect(screen.getByText("API_KEY")).toBeInTheDocument();
@@ -208,7 +199,6 @@ describe("SkillEnvDialog", () => {
 
     await waitFor(() => {
       expect(onSaved).toHaveBeenCalled();
-      expect(onOpenChange).toHaveBeenCalledWith(false);
     });
   });
 

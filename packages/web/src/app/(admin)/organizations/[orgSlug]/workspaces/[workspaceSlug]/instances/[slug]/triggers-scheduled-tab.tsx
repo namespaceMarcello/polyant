@@ -361,7 +361,7 @@ export function TriggersScheduledTab({ slug }: Props) {
                   </TableCell>
                   <TableCell>
                     {task.outboundChannel ? (
-                      <Badge variant="outline" className="gap-1 text-xs">
+                      <Badge variant="outline" className="gap-1">
                         <Send className="size-3" />
                         {task.outboundChannel}
                       </Badge>
