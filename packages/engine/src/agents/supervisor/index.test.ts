@@ -549,7 +549,7 @@ describe("supervise", () => {
       expect(builtNames).toContain("acme:updateContactCrm");
     });
 
-    it("gives a tool ctx.ai on the agent's provider and keys, with the tier it asks for, as a service call of the turn", async () => {
+    it("gives a tool ctx.ai on the agent's provider, keys and tracing, with the tier it asks for, as a service call of the turn", async () => {
       mockGetToolRegistry.mockReturnValue(
         new Map([
           ["acme:classify", { name: "acme:classify", description: "d", category: "plugin", inputSchema: { type: "object" }, execute: vi.fn() }],
@@ -558,8 +558,9 @@ describe("supervise", () => {
       mockGetEnabledToolNames.mockResolvedValue(new Set(["acme:classify"]));
       const abortSignal = new AbortController().signal;
       const apiKeys = { anthropic: "sk-test" };
+      const langsmith = { apiKey: "ls-key", project: "proj" };
 
-      await supervise({ instanceId: TEST_INSTANCE, message: "hi", conversationId: "conv-1", provider: "anthropic", model: "claude-pinned-model", apiKeys, abortSignal });
+      await supervise({ instanceId: TEST_INSTANCE, message: "hi", conversationId: "conv-1", provider: "anthropic", model: "claude-pinned-model", apiKeys, abortSignal, langsmith });
       const ctx = mockBuildTool.mock.calls.find((c: unknown[]) => (c[0] as { name: string }).name === "acme:classify")![1] as {
         ai?: { chat(input: unknown): Promise<string> };
         abortSignal?: AbortSignal;
@@ -569,7 +570,7 @@ describe("supervise", () => {
 
       await expect(ctx.ai!.chat({ system: "Answer yes or no.", messages: [{ role: "user", content: "ok?" }], tier: "fast" })).resolves.toBe("yes");
       expect(mockChat).toHaveBeenCalledWith(
-        expect.objectContaining({ tier: "fast", provider: "anthropic", apiKeys, abortSignal, system: "Answer yes or no." }),
+        expect.objectContaining({ tier: "fast", provider: "anthropic", apiKeys, abortSignal, langsmith, system: "Answer yes or no." }),
         expect.objectContaining({ conversationId: "conv-1", instanceId: TEST_INSTANCE, callType: "service" }),
       );
       // The agent's pinned model would override the tier: the tool's call picks its model by tier.
