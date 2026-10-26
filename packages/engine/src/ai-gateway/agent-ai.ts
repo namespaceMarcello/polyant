@@ -14,7 +14,7 @@ import type { ChatRequest } from "./types.js";
  * they always have, and tools pass none, so the tier picks the model.
  */
 export function agentAi(
-  request: Pick<ChatRequest, "provider" | "model" | "apiKeys" | "abortSignal">,
+  request: Pick<ChatRequest, "provider" | "model" | "apiKeys" | "abortSignal" | "langsmith">,
   options: Omit<ChatCallOptions, "callType">,
 ): HookAi {
   return {
