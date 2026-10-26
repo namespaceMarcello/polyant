@@ -330,8 +330,8 @@ export function TriggersScheduledTab({ slug }: Props) {
                 </>
               ),
             },
-            { header: t("scheduledTasks.col.nextRun"), className: "w-40", nowrap: true, cell: (task) => fmt.dateTime(task.nextRunAt) || EMPTY_CELL },
-            { header: t("scheduledTasks.col.lastRun"), className: "w-40", nowrap: true, cell: (task) => fmt.dateTime(task.lastRunAt) || EMPTY_CELL },
+            { header: t("scheduledTasks.col.nextRun"), className: "w-52", nowrap: true, cell: (task) => fmt.dateTime(task.nextRunAt) || EMPTY_CELL },
+            { header: t("scheduledTasks.col.lastRun"), className: "w-52", nowrap: true, cell: (task) => fmt.dateTime(task.lastRunAt) || EMPTY_CELL },
           ]}
           isOn={(task) => task.enabled}
           onToggle={handleToggle}

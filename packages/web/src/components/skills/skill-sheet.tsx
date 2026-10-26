@@ -334,7 +334,7 @@ export function SkillSheet({
         primary={
           ready && tab === "content" ? (
             <Button onClick={handleSave} disabled={saving || displayName.trim() === ""}>
-              {saving ? t("common.saving") : t("common.saveSingle")}
+              {saving ? t("common.saving") : t("common.save")}
             </Button>
           ) : undefined
         }
