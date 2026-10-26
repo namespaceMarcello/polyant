@@ -2,8 +2,8 @@
 
 "use client";
 
-import { AlertCircle, CheckCircle2, Loader2, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/status-badge";
 import { useI18n } from "@/lib/i18n/context";
 import type { TranslationKey } from "@/lib/i18n/types";
 import type { MonitorOutcome } from "@/lib/api-types";
@@ -81,41 +81,21 @@ export function useMonitorLabels() {
 
 export function TypePill({ type }: { type: string }) {
   const labels = useMonitorLabels();
-  return <Badge variant="outline">{labels.typeShort(type)}</Badge>;
+  return <Badge variant="secondary">{labels.typeShort(type)}</Badge>;
 }
 
 export function OutcomePill({ outcome }: { outcome: MonitorOutcome | string }) {
   const { t } = useI18n();
   switch (outcome) {
     case "ok":
-      return (
-        <Badge variant="default">
-          <CheckCircle2 aria-hidden />
-          {t("monitor.outcome.ok")}
-        </Badge>
-      );
+      return <StatusBadge tone="positive">{t("monitor.outcome.ok")}</StatusBadge>;
     case "error":
-      return (
-        <Badge variant="destructive">
-          <AlertCircle aria-hidden />
-          {t("monitor.outcome.error")}
-        </Badge>
-      );
+      return <StatusBadge tone="negative">{t("monitor.outcome.error")}</StatusBadge>;
     case "blocked":
-      return (
-        <Badge variant="outline">
-          <ShieldAlert aria-hidden />
-          {t("monitor.outcome.blocked")}
-        </Badge>
-      );
+      return <StatusBadge tone="neutral">{t("monitor.outcome.blocked")}</StatusBadge>;
     case "running":
-      return (
-        <Badge variant="secondary">
-          <Loader2 className="animate-spin" aria-hidden />
-          {t("monitor.outcome.running")}
-        </Badge>
-      );
+      return <StatusBadge tone="neutral">{t("monitor.outcome.running")}</StatusBadge>;
     default:
-      return <Badge variant="outline">{outcome}</Badge>;
+      return <StatusBadge tone="neutral">{outcome}</StatusBadge>;
   }
 }

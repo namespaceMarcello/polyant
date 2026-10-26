@@ -2,7 +2,7 @@
 
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { CreateMemoryDialog } from "./create-memory-dialog";
+import { CreateMemorySheet } from "./create-memory-sheet";
 import type { Instance } from "@/lib/api";
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ const instances: Instance[] = [
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function renderDialog(
-  props: Partial<React.ComponentProps<typeof CreateMemoryDialog>> = {},
+  props: Partial<React.ComponentProps<typeof CreateMemorySheet>> = {},
 ) {
   const defaults = {
     open: true,
@@ -130,17 +130,17 @@ function renderDialog(
     instances,
     onCreated: vi.fn(),
   };
-  return { ...render(<CreateMemoryDialog {...defaults} {...props} />), defaults };
+  return { ...render(<CreateMemorySheet {...defaults} {...props} />), defaults };
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
 
-describe("CreateMemoryDialog", () => {
+describe("CreateMemorySheet", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("renders dialog title and description when open", () => {
+  it("renders drawer title and description when open", () => {
     renderDialog();
 
     expect(screen.getByText("memory.create.title")).toBeInTheDocument();
@@ -173,13 +173,13 @@ describe("CreateMemoryDialog", () => {
     renderDialog();
 
     expect(screen.getByRole("button", { name: "common.cancel" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "memory.create.button" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "common.add" })).toBeInTheDocument();
   });
 
   it("disables create button when content is empty", () => {
     renderDialog();
 
-    const createBtn = screen.getByRole("button", { name: "memory.create.button" });
+    const createBtn = screen.getByRole("button", { name: "common.add" });
     expect(createBtn).toBeDisabled();
   });
 
@@ -194,7 +194,7 @@ describe("CreateMemoryDialog", () => {
     const textarea = screen.getByPlaceholderText("memory.create.contentPlaceholder");
     await user.type(textarea, "User likes coffee");
 
-    const createBtn = screen.getByRole("button", { name: "memory.create.button" });
+    const createBtn = screen.getByRole("button", { name: "common.add" });
     expect(createBtn).toBeEnabled();
 
     await user.click(createBtn);
@@ -225,7 +225,7 @@ describe("CreateMemoryDialog", () => {
       screen.getByPlaceholderText("memory.create.contentPlaceholder"),
       "some content",
     );
-    await user.click(screen.getByRole("button", { name: "memory.create.button" }));
+    await user.click(screen.getByRole("button", { name: "common.add" }));
 
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith("memory.create.error");

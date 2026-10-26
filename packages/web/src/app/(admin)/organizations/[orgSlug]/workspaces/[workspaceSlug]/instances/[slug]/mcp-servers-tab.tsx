@@ -7,18 +7,10 @@ import { toast } from "sonner";
 import { Plus, Link2, Unlink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { LoadFailed } from "@/components/ui/load-failed";
-import {
-  TableBody,
-  TableCell,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { ListControlCell, ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch, matchesSearch } from "@/components/list-search";
-import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
+import { ListEmpty, ListLoading } from "@/components/list-states";
+import { SwitchList } from "@/components/switch-list";
 import { api, getUserErrorMessage, type McpServer } from "@/lib/api";
 import { useResource } from "@/hooks/use-resource";
 import { useFormat } from "@/lib/use-format";
@@ -40,7 +32,6 @@ export function McpServersTab({ slug }: Props) {
   const [dialogKey, setDialogKey] = useState(0);
   const [editing, setEditing] = useState<McpServer | null>(null);
   const [deleting, setDeleting] = useState<McpServer | null>(null);
-  const [search, setSearch] = useState("");
   // The server whose shared account is being connected in another tab. The
   // provider redirects there, not here, so the list is read again when this
   // tab regains focus.
@@ -79,8 +70,10 @@ export function McpServersTab({ slug }: Props) {
       });
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("mcp.toggleFailed")));
+      reload();
+      throw err;
     }
-    reload();
+    await reload();
   };
 
   const handleConnectShared = async (server: McpServer) => {
@@ -130,11 +123,6 @@ export function McpServersTab({ slug }: Props) {
   if (loading && data === undefined) return <ListLoading className="" />;
 
   const isShared = (server: McpServer) => server.authMode === "oauth" && server.config.account === "shared";
-  const visible = servers
-    .filter((server) =>
-      matchesSearch(search, server.name, server.slug, server.url, t(`mcp.authMode.${server.authMode}` as const)),
-    )
-    .sort((a, b) => a.name.localeCompare(b.name));
   // Read from the list, so connecting or disconnecting the shared account shows in the open drawer.
   const current = editing ? servers.find((server) => server.slug === editing.slug) ?? editing : null;
 
@@ -152,53 +140,41 @@ export function McpServersTab({ slug }: Props) {
       {servers.length === 0 ? (
         <ListEmpty className="mt-8" title={t("mcp.empty")} />
       ) : (
-        <>
-          <ListSearch value={search} onChange={setSearch} className="relative" />
-          {visible.length === 0 ? (
-            <ListNoResults />
-          ) : (
-            <ListTable className="mt-0">
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <ListHead className="w-[26%]">{t("mcp.col.name")}</ListHead>
-                  <ListHead>{t("mcp.col.url")}</ListHead>
-                  <ListHead className="w-40">{t("mcp.col.auth")}</ListHead>
-                  <ListHead align="end" className="w-28">{t("common.active")}</ListHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {visible.map((server) => (
-                  <ListRow
-                    key={server.id}
-                    onOpen={() => openEdit(server)}
-                    selected={dialogOpen && editing?.slug === server.slug}
-                    muted={!server.enabled}
-                  >
-                    <ListNameCell name={server.name} onOpen={() => openEdit(server)} summary={server.slug} />
-                    <TableCell>
-                      <span className="block truncate text-xs text-muted-foreground" title={server.url}>{server.url}</span>
-                    </TableCell>
-                    <TableCell className="whitespace-normal">
-                      <Badge variant="outline">{t(`mcp.authMode.${server.authMode}` as const)}</Badge>
-                      {isShared(server) && (
-                        <p className="mt-1.5 text-xs text-muted-foreground">
-                          {sharedAccountText(server, connecting === server.slug)}
-                        </p>
-                      )}
-                    </TableCell>
-                    <ListControlCell>
-                      <Switch
-                        checked={server.enabled}
-                        onCheckedChange={(v) => handleToggle(server, v)}
-                        aria-label={t("mcp.enabled", { name: server.name })}
-                      />
-                    </ListControlCell>
-                  </ListRow>
-                ))}
-              </TableBody>
-            </ListTable>
-          )}
-        </>
+        <SwitchList
+          rows={servers}
+          rowKey={(server) => server.id}
+          name={(server) => server.name}
+          nameHeader={t("mcp.col.name")}
+          summary={(server) => server.slug}
+          searchText={(server) => [server.url, t(`mcp.authMode.${server.authMode}` as const)]}
+          columns={[
+            {
+              header: t("mcp.col.url"),
+              cell: (server) => (
+                <span className="block truncate text-xs text-muted-foreground" title={server.url}>{server.url}</span>
+              ),
+            },
+            {
+              header: t("mcp.col.auth"),
+              className: "w-40",
+              cell: (server) => (
+                <>
+                  <Badge variant="secondary">{t(`mcp.authMode.${server.authMode}` as const)}</Badge>
+                  {isShared(server) && (
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      {sharedAccountText(server, connecting === server.slug)}
+                    </p>
+                  )}
+                </>
+              ),
+            },
+          ]}
+          isOn={(server) => server.enabled}
+          onToggle={handleToggle}
+          switchLabel={(server) => t("mcp.enabled", { name: server.name })}
+          onOpen={openEdit}
+          selectedKey={dialogOpen ? editing?.slug : null}
+        />
       )}
 
       <McpServerSheet

@@ -103,7 +103,7 @@ describe("ApiKeysPage", () => {
 
     await user.click(await screen.findByRole("button", { name: "apiKeys.create.button" }));
     await user.type(screen.getByLabelText("apiKeys.create.nameLabel"), "  ci  ");
-    await user.click(screen.getByRole("button", { name: "apiKeys.create.submit" }));
+    await user.click(screen.getByRole("button", { name: "common.add" }));
 
     expect(await screen.findByText(TOKEN)).toBeInTheDocument();
     expect(screen.getByText("apiKeys.created.shownOnce")).toBeInTheDocument();
@@ -127,7 +127,7 @@ describe("ApiKeysPage", () => {
     await user.click(await screen.findByRole("button", { name: "apiKeys.create.button" }));
     await user.type(screen.getByLabelText("apiKeys.create.nameLabel"), "ci");
     await user.type(screen.getByLabelText("apiKeys.create.expiryLabel"), "2099-03-15");
-    await user.click(screen.getByRole("button", { name: "apiKeys.create.submit" }));
+    await user.click(screen.getByRole("button", { name: "common.add" }));
 
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());
     const sent = new Date(mockCreate.mock.calls[0][1].expiresAt);

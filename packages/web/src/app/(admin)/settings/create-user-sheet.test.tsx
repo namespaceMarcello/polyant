@@ -33,7 +33,7 @@ describe("CreateUserSheet", () => {
     const u = userEvent.setup();
     renderDialog();
 
-    const submit = screen.getByRole("button", { name: "Crea utente" });
+    const submit = screen.getByRole("button", { name: "Aggiungi" });
     expect(submit).toBeDisabled();
 
     await u.type(screen.getByLabelText("Email"), "   ");
@@ -50,7 +50,7 @@ describe("CreateUserSheet", () => {
     await u.type(screen.getByLabelText("Nome (opzionale)"), "  Ada Lovelace ");
     await u.click(screen.getByRole("switch", { name: "Platform Admin" }));
     await u.type(screen.getByLabelText("Password (opzionale)"), "   ");
-    await u.click(screen.getByRole("button", { name: "Crea utente" }));
+    await u.click(screen.getByRole("button", { name: "Aggiungi" }));
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
     expect(mockCreate).toHaveBeenCalledWith({
@@ -68,7 +68,7 @@ describe("CreateUserSheet", () => {
     const { onOpenChange } = renderDialog();
 
     await u.type(screen.getByLabelText("Email"), "ada@example.com");
-    await u.click(screen.getByRole("button", { name: "Crea utente" }));
+    await u.click(screen.getByRole("button", { name: "Aggiungi" }));
 
     expect(await screen.findByText("Gen-Pass-42")).toBeInTheDocument();
     expect(onOpenChange).not.toHaveBeenCalled();
@@ -85,7 +85,7 @@ describe("CreateUserSheet", () => {
     const { onOpenChange, onCreated } = renderDialog();
 
     await u.type(screen.getByLabelText("Email"), "ada@example.com");
-    await u.click(screen.getByRole("button", { name: "Crea utente" }));
+    await u.click(screen.getByRole("button", { name: "Aggiungi" }));
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Email already in use"));
     expect(onCreated).not.toHaveBeenCalled();

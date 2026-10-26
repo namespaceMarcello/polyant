@@ -175,6 +175,13 @@ export function McpServerSheet({
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<McpTestResult | null>(null);
 
+  /** What the engine would refuse is not offered: the button waits for a complete form. */
+  const valid =
+    Boolean(form.name && form.url) &&
+    (editing || (Boolean(form.slug) && !takenSlugs.includes(form.slug))) &&
+    !(form.authMode === "static" && !editing && !form.token) &&
+    !(form.authMode === "static" && form.staticAuthType === "header" && !form.headerName);
+
   const handleSave = async () => {
     if (!form.name || !form.url) {
       toast.error(t("mcp.validation.required"));
@@ -245,13 +252,13 @@ export function McpServerSheet({
     <ListDrawer
       open={open}
       onOpenChange={onOpenChange}
-      title={editing ? t("mcp.editTitle") : t("mcp.createTitle")}
-      description={t("mcp.dialogDescription")}
+      title={editing ? editing.name : t("mcp.createTitle")}
+      description={editing ? editing.url : t("mcp.dialogDescription")}
       destructive={editing && onDelete ? <DrawerDeleteButton onClick={() => onDelete(editing)} /> : undefined}
       primary={
-        <Button onClick={handleSave} disabled={saving}>
+        <Button onClick={handleSave} disabled={saving || !valid}>
           {saving && <Loader2 className="mr-1 size-4 animate-spin" />}
-          {saving ? t("common.saving") : t("common.save")}
+          {saving ? t("common.saving") : editing ? t("common.save") : t("common.add")}
         </Button>
       }
     >

@@ -77,7 +77,7 @@ export function CreateUserSheet({ open, onOpenChange, onCreated }: Props) {
       primary={
         generated ? undefined : (
           <Button type="submit" form="create-user-form" disabled={submitting || !email.trim()}>
-            {t("users.create.submit")}
+            {t("common.add")}
           </Button>
         )
       }

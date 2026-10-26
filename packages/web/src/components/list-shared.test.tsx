@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { screen, within } from "@testing-library/react";
 import { renderWithProviders, userEvent } from "@/test-utils";
-import { ListSearch, matchesSearch } from "./list-search";
+import { ListSearch, ListToolbar, matchesSearch } from "./list-search";
 import { ListEmpty, ListNoResults } from "./list-states";
+import { Badge } from "@/components/ui/badge";
 import { ListDrawer } from "./list-drawer";
-import { ListNameCell } from "./list-table";
+import { ListBadgeCell, ListMetaCell, ListNameCell } from "./list-table";
 
 describe("matchesSearch", () => {
   it("finds a row by any word of its visible text, in any order, ignoring case", () => {
@@ -100,5 +101,38 @@ describe("ListNameCell", () => {
       <table><tbody><tr><ListNameCell name="Ada" summary="una descrizione molto lunga" /></tr></tbody></table>,
     );
     expect(screen.getByTitle("una descrizione molto lunga")).toHaveClass("line-clamp-2");
+  });
+});
+
+describe("ListBadgeCell and ListMetaCell", () => {
+  it("draw a status as the default badge and a date as muted text, aligned to the end when asked", () => {
+    renderWithProviders(
+      <table>
+        <tbody>
+          <tr>
+            <ListBadgeCell>ready</ListBadgeCell>
+            <td><Badge variant="secondary">reference</Badge></td>
+            <ListMetaCell align="end">2 hours ago</ListMetaCell>
+          </tr>
+        </tbody>
+      </table>,
+    );
+    const badge = screen.getByText("ready");
+    // The same classes as a bare default Badge: no size override.
+    expect(badge.className).toBe(screen.getByText("reference").className);
+    const meta = screen.getByText("2 hours ago");
+    expect(meta).toHaveClass("text-muted-foreground", "text-right");
+  });
+});
+
+describe("ListToolbar", () => {
+  it("puts the search box first and the filters to its right", () => {
+    renderWithProviders(
+      <ListToolbar value="" onChange={() => {}}>
+        <button type="button">Filter</button>
+      </ListToolbar>,
+    );
+    const items = [screen.getByRole("searchbox"), screen.getByRole("button", { name: "Filter" })];
+    expect(items[0].compareDocumentPosition(items[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

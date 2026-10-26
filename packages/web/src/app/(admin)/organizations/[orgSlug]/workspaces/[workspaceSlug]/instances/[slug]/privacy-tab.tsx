@@ -9,7 +9,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Plus } from "lucide-react";
+import { ListDrawer } from "@/components/list-drawer";
+import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListToolbar } from "@/components/list-search";
+import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
+import { useListView } from "@/components/use-list-view";
 import {
   Select,
   SelectContent,
@@ -17,14 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { TableBody, TableHeader, TableRow } from "@/components/ui/table";
 import { api, getUserErrorMessage, type Instance, type OptoutContact } from "@/lib/api";
 import { useI18n } from "@/lib/i18n/context";
 import { useFormat } from "@/lib/use-format";
@@ -84,6 +82,10 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
   const [newChannelType, setNewChannelType] = useState<string>(OPTOUT_CHANNELS[0]);
   const [newChannelId, setNewChannelId] = useState("");
   const [addingContact, setAddingContact] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [openContact, setOpenContact] = useState<OptoutContact | null>(null);
+  const visibleContacts = useListView(contacts, search, (c) => [c.channelId, c.channelType, c.source], (c) => c.channelId);
 
   const handleSave = async () => {
     setSaving(true);
@@ -111,6 +113,7 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
     try {
       await api.optouts.optIn(instance.slug, contact.channelType, contact.channelId);
       toast.success(t("privacy.reEnableSuccess"));
+      setOpenContact(null);
       refreshContacts();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("privacy.reEnableFailed")));
@@ -127,6 +130,7 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
       toast.success(t("privacy.optOutContactSuccess"));
       setNewChannelType(OPTOUT_CHANNELS[0]);
       setNewChannelId("");
+      setAddOpen(false);
       refreshContacts();
     } catch (err) {
       toast.error(getUserErrorMessage(err, t("privacy.optOutContactFailed")));
@@ -136,15 +140,11 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
   };
 
   return (
-    <div className="max-w-2xl space-y-8">
+    <div className="space-y-8">
       {/* ── GDPR opt-out config ──────────────────────────────────────── */}
-      <section className="space-y-4 rounded-lg border p-4">
-        <div>
-          <Label className="text-base font-medium">{t("privacy.title")}</Label>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("privacy.description")}
-          </p>
-        </div>
+      <section className="max-w-2xl space-y-4 rounded-lg border p-4">
+        {/* The section's own title (the agent page's) already says "GDPR opt-out". */}
+        <p className="text-sm text-muted-foreground">{t("privacy.description")}</p>
 
         {/* Enable toggle */}
         <div className="flex items-center justify-between border-t pt-4">
@@ -220,71 +220,104 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
       </section>
 
       {/* ── Opted-out contacts ───────────────────────────────────────── */}
-      <section className="space-y-4 rounded-lg border p-4">
-        <div>
-          <Label className="text-base font-medium">{t("privacy.contactsTitle")}</Label>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("privacy.contactsDescription")}
-          </p>
+      <section className="space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <Label className="text-base font-medium">{t("privacy.contactsTitle")}</Label>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t("privacy.contactsDescription")}
+            </p>
+          </div>
+          <Button size="sm" onClick={() => setAddOpen(true)}>
+            <Plus className="mr-1 size-4" />
+            {t("privacy.add")}
+          </Button>
         </div>
 
         {contactsError ? (
           <LoadFailed message={t("privacy.loadContactsFailed")} onRetry={refreshContacts} />
         ) : loadingContacts ? (
-          <div className="space-y-2">
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-8 w-full" />
-          </div>
+          <ListLoading className="mt-4" />
         ) : contacts.length === 0 ? (
-          <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-            {t("privacy.contactsEmpty")}
-          </p>
+          <ListEmpty className="mt-4" title={t("privacy.contactsEmpty")} />
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{t("privacy.channel")}</TableHead>
-                <TableHead>{t("privacy.contact")}</TableHead>
-                <TableHead>{t("privacy.date")}</TableHead>
-                <TableHead>{t("privacy.source")}</TableHead>
-                <TableHead className="w-[110px]" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {contacts.map((c) => (
-                <TableRow key={`${c.channelType}:${c.channelId}`}>
-                  <TableCell className="font-medium">{c.channelType}</TableCell>
-                  <TableCell className="font-mono text-xs">{c.channelId}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {c.updatedAt ? fmt.date(c.updatedAt) : "—"}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">{c.source}</TableCell>
-                  <TableCell>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleReEnable(c)}
+          <div>
+            <ListToolbar value={search} onChange={setSearch} />
+            {visibleContacts.length === 0 ? (
+              <ListNoResults />
+            ) : (
+              <ListTable>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <ListHead>{t("privacy.contact")}</ListHead>
+                    <ListHead className="w-32">{t("privacy.channel")}</ListHead>
+                    <ListHead className="w-36">{t("privacy.date")}</ListHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {visibleContacts.map((c) => (
+                    <ListRow
+                      key={`${c.channelType}:${c.channelId}`}
+                      onOpen={() => setOpenContact(c)}
+                      selected={openContact?.channelType === c.channelType && openContact.channelId === c.channelId}
                     >
-                      {t("privacy.reEnable")}
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+                      <ListNameCell name={c.channelId} onOpen={() => setOpenContact(c)} summary={c.source} />
+                      <ListBadgeCell>{c.channelType}</ListBadgeCell>
+                      <ListMetaCell>{c.updatedAt ? fmt.date(c.updatedAt) : "—"}</ListMetaCell>
+                    </ListRow>
+                  ))}
+                </TableBody>
+              </ListTable>
+            )}
+          </div>
         )}
 
-        {/* ── Manual opt-out form ──────────────────────────────────── */}
-        <div className="border-t pt-4">
-          <Label className="text-sm font-medium">{t("privacy.optOutContact")}</Label>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t("privacy.optOutContactHelp")}
-          </p>
-          <div className="mt-3 flex items-end gap-2">
+        {/* A contact's details and the way back in. */}
+        <ListDrawer
+          open={openContact !== null}
+          onOpenChange={(open) => !open && setOpenContact(null)}
+          title={openContact?.channelId ?? ""}
+          description={openContact ? `${openContact.channelType} · ${openContact.source}` : ""}
+          actions={
+            openContact && (
+              <Button onClick={() => handleReEnable(openContact)}>{t("privacy.reEnable")}</Button>
+            )
+          }
+        >
+          {openContact && (
+            <dl className="grid grid-cols-[8rem_1fr] gap-2 text-sm">
+              <dt className="text-muted-foreground">{t("privacy.channel")}</dt>
+              <dd>{openContact.channelType}</dd>
+              <dt className="text-muted-foreground">{t("privacy.contact")}</dt>
+              <dd className="font-mono text-xs">{openContact.channelId}</dd>
+              <dt className="text-muted-foreground">{t("privacy.date")}</dt>
+              <dd>{openContact.updatedAt ? fmt.date(openContact.updatedAt) : "—"}</dd>
+              <dt className="text-muted-foreground">{t("privacy.source")}</dt>
+              <dd>{openContact.source}</dd>
+            </dl>
+          )}
+        </ListDrawer>
+
+        {/* ── Manual opt-out ───────────────────────────────────────── */}
+        <ListDrawer
+          open={addOpen}
+          onOpenChange={setAddOpen}
+          title={t("privacy.optOutContact")}
+          description={t("privacy.optOutContactHelp")}
+          primary={
+            <Button
+              disabled={addingContact || !newChannelType.trim() || !newChannelId.trim()}
+              onClick={handleOptOutContact}
+            >
+              {addingContact ? t("common.saving") : t("common.add")}
+            </Button>
+          }
+        >
+          <div className="space-y-4">
             <div className="space-y-1">
-              <Label className="text-xs">{t("privacy.channel")}</Label>
+              <Label>{t("privacy.channel")}</Label>
               <Select value={newChannelType} onValueChange={setNewChannelType}>
-                <SelectTrigger className="w-32">
+                <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -296,23 +329,17 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex-1 space-y-1">
-              <Label className="text-xs">{t("privacy.contact")}</Label>
+            <div className="space-y-1">
+              <Label htmlFor="optout-contact">{t("privacy.contact")}</Label>
               <Input
+                id="optout-contact"
                 value={newChannelId}
                 onChange={(e) => setNewChannelId(e.target.value)}
                 placeholder={CHANNEL_ID_PLACEHOLDER[newChannelType] ?? ""}
               />
             </div>
-            <Button
-              size="default"
-              disabled={addingContact || !newChannelType.trim() || !newChannelId.trim()}
-              onClick={handleOptOutContact}
-            >
-              {addingContact ? t("common.saving") : t("privacy.optOutContactButton")}
-            </Button>
           </div>
-        </div>
+        </ListDrawer>
       </section>
     </div>
   );
