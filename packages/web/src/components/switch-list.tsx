@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ListControlCell, ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { ListNoResults } from "@/components/list-states";
 import { useListView } from "@/components/use-list-view";
 import { useI18n } from "@/lib/i18n/context";
@@ -16,6 +16,8 @@ export interface SwitchListColumn<T> {
   header: string;
   /** Width class of the column (`w-40`); the name column takes what is left. */
   className?: string;
+  /** A date or time: it never wraps. */
+  nowrap?: boolean;
   cell: (row: T) => ReactNode;
 }
 
@@ -124,11 +126,13 @@ export function SwitchList<T>({
 
   return (
     <TooltipProvider>
-      <ListSearch value={query} onChange={setQuery} label={searchLabel} className="relative mt-0" />
+      {/* Its own element, so a parent's `space-y-*` does not add to the table's gap. */}
+      <div>
+      <ListToolbar value={query} onChange={setQuery} label={searchLabel} className="mt-0" />
       {visible.length === 0 ? (
         <ListNoResults />
       ) : (
-        <ListTable className="mt-4">
+        <ListTable>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <ListHead>{nameHeader}</ListHead>
@@ -157,7 +161,7 @@ export function SwitchList<T>({
                     summary={summary?.(row)}
                   />
                   {columns?.map((column) => (
-                    <TableCell key={column.header} className="whitespace-normal">
+                    <TableCell key={column.header} className={column.nowrap ? "whitespace-nowrap" : "whitespace-normal"}>
                       {column.cell(row)}
                     </TableCell>
                   ))}
@@ -183,6 +187,7 @@ export function SwitchList<T>({
           </TableBody>
         </ListTable>
       )}
+      </div>
     </TooltipProvider>
   );
 }

@@ -128,3 +128,58 @@ describe("SwitchList after a successful write", () => {
     expect(screen.getByRole("switch", { name: "Attivo: Beta" })).not.toBeChecked();
   });
 });
+
+describe("SwitchList layout", () => {
+  it("keeps the search row and the table together in one element, so a parent's spacing cannot widen the gap", () => {
+    const { container } = renderWithProviders(
+      <div className="space-y-6">
+        <SwitchList<Item>
+          rows={ITEMS}
+          rowKey={(i) => i.id}
+          name={(i) => i.title}
+          nameHeader="Nome"
+          isOn={(i) => i.on}
+          onToggle={async () => {}}
+          switchLabel={(i) => i.title}
+        />
+      </div>,
+    );
+    const wrapper = container.querySelector("div.space-y-6")!.firstElementChild!;
+    expect(wrapper.contains(screen.getByRole("searchbox"))).toBe(true);
+    expect(wrapper.contains(screen.getByRole("table"))).toBe(true);
+  });
+
+  it("mutes the row of a switch that is off", () => {
+    renderWithProviders(
+      <SwitchList<Item>
+        rows={ITEMS}
+        rowKey={(i) => i.id}
+        name={(i) => i.title}
+        nameHeader="Nome"
+        isOn={(i) => i.on}
+        onToggle={async () => {}}
+        switchLabel={(i) => i.title}
+      />,
+    );
+    const off = screen.getByText("Beta").closest("tr")!;
+    const on = screen.getByText("alpha").closest("tr")!;
+    expect(off).toHaveClass("opacity-60");
+    expect(on).not.toHaveClass("opacity-60");
+  });
+
+  it("keeps a date column on one line", () => {
+    renderWithProviders(
+      <SwitchList<Item>
+        rows={ITEMS}
+        rowKey={(i) => i.id}
+        name={(i) => i.title}
+        nameHeader="Nome"
+        columns={[{ header: "Quando", nowrap: true, cell: () => "12 ott 2026, 10:00" }]}
+        isOn={(i) => i.on}
+        onToggle={async () => {}}
+        switchLabel={(i) => i.title}
+      />,
+    );
+    expect(screen.getAllByText("12 ott 2026, 10:00")[0].closest("td")).toHaveClass("whitespace-nowrap");
+  });
+});

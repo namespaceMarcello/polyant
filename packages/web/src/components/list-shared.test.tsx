@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { screen, within } from "@testing-library/react";
 import { renderWithProviders, userEvent } from "@/test-utils";
-import { ListSearch, matchesSearch } from "./list-search";
+import { ListSearch, ListToolbar, matchesSearch } from "./list-search";
 import { ListEmpty, ListNoResults } from "./list-states";
 import { Badge } from "@/components/ui/badge";
 import { ListDrawer } from "./list-drawer";
@@ -110,8 +110,8 @@ describe("ListBadgeCell and ListMetaCell", () => {
       <table>
         <tbody>
           <tr>
-            <ListBadgeCell variant="outline">ready</ListBadgeCell>
-            <td><Badge variant="outline">reference</Badge></td>
+            <ListBadgeCell>ready</ListBadgeCell>
+            <td><Badge variant="secondary">reference</Badge></td>
             <ListMetaCell align="end">2 hours ago</ListMetaCell>
           </tr>
         </tbody>
@@ -122,5 +122,17 @@ describe("ListBadgeCell and ListMetaCell", () => {
     expect(badge.className).toBe(screen.getByText("reference").className);
     const meta = screen.getByText("2 hours ago");
     expect(meta).toHaveClass("text-muted-foreground", "text-right");
+  });
+});
+
+describe("ListToolbar", () => {
+  it("puts the search box first and the filters to its right", () => {
+    renderWithProviders(
+      <ListToolbar value="" onChange={() => {}}>
+        <button type="button">Filter</button>
+      </ListToolbar>,
+    );
+    const items = [screen.getByRole("searchbox"), screen.getByRole("button", { name: "Filter" })];
+    expect(items[0].compareDocumentPosition(items[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

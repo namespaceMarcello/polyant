@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
+import { statusVariant, type StatusTone } from "@/components/status-badge";
 import { Table, TableCell, TableHead, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
@@ -161,25 +162,26 @@ export function ListControlCell({ className, children }: { className?: string; c
   );
 }
 
-/** A cell holding one status or category, as the default badge; the same size in every list. */
+/** A cell holding one status (with `tone`) or one neutral label (a category, a type, a channel), as the default-size badge. */
 export function ListBadgeCell({
-  variant = "secondary",
+  tone,
   className,
   children,
 }: {
-  variant?: React.ComponentProps<typeof Badge>["variant"];
+  /** A status value (see `StatusBadge`); without it the cell holds a neutral label, a `secondary` badge. */
+  tone?: StatusTone;
   className?: string;
   children: ReactNode;
 }) {
   return (
     <TableCell className={className}>
-      <Badge variant={variant}>{children}</Badge>
+      <Badge variant={tone ? statusVariant(tone) : "secondary"}>{children}</Badge>
     </TableCell>
   );
 }
 
 /**
- * A cell of secondary information (a date, a count) in muted text. `align="end"`
+ * A cell of secondary information (a date, a count) in muted text that never wraps. `align="end"`
  * for the last column, under a `ListHead align="end"`.
  */
 export function ListMetaCell({
@@ -189,7 +191,15 @@ export function ListMetaCell({
 }: {
   align?: "end";
   className?: string;
-  children: ReactNode;
+  /** Empty (null, undefined or "") reads as the em dash, in every list. */
+  children?: ReactNode;
 }) {
-  return <TableCell className={cn("text-muted-foreground", align === "end" && "text-right", className)}>{children}</TableCell>;
+  return (
+    <TableCell className={cn("whitespace-nowrap text-muted-foreground", align === "end" && "text-right", className)}>
+      {children === null || children === undefined || children === "" ? EMPTY_CELL : children}
+    </TableCell>
+  );
 }
+
+/** What a cell shows when it has no value. */
+export const EMPTY_CELL = "—";
