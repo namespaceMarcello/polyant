@@ -110,6 +110,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A failed database query no longer writes its parameters to the error log;
+  they could carry message bodies and tool output.
 - MCP server secrets of 8 characters or fewer are now fully masked in API
   responses instead of showing their last four characters, as channel secrets
   already were.
