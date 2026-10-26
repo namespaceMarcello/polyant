@@ -83,6 +83,36 @@ describe("BufferedInsertQueue", () => {
     expect(db.written.flat()).toEqual([1]);
   });
 
+  it("drops and reports a lone row the database refuses instead of requeueing it forever", async () => {
+    // A single-row batch never reached the row-by-row fallback, so a refused row
+    // went back to the buffer and was refused again on every flush.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const onRefused = vi.fn();
+    const db = fakeDb();
+    const q = new BufferedInsertQueue<number>({ table: TABLE, label: "rows", batchAt: 100, onRefused });
+    q.initialize(db);
+    q.push(-1);
+    await q.flush();
+    expect(onRefused).toHaveBeenCalledWith([-1], 0);
+    q.push(4);
+    await q.flush();
+    expect(db.written).toEqual([[4]]);
+  });
+
+  it("still requeues a lone row that fails for a reason other than its data", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const state = { reset: true };
+    const db = fakeDb(state);
+    const q = new BufferedInsertQueue<number>({ table: TABLE, label: "rows", batchAt: 100 });
+    q.initialize(db);
+    q.push(-2);
+    await q.flush();
+    expect(db.written).toEqual([]);
+    state.reset = false;
+    await q.flush();
+    expect(db.written).toEqual([[-2]]);
+  });
+
   it("keeps everything while the database is down and writes it once it is back", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const state = { down: true };

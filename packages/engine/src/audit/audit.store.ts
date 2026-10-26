@@ -23,7 +23,7 @@ export interface AuditEntry {
 const ACTION_MAX_LEN = 100;
 
 class AuditStore {
-  // A refused row is dropped only when its neighbours were written (see BufferedInsertQueue).
+  // A row is dropped only when the database refused its data (see BufferedInsertQueue).
   private readonly queue = new BufferedInsertQueue<AuditEntry>({
     table: toolAuditLogs,
     label: "audit entries",
