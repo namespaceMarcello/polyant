@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the permission that guards it elsewhere and left out of the list when the
   caller lacks it.
 - A knowledge document can be switched off. It stays stored and listed, and
-  vector and full-text search skip it until it is switched on again. Each
+  vector and full-text search, and a plugin's knowledge read, skip it until it
+  is switched on again. Each
   document row has a switch, and `PATCH /api/instances/:slug/knowledge/:docId`
   takes `{ "enabled": boolean }`. Export and import carry the flag
   (migration `0096`).
@@ -38,8 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A tool can ask a model through the engine: its context carries
   `ctx.ai.chat({ system, messages, tier })` and `ctx.abortSignal`. The call runs
   through the AI gateway on the agent's provider as a service call of the turn,
-  logged in the AI log and priced like the turn's own calls; the tier picks the
-  model. Both fields are optional in `@polyant-ai/plugin-sdk` 1.11.0, so a
+  logged in the AI log, traced in LangSmith with the turn's settings and priced
+  like the turn's own calls; the tier picks the model. Both fields are optional in `@polyant-ai/plugin-sdk` 1.11.0, so a
   plugin that also supports older engines keeps a fallback, and `ctx.apiKeys`
   is unchanged.
 - A missing-permission 403 carries `code: "missing_permission"` and the
@@ -50,8 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every list page has one shape: title with the primary action top right,
   search above the list, a table sorted by the visible name with the secondary
   line under it, an «Active» switch for on/off state, and a right-hand drawer
-  that holds edit and delete. Badges, empty, loading and no-results states are
-  the same everywhere.
+  that holds the create and edit forms and delete. Badges, empty, loading and
+  no-results states are the same everywhere.
 - The agent's sidebar has six groups (Overview, Configuration, Knowledge,
   Resources, Automations, Governance) with every section on its own row,
   automations included; `?tab=` values are unchanged, so existing links keep
@@ -80,9 +81,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   security-relevant refusals (webhook signature and secret failures, SSRF
   refusals, a channel switched off automatically, dropped audit entries) are
   logged at error level. 401 and 403 responses stay at warn.
-- Dependencies: Next.js 16.4.2, React 19.3.1, AI SDK 7.0.143, NestJS 12.1.3,
-  Express 5.3.0 in the engine, Radix UI 1.8.1, Vitest 5.0.5, and markdown-it
-  15.0.3 and Vite 8.3.5 for their security fixes.
+- Tool input is validated with ajv 8, with the string formats and without
+  strict mode, so plugin schemas compile as they did with ajv 6.
+- Dependencies: Next.js 16.4.2, React 19.3.1, AI SDK 7.0.153, NestJS 12.2.0,
+  Express 5.3.0 in the engine, Radix UI 1.8.1 and Vitest 5.0.5. For their
+  security fixes: body-parser 2.4.0, multer 2.5.0, undici 7.30.1 and 8.12.3,
+  follow-redirects 1.16.2, markdown-it 15.0.3 and Vite 8.3.5.
 
 ### Fixed
 
