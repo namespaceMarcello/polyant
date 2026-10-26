@@ -741,6 +741,36 @@ describe("registry", () => {
       expect(r.ok).toBe(true); // best-effort: no hard break on an uncompilable schema
       warn.mockRestore();
     });
+
+    it("validates the string formats Zod serializes (email, url, datetime, uuid)", () => {
+      const formats = {
+        type: "object",
+        properties: {
+          email: { type: "string", format: "email" },
+          url: { type: "string", format: "uri" },
+          at: { type: "string", format: "date-time" },
+          id: { type: "string", format: "uuid" },
+        },
+        required: ["email", "url", "at", "id"],
+      };
+      const valid = {
+        email: "a@example.com",
+        url: "https://example.com",
+        at: "2026-10-26T09:00:00Z",
+        id: "00000000-0000-4000-8000-000000000000",
+      };
+      expect(fillAndValidate(formats, valid).ok).toBe(true);
+      expect(fillAndValidate(formats, { ...valid, email: "not-an-email" }).ok).toBe(false);
+    });
+
+    it("ignores an unknown keyword instead of disabling validation", () => {
+      const annotated = {
+        type: "object",
+        properties: { count: { type: "number", "x-display": "slider" } },
+        required: ["count"],
+      };
+      expect(fillAndValidate(annotated, { count: "1" }).ok).toBe(false);
+    });
   });
 
   describe("scopeSecrets (least-privilege, enforced)", () => {

@@ -51,6 +51,7 @@
     "@tavily/core": "^0.7.13",
     "ai": "^7.0.150",
     "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "croner": "^10.0.1",
