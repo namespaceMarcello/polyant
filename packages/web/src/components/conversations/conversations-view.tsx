@@ -4,7 +4,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { usePagination } from "@/hooks/use-pagination";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { Database } from "lucide-react";
 import {
@@ -62,7 +62,6 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
   const { t } = useI18n();
   const fmt = useFormat();
   const paths = useTenantPaths();
-  const router = useRouter();
   const workspaceSlug = useWorkspaceSlug();
   const PAGE_SIZE = 20;
   const { page, setPage, search, setSearch, debouncedSearch, totalPages, setTotal, offset } = usePagination({ pageSize: PAGE_SIZE });
@@ -172,21 +171,18 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
               </TableHeader>
               <TableBody>
                 {conversations.map((conv) => {
-                  const open = () =>
-                    router.push(
-                      paths.workspace(
-                        `/conversations/${encodeURIComponent(conv.conversationId)}${
-                          lockedInstanceId
-                            ? `?instanceId=${encodeURIComponent(lockedInstanceId)}&${FROM_AGENT_PARAM}=${FROM_AGENT_VALUE}`
-                            : ""
-                        }`,
-                      ),
-                    );
+                  const href = paths.workspace(
+                    `/conversations/${encodeURIComponent(conv.conversationId)}${
+                      lockedInstanceId
+                        ? `?instanceId=${encodeURIComponent(lockedInstanceId)}&${FROM_AGENT_PARAM}=${FROM_AGENT_VALUE}`
+                        : ""
+                    }`,
+                  );
                   return (
-                    <ListRow key={conv.id} onOpen={open}>
+                    <ListRow key={conv.id} href={href}>
                       <ListNameCell
                         name={conv.title ? conv.title : conv.summary ? truncate(conv.summary, 60) : t("conversations.newChat")}
-                        onOpen={open}
+                        href={href}
                         summary={summaryOf(conv)}
                       />
                       {!lockedInstanceId && (

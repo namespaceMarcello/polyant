@@ -75,11 +75,14 @@ describe("ConversationsView", () => {
     });
   });
 
-  it("goes to the conversation's page when its row is clicked, since a conversation is a destination", async () => {
+  it("links the title to the conversation's page and goes there from the rest of the row", async () => {
     const user = userEvent.setup();
     render(<ConversationsView />);
 
-    await user.click(await screen.findByRole("button", { name: "Refund question" }));
+    const link = await screen.findByRole("link", { name: "Refund question" });
+    expect(link).toHaveAttribute("href", "/organizations/acme/workspaces/sales/conversations/bot%3Aweb%3A1");
+
+    await user.click(screen.getAllByText("ada")[0]);
 
     expect(mockPush).toHaveBeenCalledWith("/organizations/acme/workspaces/sales/conversations/bot%3Aweb%3A1");
   });
@@ -132,6 +135,12 @@ describe("ConversationsView", () => {
     mockList.mockResolvedValue({ conversations: [conv({})], total: 1 });
     await user.click(screen.getByRole("button", { name: "common.retry" }));
     await waitFor(() => expect(screen.getByText("Refund question")).toBeInTheDocument());
+  });
+
+  it("keeps the agent in the link on the agent tab", async () => {
+    render(<ConversationsView lockedInstanceId="bot" />);
+    const link = await screen.findByRole("link", { name: "Refund question" });
+    expect(link.getAttribute("href")).toContain("instanceId=bot");
   });
 
   it("drops the agent column when the agent is fixed", async () => {

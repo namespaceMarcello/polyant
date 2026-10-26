@@ -222,7 +222,7 @@ describe("ConversationsPage", () => {
     expect(screen.getByText("5")).toBeInTheDocument();
   });
 
-  it("opens the conversation's own page from its row, since a conversation is a destination", async () => {
+  it("links the title to the conversation's page and opens it from the rest of the row", async () => {
     const conv = makeConversation({ conversationId: "conv-abc" });
     mockConversationsList.mockResolvedValue({
       conversations: [conv],
@@ -233,7 +233,10 @@ describe("ConversationsPage", () => {
 
     render(<ConversationsPage />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Test Conversation" }));
+    const link = await screen.findByRole("link", { name: "Test Conversation" });
+    expect(link).toHaveAttribute("href", "/organizations/default/workspaces/general/conversations/conv-abc");
+
+    await userEvent.click(screen.getByText("5"));
 
     expect(mockPush).toHaveBeenCalledWith("/organizations/default/workspaces/general/conversations/conv-abc");
   });
