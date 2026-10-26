@@ -3,13 +3,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Pause, Play, Search, X } from "lucide-react";
+import { Pause, Play, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { EmptyState } from "@/components/ui/empty-state";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListSearch } from "@/components/list-search";
+import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { ChipTabs } from "@/components/layout/chip-tabs";
 import { api } from "@/lib/api";
 import { DEFAULT_MONITOR_LEVEL, itemSummary, monitorLevelView, type MonitorLevel } from "@/lib/monitor/extensions";
@@ -37,6 +38,10 @@ const SEARCH_DEBOUNCE_MS = 300;
  * `level` says which view of the stream it is (the workspace's by default). Same chips,
  * same columns, same drawer at every level; what a level reads from, which chips it
  * starts with and whether it offers an agent filter come from `registerMonitorLevel`.
+ *
+ * Records in time order: newest first, as the engine and the live stream give them.
+ * Search and the chip filters are the engine's (they read the whole timeline, not the
+ * rows loaded so far). A row opens its detail drawer.
  */
 export function MonitorView({
   value,
@@ -200,17 +205,7 @@ export function MonitorView({
             ))}
           </SelectContent>
         </Select>
-        <div className="relative flex-1">
-          <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" aria-hidden />
-          <Input
-            type="search"
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-            placeholder={t("monitor.filter.search")}
-            aria-label={t("monitor.filter.search")}
-            className="pl-9"
-          />
-        </div>
+        <ListSearch value={typed} onChange={setTyped} label={t("monitor.filter.search")} className="relative flex-1" />
       </div>
 
       {filters.type && (
@@ -230,59 +225,47 @@ export function MonitorView({
       {feed.error !== undefined ? (
         <LoadFailed onRetry={feed.reload} />
       ) : feed.loading && rows.length === 0 ? (
-        <p className="text-muted-foreground">{t("common.loading")}</p>
+        <ListLoading className="" />
       ) : rows.length === 0 ? (
-        <EmptyState
-          icon={Activity}
-          title={filtered ? t("monitor.empty.filteredTitle") : t("monitor.empty.title")}
-          description={filtered ? t("monitor.empty.filteredDescription") : t("monitor.empty.description")}
-          className="mt-10"
-        />
+        filtered ? (
+          <ListNoResults>{t("monitor.empty.filteredTitle")}</ListNoResults>
+        ) : (
+          <ListEmpty className="mt-10" title={t("monitor.empty.title")} description={t("monitor.empty.description")} />
+        )
       ) : (
         <>
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[170px]">{t("monitor.table.time")}</TableHead>
-                  <TableHead className="hidden md:table-cell">{t("monitor.table.agent")}</TableHead>
-                  <TableHead className="w-[130px]">{t("monitor.table.type")}</TableHead>
-                  <TableHead>{t("monitor.table.summary")}</TableHead>
-                  <TableHead className="w-[130px]">{t("monitor.table.outcome")}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((row) => (
-                  <TableRow
-                    key={itemKey(row) + (isLive(row) ? ":live" : "")}
-                    className="cursor-pointer"
-                    tabIndex={0}
-                    onClick={() => setSelected(row)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        setSelected(row);
-                      }
-                    }}
-                  >
-                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{fmt.dateTime(row.time)}</TableCell>
-                    <TableCell className="hidden md:table-cell">
-                      {row.agent.name || <span className="text-muted-foreground">—</span>}
-                    </TableCell>
-                    <TableCell>
-                      <TypePill type={row.type} />
-                    </TableCell>
-                    <TableCell className="max-w-[420px] truncate" title={itemSummary(row, t, fmt.currency)}>
-                      {itemSummary(row, t, fmt.currency)}
-                    </TableCell>
-                    <TableCell>
-                      <OutcomePill outcome={row.outcome} />
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <ListTable className="mt-0">
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <ListHead>{t("monitor.table.summary")}</ListHead>
+                <ListHead className="hidden md:table-cell w-[16%]">{t("monitor.table.agent")}</ListHead>
+                <ListHead className="w-[130px]">{t("monitor.table.type")}</ListHead>
+                <ListHead className="w-[130px]">{t("monitor.table.outcome")}</ListHead>
+                <ListHead align="end" className="w-[170px]">{t("monitor.table.time")}</ListHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => (
+                <ListRow
+                  key={itemKey(row) + (isLive(row) ? ":live" : "")}
+                  onOpen={() => setSelected(row)}
+                  selected={selected !== null && itemKey(selected) === itemKey(row) && isLive(selected) === isLive(row)}
+                >
+                  <ListNameCell name={itemSummary(row, t, fmt.currency)} onOpen={() => setSelected(row)} />
+                  <TableCell className="hidden md:table-cell">
+                    {row.agent.name || <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell>
+                    <TypePill type={row.type} />
+                  </TableCell>
+                  <TableCell>
+                    <OutcomePill outcome={row.outcome} />
+                  </TableCell>
+                  <TableCell className="text-right text-xs text-muted-foreground">{fmt.dateTime(row.time)}</TableCell>
+                </ListRow>
+              ))}
+            </TableBody>
+          </ListTable>
 
           {feed.nextCursor && (
             <div className="flex justify-center">

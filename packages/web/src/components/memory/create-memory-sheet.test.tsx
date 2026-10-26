@@ -2,7 +2,7 @@
 
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { CreateMemoryDialog } from "./create-memory-dialog";
+import { CreateMemorySheet } from "./create-memory-sheet";
 import type { Instance } from "@/lib/api";
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ const instances: Instance[] = [
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function renderDialog(
-  props: Partial<React.ComponentProps<typeof CreateMemoryDialog>> = {},
+  props: Partial<React.ComponentProps<typeof CreateMemorySheet>> = {},
 ) {
   const defaults = {
     open: true,
@@ -130,17 +130,17 @@ function renderDialog(
     instances,
     onCreated: vi.fn(),
   };
-  return { ...render(<CreateMemoryDialog {...defaults} {...props} />), defaults };
+  return { ...render(<CreateMemorySheet {...defaults} {...props} />), defaults };
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
 
-describe("CreateMemoryDialog", () => {
+describe("CreateMemorySheet", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("renders dialog title and description when open", () => {
+  it("renders drawer title and description when open", () => {
     renderDialog();
 
     expect(screen.getByText("memory.create.title")).toBeInTheDocument();

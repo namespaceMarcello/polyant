@@ -4,13 +4,11 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { usePagination } from "@/hooks/use-pagination";
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { MessageSquare, Search, Database } from "lucide-react";
+import { Database } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -18,14 +16,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListSearch } from "@/components/list-search";
+import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
+import { LoadFailed } from "@/components/ui/load-failed";
+import { Pager } from "@/components/ui/pager";
 import {
   api,
   getUserErrorMessage,
@@ -58,11 +54,17 @@ function isSearchResult(
  * Extracted rather than rewritten: a second list would have to re-earn the search,
  * the pagination, the cached-token pill and the search-snippet rendering, and
  * would drift from this one the first time either changed.
+ *
+ * A conversation is a destination with a page of its own, so a row goes there
+ * instead of opening a drawer. Search is the engine's (it reads the messages, not
+ * the page of rows on screen), so the box is not filtered here; rows are in the
+ * engine's order, most recent activity first.
  */
 export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: string }) {
   const { t } = useI18n();
   const fmt = useFormat();
   const paths = useTenantPaths();
+  const router = useRouter();
   const workspaceSlug = useWorkspaceSlug();
   const PAGE_SIZE = 20;
   const { page, setPage, search, setSearch, debouncedSearch, totalPages, setTotal, offset } = usePagination({ pageSize: PAGE_SIZE });
@@ -71,6 +73,7 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
   );
   const [instances, setInstances] = useState<Instance[]>([]);
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
   const [instanceFilter, setInstanceFilter] = useState(lockedInstanceId ?? "");
   // A direct link may narrow to one contact (`?contact=`); there is no field for it,
   // because the search box already matches the contact.
@@ -91,6 +94,7 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
   // Fetch conversations
   const fetchConversations = useCallback(async () => {
     setLoading(true);
+    setFailed(false);
     try {
       const result = await api.conversations.list({
         instanceId: instanceFilter || undefined,
@@ -102,6 +106,7 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
       setConversations(result.conversations);
       setTotal(result.total);
     } catch (err) {
+      setFailed(true);
       toast.error(getUserErrorMessage(err, t("common.loadFailed")));
     } finally {
       setLoading(false);
@@ -136,205 +141,147 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
           </SelectContent>
         </Select>
         )}
-        <div className="relative flex-1">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            type="search"
-            placeholder={t("conversations.searchPlaceholder")}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-          />
-        </div>
+        <ListSearch value={search} onChange={setSearch} label={t("conversations.searchPlaceholder")} className="relative flex-1" />
       </div>
 
       <div className="mt-6">
-        {loading ? (
-          <div>
-            <p className="text-muted-foreground">{t("common.loading")}</p>
-          </div>
+        {failed ? (
+          <LoadFailed onRetry={fetchConversations} />
+        ) : loading ? (
+          <ListLoading className="" />
         ) : conversations.length === 0 ? (
-          <div className="mt-16 flex flex-col items-center text-center">
-            <div className="rounded-full bg-muted p-4">
-              <MessageSquare className="h-8 w-8 text-muted-foreground" />
-            </div>
-            <h3 className="mt-4 text-lg font-medium">
-              {debouncedSearch || contact
-                ? t("conversations.empty.searchTitle")
-                : t("conversations.empty.title")}
-            </h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {debouncedSearch || contact
-                ? t("conversations.empty.searchDescription")
-                : t("conversations.empty.description")}
-            </p>
-          </div>
+          debouncedSearch || contact ? (
+            <ListNoResults>{t("conversations.empty.searchTitle")}</ListNoResults>
+          ) : (
+            <ListEmpty title={t("conversations.empty.title")} description={t("conversations.empty.description")} />
+          )
         ) : (
           <>
-            <Table className="table-fixed">
+            <ListTable className="mt-0">
               <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[27%]">{t("conversations.table.conversation")}</TableHead>
+                <TableRow className="hover:bg-transparent">
+                  <ListHead className="w-[27%]">{t("conversations.table.conversation")}</ListHead>
                   {!lockedInstanceId && (
-                    <TableHead className="hidden md:table-cell w-[13%]">
-                      {t("conversations.table.instance")}
-                    </TableHead>
+                    <ListHead className="hidden md:table-cell w-[13%]">{t("conversations.table.instance")}</ListHead>
                   )}
-                  <TableHead className="hidden md:table-cell w-[14%]">
-                    {t("conversations.column.userIdentifier")}
-                  </TableHead>
-                  <TableHead className="w-[6%] text-center">
-                    {t("conversations.table.channel")}
-                  </TableHead>
-                  <TableHead className="hidden md:table-cell w-[7%]">
-                    {t("conversations.table.messages")}
-                  </TableHead>
-                  <TableHead className="hidden md:table-cell w-[12%]">
-                    {t("conversations.table.tokens")}
-                  </TableHead>
-                  <TableHead className="hidden md:table-cell w-[11%]">
-                    {t("conversations.table.cost")}
-                  </TableHead>
-                  <TableHead className="text-right w-[11%]">
-                    {t("conversations.table.lastActivity")}
-                  </TableHead>
+                  <ListHead className="hidden md:table-cell w-[14%]">{t("conversations.column.userIdentifier")}</ListHead>
+                  <ListHead className="w-[6%] text-center">{t("conversations.table.channel")}</ListHead>
+                  <ListHead className="hidden md:table-cell w-[7%]">{t("conversations.table.messages")}</ListHead>
+                  <ListHead className="hidden md:table-cell w-[12%]">{t("conversations.table.tokens")}</ListHead>
+                  <ListHead className="hidden md:table-cell w-[11%]">{t("conversations.table.cost")}</ListHead>
+                  <ListHead align="end" className="w-[11%]">{t("conversations.table.lastActivity")}</ListHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {conversations.map((conv) => (
-                  <TableRow key={conv.id} className="cursor-pointer">
-                    <TableCell className="font-medium max-w-0 truncate">
-                      <Link
-                        href={paths.workspace(
-                          `/conversations/${encodeURIComponent(conv.conversationId)}${
-                            lockedInstanceId
-                              ? `?instanceId=${encodeURIComponent(lockedInstanceId)}&${FROM_AGENT_PARAM}=${FROM_AGENT_VALUE}`
-                              : ""
-                          }`,
-                        )}
-                        className="hover:underline"
-                      >
-                        {conv.title
-                          ? conv.title
-                          : conv.summary
-                            ? truncate(conv.summary, 60)
-                            : t("conversations.newChat")}
-                      </Link>
-                      {isSearchResult(conv) && (
-                        <p className="mt-0.5 text-xs font-normal text-muted-foreground line-clamp-1">
-                          {conv.bestSnippet ? (
-                            <>
-                              {conv.bestSnippet}
-                              <span className="ml-2">
-                                {conv.matchCount === 1
-                                  ? t("conversations.match", { count: conv.matchCount })
-                                  : t("conversations.matches", { count: conv.matchCount })}
-                              </span>
-                            </>
+                {conversations.map((conv) => {
+                  const open = () =>
+                    router.push(
+                      paths.workspace(
+                        `/conversations/${encodeURIComponent(conv.conversationId)}${
+                          lockedInstanceId
+                            ? `?instanceId=${encodeURIComponent(lockedInstanceId)}&${FROM_AGENT_PARAM}=${FROM_AGENT_VALUE}`
+                            : ""
+                        }`,
+                      ),
+                    );
+                  return (
+                    <ListRow key={conv.id} onOpen={open}>
+                      <ListNameCell
+                        name={conv.title ? conv.title : conv.summary ? truncate(conv.summary, 60) : t("conversations.newChat")}
+                        onOpen={open}
+                        summary={summaryOf(conv)}
+                      />
+                      {!lockedInstanceId && (
+                        <TableCell className="hidden md:table-cell">
+                          {conv.instanceName ? (
+                            <Badge variant="secondary">{conv.instanceName}</Badge>
                           ) : (
-                            conv.conversationId
+                            <span className="text-muted-foreground">&mdash;</span>
                           )}
-                        </p>
+                        </TableCell>
                       )}
-                      {!isSearchResult(conv) && conv.title && conv.summary && (
-                        <p className="mt-0.5 text-xs font-normal text-muted-foreground line-clamp-1">
-                          {truncate(conv.summary, 100)}
-                        </p>
-                      )}
-                    </TableCell>
-                    {!lockedInstanceId && (
-                      <TableCell className="hidden md:table-cell">
-                        {conv.instanceName ? (
-                          <Badge variant="secondary">{conv.instanceName}</Badge>
+                      <TableCell className="hidden md:table-cell max-w-0">
+                        {conv.userIdentifier ? (
+                          <span className="block truncate" title={conv.userIdentifier}>
+                            {conv.userIdentifier}
+                          </span>
                         ) : (
                           <span className="text-muted-foreground">&mdash;</span>
                         )}
                       </TableCell>
-                    )}
-                    <TableCell className="hidden md:table-cell max-w-0">
-                      {conv.userIdentifier ? (
-                        <span className="block truncate" title={conv.userIdentifier}>
-                          {conv.userIdentifier}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">&mdash;</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {conv.channel ? (
-                        <span
-                          title={conv.channel}
-                          aria-label={conv.channel}
-                          className="inline-flex text-muted-foreground"
-                        >
-                          <ChannelIcon channel={conv.channel} />
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">&mdash;</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="hidden md:table-cell text-muted-foreground">
-                      {conv.messageCount}
-                    </TableCell>
-                    <TableCell className="hidden md:table-cell text-muted-foreground">
-                      {fmt.number(conv.conversationTokens)}
-                      {conv.serviceTokens > 0 && (
-                        <span className="text-xs text-muted-foreground/60 ml-1">
-                          (+{fmt.number(conv.serviceTokens)})
-                        </span>
-                      )}
-                      {conv.cachedInputTokens + conv.cacheCreationInputTokens > 0 && (
-                        <span
-                          className="inline-flex items-center gap-0.5 text-xs text-muted-foreground/60 ml-1 tabular-nums"
-                          title={`${t("conversations.list.cachedTokens")} — ${t("conversations.detail.pills.cacheRead")}: ${fmt.number(conv.cachedInputTokens)}, ${t("conversations.detail.pills.cacheWrite")}: ${fmt.number(conv.cacheCreationInputTokens)}`}
-                        >
-                          <Database className="h-3 w-3" />
-                          {fmt.number(conv.cachedInputTokens + conv.cacheCreationInputTokens)}
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="hidden md:table-cell text-muted-foreground">
-                      {fmt.currency(conv.conversationCost)}
-                      {conv.serviceCost > 0 && (
-                        <span className="text-xs text-muted-foreground/60 ml-1">
-                          (+{fmt.currency(conv.serviceCost)})
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right text-muted-foreground">
-                      {fmt.relative(conv.updatedAt)}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                      <TableCell className="text-center">
+                        {conv.channel ? (
+                          <span
+                            title={conv.channel}
+                            aria-label={conv.channel}
+                            className="inline-flex text-muted-foreground"
+                          >
+                            <ChannelIcon channel={conv.channel} />
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">&mdash;</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="hidden md:table-cell text-muted-foreground">
+                        {conv.messageCount}
+                      </TableCell>
+                      <TableCell className="hidden md:table-cell text-muted-foreground">
+                        {fmt.number(conv.conversationTokens)}
+                        {conv.serviceTokens > 0 && (
+                          <span className="text-xs text-muted-foreground/60 ml-1">
+                            (+{fmt.number(conv.serviceTokens)})
+                          </span>
+                        )}
+                        {conv.cachedInputTokens + conv.cacheCreationInputTokens > 0 && (
+                          <span
+                            className="inline-flex items-center gap-0.5 text-xs text-muted-foreground/60 ml-1 tabular-nums"
+                            title={`${t("conversations.list.cachedTokens")} — ${t("conversations.detail.pills.cacheRead")}: ${fmt.number(conv.cachedInputTokens)}, ${t("conversations.detail.pills.cacheWrite")}: ${fmt.number(conv.cacheCreationInputTokens)}`}
+                          >
+                            <Database className="h-3 w-3" />
+                            {fmt.number(conv.cachedInputTokens + conv.cacheCreationInputTokens)}
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="hidden md:table-cell text-muted-foreground">
+                        {fmt.currency(conv.conversationCost)}
+                        {conv.serviceCost > 0 && (
+                          <span className="text-xs text-muted-foreground/60 ml-1">
+                            (+{fmt.currency(conv.serviceCost)})
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        {fmt.relative(conv.updatedAt)}
+                      </TableCell>
+                    </ListRow>
+                  );
+                })}
               </TableBody>
-            </Table>
+            </ListTable>
 
-            {totalPages > 1 && (
-              <div className="mt-4 flex items-center justify-center gap-4">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page <= 1}
-                  onClick={() => setPage((p) => p - 1)}
-                >
-                  {t("conversations.previous")}
-                </Button>
-                <span className="text-sm text-muted-foreground">
-                  {page} / {totalPages}
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page >= totalPages}
-                  onClick={() => setPage((p) => p + 1)}
-                >
-                  {t("conversations.next")}
-                </Button>
-              </div>
-            )}
+            <Pager page={page} totalPages={totalPages} onPage={setPage} />
           </>
         )}
       </div>
     </div>
   );
+
+  /** The line under the title: the matching snippet of a search hit, else the summary. */
+  function summaryOf(conv: ConversationListItem) {
+    if (isSearchResult(conv)) {
+      return conv.bestSnippet ? (
+        <>
+          {conv.bestSnippet}
+          <span className="ml-2">
+            {conv.matchCount === 1
+              ? t("conversations.match", { count: conv.matchCount })
+              : t("conversations.matches", { count: conv.matchCount })}
+          </span>
+        </>
+      ) : (
+        conv.conversationId
+      );
+    }
+    return conv.title && conv.summary ? truncate(conv.summary, 100) : undefined;
+  }
 }
