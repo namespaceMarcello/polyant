@@ -16,7 +16,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch, matchesSearch } from "@/components/list-search";
+import { ListSearch } from "@/components/list-search";
+import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { PageHeader } from "@/components/layout/page-header";
@@ -145,10 +146,12 @@ export default function InstancesPage() {
 
   // The active/all toggle and the search are purely client-side: the API
   // returns every agent regardless of status.
-  const visibleInstances = instances
-    .filter((i) => showInactive || i.status === "active")
-    .filter((i) => matchesSearch(search, i.name, i.slug, i.description, instanceStatusLabel(i.status, t)))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const visibleInstances = useListView(
+    instances.filter((i) => showInactive || i.status === "active"),
+    search,
+    (i) => [i.name, i.slug, i.description, instanceStatusLabel(i.status, t)],
+    (i) => i.name,
+  );
   const hiddenCount = instances.filter((i) => i.status !== "active").length;
 
   return (
