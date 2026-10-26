@@ -7,8 +7,6 @@ import { usePagination } from "@/hooks/use-pagination";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { Database } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -17,7 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
-import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
 import { ListSearch } from "@/components/list-search";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { LoadFailed } from "@/components/ui/load-failed";
@@ -192,13 +190,11 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
                         summary={summaryOf(conv)}
                       />
                       {!lockedInstanceId && (
-                        <TableCell className="hidden md:table-cell">
-                          {conv.instanceName ? (
-                            <Badge variant="secondary">{conv.instanceName}</Badge>
-                          ) : (
-                            <span className="text-muted-foreground">&mdash;</span>
-                          )}
-                        </TableCell>
+                        conv.instanceName ? (
+                          <ListBadgeCell className="hidden md:table-cell">{conv.instanceName}</ListBadgeCell>
+                        ) : (
+                          <ListMetaCell className="hidden md:table-cell">&mdash;</ListMetaCell>
+                        )
                       )}
                       <TableCell className="hidden md:table-cell max-w-0">
                         {conv.userIdentifier ? (
@@ -250,9 +246,7 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
                           </span>
                         )}
                       </TableCell>
-                      <TableCell className="text-right text-muted-foreground">
-                        {fmt.relative(conv.updatedAt)}
-                      </TableCell>
+                      <ListMetaCell align="end">{fmt.relative(conv.updatedAt)}</ListMetaCell>
                     </ListRow>
                   );
                 })}

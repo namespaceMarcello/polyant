@@ -8,14 +8,13 @@ import Image from "next/image";
 import { toast } from "sonner";
 import { Plus, Bot, Upload, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   TableBody,
   TableCell,
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
 import { ListSearch } from "@/components/list-search";
 import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
@@ -90,12 +89,10 @@ function InstanceList({ instances, t, paths }: {
               <TableCell>
                 <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{inst.slug}</code>
               </TableCell>
-              <TableCell>
-                <Badge variant={inst.status === "active" ? "default" : "secondary"}>
-                  {instanceStatusLabel(inst.status, t)}
-                </Badge>
-              </TableCell>
-              <TableCell className="text-right text-muted-foreground">{fmt.relative(inst.updatedAt)}</TableCell>
+              <ListBadgeCell variant={inst.status === "active" ? "default" : "secondary"}>
+                {instanceStatusLabel(inst.status, t)}
+              </ListBadgeCell>
+              <ListMetaCell align="end">{fmt.relative(inst.updatedAt)}</ListMetaCell>
             </ListRow>
           );
         })}

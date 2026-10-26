@@ -4,8 +4,8 @@
 
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
-import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { TableBody, TableHeader, TableRow } from "@/components/ui/table";
+import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
 import { ListSearch } from "@/components/list-search";
 import { ListEmpty, ListNoResults } from "@/components/list-states";
 import { ListDrawer } from "@/components/list-drawer";
@@ -81,10 +81,8 @@ export function ActivityLogSection({ activity }: Props) {
                   return (
                     <ListRow key={log.id} onOpen={() => setOpenId(log.id)} selected={openId === log.id}>
                       <ListNameCell name={label} onOpen={() => setOpenId(log.id)} />
-                      <TableCell>
-                        <Badge variant="outline">{log.logType}</Badge>
-                      </TableCell>
-                      <TableCell>{log.eventCount}</TableCell>
+                      <ListBadgeCell variant="outline">{log.logType}</ListBadgeCell>
+                      <ListMetaCell>{log.eventCount}</ListMetaCell>
                     </ListRow>
                   );
                 })}

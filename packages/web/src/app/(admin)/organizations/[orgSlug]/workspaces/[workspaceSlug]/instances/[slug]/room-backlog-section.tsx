@@ -5,8 +5,8 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
-import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { TableBody, TableHeader, TableRow } from "@/components/ui/table";
+import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
 import { ListSearch } from "@/components/list-search";
 import { ListEmpty, ListNoResults } from "@/components/list-states";
 import { ListDrawer } from "@/components/list-drawer";
@@ -91,10 +91,8 @@ export function BacklogSection({ backlog, status, onStatusChange }: Props) {
                       onOpen={() => setOpenId(event.id)}
                       summary={event.reactNotes || undefined}
                     />
-                    <TableCell>
-                      <Badge variant="secondary">{event.status}</Badge>
-                    </TableCell>
-                    <TableCell>{fmt.dateTime(event.createdAt)}</TableCell>
+                    <ListBadgeCell>{event.status}</ListBadgeCell>
+                    <ListMetaCell>{fmt.dateTime(event.createdAt)}</ListMetaCell>
                   </ListRow>
                 ))}
               </TableBody>

@@ -9,10 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { Plus } from "lucide-react";
 import { ListDrawer } from "@/components/list-drawer";
-import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
 import { ListSearch } from "@/components/list-search";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { useListView } from "@/components/use-list-view";
@@ -23,7 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { TableBody, TableHeader, TableRow } from "@/components/ui/table";
 import { api, getUserErrorMessage, type Instance, type OptoutContact } from "@/lib/api";
 import { useI18n } from "@/lib/i18n/context";
 import { useFormat } from "@/lib/use-format";
@@ -267,10 +266,8 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
                       selected={openContact?.channelType === c.channelType && openContact.channelId === c.channelId}
                     >
                       <ListNameCell name={c.channelId} onOpen={() => setOpenContact(c)} summary={c.source} />
-                      <TableCell>
-                        <Badge variant="secondary">{c.channelType}</Badge>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">{c.updatedAt ? fmt.date(c.updatedAt) : "—"}</TableCell>
+                      <ListBadgeCell>{c.channelType}</ListBadgeCell>
+                      <ListMetaCell>{c.updatedAt ? fmt.date(c.updatedAt) : "—"}</ListMetaCell>
                     </ListRow>
                   ))}
                 </TableBody>

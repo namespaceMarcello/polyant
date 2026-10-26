@@ -3,6 +3,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Table, TableCell, TableHead, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
@@ -115,4 +116,37 @@ export function ListControlCell({ className, children }: { className?: string; c
       {children}
     </TableCell>
   );
+}
+
+/** A cell holding one status or category, as the default badge; the same size in every list. */
+export function ListBadgeCell({
+  variant = "secondary",
+  className,
+  children,
+}: {
+  variant?: React.ComponentProps<typeof Badge>["variant"];
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <TableCell className={className}>
+      <Badge variant={variant}>{children}</Badge>
+    </TableCell>
+  );
+}
+
+/**
+ * A cell of secondary information (a date, a count) in muted text. `align="end"`
+ * for the last column, under a `ListHead align="end"`.
+ */
+export function ListMetaCell({
+  align,
+  className,
+  children,
+}: {
+  align?: "end";
+  className?: string;
+  children: ReactNode;
+}) {
+  return <TableCell className={cn("text-muted-foreground", align === "end" && "text-right", className)}>{children}</TableCell>;
 }

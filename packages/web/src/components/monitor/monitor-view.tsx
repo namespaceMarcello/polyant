@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
-import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
 import { ListSearch } from "@/components/list-search";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { ChipTabs } from "@/components/layout/chip-tabs";
@@ -261,7 +261,7 @@ export function MonitorView({
                   <TableCell>
                     <OutcomePill outcome={row.outcome} />
                   </TableCell>
-                  <TableCell className="text-right text-xs text-muted-foreground">{fmt.dateTime(row.time)}</TableCell>
+                  <ListMetaCell align="end">{fmt.dateTime(row.time)}</ListMetaCell>
                 </ListRow>
               ))}
             </TableBody>

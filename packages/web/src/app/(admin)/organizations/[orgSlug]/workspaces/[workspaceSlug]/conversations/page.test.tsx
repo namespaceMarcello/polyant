@@ -61,9 +61,10 @@ vi.mock("@/hooks/use-pagination", () => ({
 }));
 
 const mockSearchParams = vi.hoisted(() => ({ value: "" }));
+const mockPush = vi.hoisted(() => vi.fn());
 
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => ({ push: mockPush, replace: vi.fn(), refresh: vi.fn() }),
   useParams: () => ({ orgSlug: "default", workspaceSlug: "general" }),
   useSearchParams: () => new URLSearchParams(mockSearchParams.value),
   usePathname: () => "/organizations/default/workspaces/general/conversations",
@@ -187,7 +188,7 @@ describe("ConversationsPage", () => {
     mockConversationsList.mockReturnValue(new Promise(() => {}));
     render(<ConversationsPage />);
 
-    expect(screen.getByText("common.loading")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "common.loading" })).toBeInTheDocument();
   });
 
   it("shows empty state when no conversations are returned", async () => {
@@ -221,7 +222,7 @@ describe("ConversationsPage", () => {
     expect(screen.getByText("5")).toBeInTheDocument();
   });
 
-  it("links each conversation to its detail page", async () => {
+  it("opens the conversation's own page from its row, since a conversation is a destination", async () => {
     const conv = makeConversation({ conversationId: "conv-abc" });
     mockConversationsList.mockResolvedValue({
       conversations: [conv],
@@ -232,15 +233,9 @@ describe("ConversationsPage", () => {
 
     render(<ConversationsPage />);
 
-    await waitFor(() => {
-      expect(screen.getByText("Test Conversation")).toBeInTheDocument();
-    });
+    await userEvent.click(await screen.findByRole("button", { name: "Test Conversation" }));
 
-    const link = screen.getByText("Test Conversation").closest("a");
-    expect(link).toHaveAttribute(
-      "href",
-      "/organizations/default/workspaces/general/conversations/conv-abc",
-    );
+    expect(mockPush).toHaveBeenCalledWith("/organizations/default/workspaces/general/conversations/conv-abc");
   });
 
   it("fetches instances for the filter dropdown", async () => {

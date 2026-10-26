@@ -9,11 +9,10 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import {
   TableBody,
-  TableCell,
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
 import { ListSearch } from "@/components/list-search";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { DrawerDeleteButton, ListDrawer } from "@/components/list-drawer";
@@ -194,17 +193,9 @@ export function MemoryView({
                 {memories.map((mem) => (
                   <ListRow key={mem.id} onOpen={() => setOpenId(mem.id)} selected={openId === mem.id}>
                     <ListNameCell name={truncate(mem.content, 120)} onOpen={() => setOpenId(mem.id)} />
-                    <TableCell>
-                      <Badge variant="outline">{mem.category}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={importanceBadgeVariant(mem.importance)}>
-                        {mem.importance}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right text-muted-foreground">
-                      {fmt.relative(mem.updatedAt)}
-                    </TableCell>
+                    <ListBadgeCell variant="outline">{mem.category}</ListBadgeCell>
+                    <ListBadgeCell variant={importanceBadgeVariant(mem.importance)}>{mem.importance}</ListBadgeCell>
+                    <ListMetaCell align="end">{fmt.relative(mem.updatedAt)}</ListMetaCell>
                   </ListRow>
                 ))}
               </TableBody>
