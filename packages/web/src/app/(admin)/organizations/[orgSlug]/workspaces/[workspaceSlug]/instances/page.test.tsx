@@ -68,13 +68,17 @@ describe("InstancesPage", () => {
     mockList.mockResolvedValue({ instances: AGENTS });
     render(<InstancesPage />);
 
-    await user.click(await screen.findByRole("button", { name: /Support Bot/ }));
+    // The name is a real link, so open-in-new-tab and the address on hover work.
+    const link = await screen.findByRole("link", { name: /Support Bot/ });
+    expect(link).toHaveAttribute("href", "/organizations/acme/workspaces/sales/instances/support-bot");
+    // A click elsewhere on the row goes to the same address.
+    await user.click(screen.getByText("support-bot"));
     expect(mockPush).toHaveBeenCalledWith("/organizations/acme/workspaces/sales/instances/support-bot");
     expect(screen.queryByText("Old Bot")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /instances\.filter\.all/ }));
+    await user.click(screen.getByRole("button", { name: /instances.filter.all/ }));
 
-    expect(screen.getByRole("button", { name: /Old Bot/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Old Bot/ })).toBeInTheDocument();
   });
 
   it("filters the rows by what is typed, on the name and the slug", async () => {
@@ -83,12 +87,12 @@ describe("InstancesPage", () => {
       instances: [...AGENTS, agent({ id: "3", slug: "billing", name: "Invoices", description: "Chases payments" })],
     });
     render(<InstancesPage />);
-    await screen.findByRole("button", { name: /Support Bot/ });
+    await screen.findByRole("link", { name: /Support Bot/ });
 
     await user.type(screen.getByRole("searchbox"), "billing");
 
-    expect(screen.getByRole("button", { name: /Invoices/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Support Bot/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Invoices/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Support Bot/ })).not.toBeInTheDocument();
 
     await user.clear(screen.getByRole("searchbox"));
     await user.type(screen.getByRole("searchbox"), "zzz");
@@ -104,9 +108,9 @@ describe("InstancesPage", () => {
       ],
     });
     render(<InstancesPage />);
-    await screen.findByRole("button", { name: /Zeta/ });
+    await screen.findByRole("link", { name: /Zeta/ });
 
-    const names = screen.getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("button")[0].textContent);
+    const names = screen.getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("link")[0].textContent);
     expect(names).toEqual(["alpha", "Beta", "Zeta"]);
   });
 
@@ -115,6 +119,28 @@ describe("InstancesPage", () => {
     render(<InstancesPage />);
 
     expect(await screen.findByText("Answers tickets")).toBeInTheDocument();
+  });
+
+  it("switches to cards that show the same agents, search and filter, each a real link, and remembers the choice", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({ instances: AGENTS });
+    const { unmount } = render(<InstancesPage />);
+    await screen.findByRole("link", { name: /Support Bot/ });
+
+    await user.click(screen.getByRole("button", { name: "instances.viewGrid" }));
+
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    const card = screen.getByRole("link", { name: /Support Bot/ });
+    expect(card).toHaveAttribute("href", "/organizations/acme/workspaces/sales/instances/support-bot");
+    expect(screen.queryByText("Old Bot")).not.toBeInTheDocument();
+
+    await user.type(screen.getByRole("searchbox"), "zzz");
+    expect(screen.getByText("common.noResults")).toBeInTheDocument();
+
+    unmount();
+    render(<InstancesPage />);
+    await screen.findByRole("searchbox");
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
   it("shows the empty state when the workspace has no agents", async () => {
@@ -142,7 +168,7 @@ describe("InstancesPage", () => {
       warnings: [{ type: "secret", message: "Secret OPENAI_KEY was not exported" }],
     });
     const { container } = render(<InstancesPage />);
-    await screen.findByRole("button", { name: /Support Bot/ });
+    await screen.findByRole("link", { name: /Support Bot/ });
 
     const bundle = { version: 1, instance: { slug: "imported-bot" } };
     const file = new File([JSON.stringify(bundle)], "bundle.json", { type: "application/json" });
@@ -162,7 +188,7 @@ describe("InstancesPage", () => {
     const user = userEvent.setup();
     mockList.mockResolvedValue({ instances: AGENTS });
     const { container } = render(<InstancesPage />);
-    await screen.findByRole("button", { name: /Support Bot/ });
+    await screen.findByRole("link", { name: /Support Bot/ });
 
     const file = new File(["not json"], "bundle.json", { type: "application/json" });
     await user.upload(container.querySelector('input[type="file"]') as HTMLInputElement, file);

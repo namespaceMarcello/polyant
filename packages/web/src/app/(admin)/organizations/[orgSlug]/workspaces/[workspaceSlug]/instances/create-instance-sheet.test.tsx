@@ -115,23 +115,33 @@ describe("CreateInstanceSheet", () => {
     expect(slugInput.value).toBe("hello-world-test");
   });
 
-  it("disables the create button until the name and slug are filled", async () => {
+  it("disables the next button until the name and slug are filled", async () => {
     const user = userEvent.setup();
     renderSheet();
 
-    const create = screen.getByRole("button", { name: "instances.create.button" });
-    expect(create).toBeDisabled();
+    const next = screen.getByRole("button", { name: "instances.create.next" });
+    expect(next).toBeDisabled();
 
     await user.type(screen.getByLabelText("instances.table.name"), "My Bot");
 
-    expect(create).toBeEnabled();
+    expect(next).toBeEnabled();
   });
 
-  it("creates in one step, without a review page in between", async () => {
+  it("goes form, then review with what was typed, then back to the form without losing it", async () => {
+    const user = userEvent.setup();
     renderSheet();
 
-    expect(screen.queryByRole("button", { name: "common.continue" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "common.cancel" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("instances.table.name"), "My Bot");
+    await user.click(screen.getByRole("button", { name: "instances.create.next" }));
+
+    expect(screen.getByText("instances.create.reviewTitle")).toBeInTheDocument();
+    expect(screen.getByText("My Bot")).toBeInTheDocument();
+    expect(screen.getByText("my-bot")).toBeInTheDocument();
+    expect(createMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "common.back" }));
+
+    expect(screen.getByLabelText("instances.table.name")).toHaveValue("My Bot");
   });
 
   it("calls api.instances.create on submit and navigates to instance page", async () => {
@@ -143,6 +153,7 @@ describe("CreateInstanceSheet", () => {
 
     await user.type(screen.getByLabelText("instances.table.name"), "My Bot");
     await user.type(screen.getByLabelText("instances.table.description"), "A description");
+    await user.click(screen.getByRole("button", { name: "instances.create.next" }));
     await user.click(screen.getByRole("button", { name: "instances.create.button" }));
 
     await waitFor(() => {
@@ -168,6 +179,7 @@ describe("CreateInstanceSheet", () => {
     renderSheet();
 
     await user.type(screen.getByLabelText("instances.table.name"), "Bot");
+    await user.click(screen.getByRole("button", { name: "instances.create.next" }));
     await user.click(screen.getByRole("button", { name: "instances.create.button" }));
 
     await waitFor(() => {
@@ -187,6 +199,7 @@ describe("CreateInstanceSheet", () => {
     renderSheet();
 
     await user.type(screen.getByLabelText("instances.table.name"), "Bot");
+    await user.click(screen.getByRole("button", { name: "instances.create.next" }));
     await user.click(screen.getByRole("button", { name: "instances.create.button" }));
 
     await waitFor(() => {

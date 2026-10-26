@@ -4,10 +4,12 @@
 
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import Image from "next/image";
 import { toast } from "sonner";
-import { Plus, Bot, Upload, AlertTriangle } from "lucide-react";
+import { Plus, Bot, List, LayoutGrid, Upload, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   TableBody,
   TableCell,
@@ -37,9 +39,43 @@ import { instanceStatusLabel } from "@/lib/instance-status";
 import type { TranslationKey } from "@/lib/i18n/types";
 import { useTenantPaths, type TenantPaths } from "@/lib/tenant/use-tenant-paths";
 
+type ViewMode = "list" | "grid";
+const STORAGE_KEY = "instances-view-mode";
+const parseViewMode = (raw: string): ViewMode | undefined => (raw === "list" || raw === "grid" ? raw : undefined);
+
 const SHOW_INACTIVE_STORAGE_KEY = "instances-show-inactive";
 
 const parseBool = (raw: string): boolean | undefined => (raw === "true" ? true : raw === "false" ? false : undefined);
+
+/** The same agents as cards; each card is a real link to the agent's page. */
+function InstanceGrid({ instances, paths }: { instances: Instance[]; paths: TenantPaths }) {
+  const { t } = useI18n();
+  return (
+    <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+      {instances.map((inst) => (
+        <Link
+          key={inst.id}
+          href={paths.workspace(`/instances/${encodeURIComponent(inst.slug)}`)}
+          className="group flex flex-col items-center gap-2 rounded-lg border bg-card p-4 transition-colors hover:bg-accent/50"
+        >
+          <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl border bg-muted">
+            {inst.icon && isSafeImageSrc(inst.icon) ? (
+              <Image src={inst.icon} alt="" width={64} height={64} className="h-full w-full object-cover" unoptimized />
+            ) : (
+              <Bot className="h-8 w-8 text-muted-foreground" />
+            )}
+          </div>
+          <div className="w-full text-center">
+            <p className="truncate text-sm font-medium group-hover:underline">{inst.name}</p>
+            <Badge variant={inst.status === "active" ? "default" : "secondary"} className="mt-1">
+              {instanceStatusLabel(inst.status, t)}
+            </Badge>
+          </div>
+        </Link>
+      ))}
+    </div>
+  );
+}
 
 /**
  * The agents of the workspace. An agent is a destination with a page of its own,
@@ -50,7 +86,6 @@ function InstanceList({ instances, t, paths }: {
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
   paths: TenantPaths;
 }) {
-  const router = useRouter();
   const fmt = useFormat();
   return (
     <ListTable className="mt-0">
@@ -64,12 +99,12 @@ function InstanceList({ instances, t, paths }: {
       </TableHeader>
       <TableBody>
         {instances.map((inst) => {
-          const open = () => router.push(paths.workspace(`/instances/${encodeURIComponent(inst.slug)}`));
+          const href = paths.workspace(`/instances/${encodeURIComponent(inst.slug)}`);
           return (
-            <ListRow key={inst.id} onOpen={open}>
+            <ListRow key={inst.id} href={href}>
               <ListNameCell
                 name={inst.name}
-                onOpen={open}
+                href={href}
                 summary={inst.description || undefined}
                 icon={
                   inst.icon && isSafeImageSrc(inst.icon) ? (
@@ -109,6 +144,7 @@ export default function InstancesPage() {
   const instances: Instance[] = data?.instances ?? [];
   const [dialogOpen, setDialogOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [viewMode, setViewMode] = usePersistedState<ViewMode>(STORAGE_KEY, "list", parseViewMode);
   // Hide inactive instances by default.
   const [showInactive, setShowInactive] = usePersistedState(SHOW_INACTIVE_STORAGE_KEY, false, parseBool);
   const [importing, setImporting] = useState(false);
@@ -204,6 +240,28 @@ export default function InstancesPage() {
             <ListSearch value={search} onChange={setSearch} className="relative flex-1" />
             <div className="flex items-center rounded-md border">
               <Button
+                variant={viewMode === "list" ? "default" : "ghost"}
+                size="icon"
+                className="h-9 w-9 rounded-r-none"
+                onClick={() => setViewMode("list")}
+                title={t("instances.viewList")}
+                aria-label={t("instances.viewList")}
+              >
+                <List className="h-4 w-4" />
+              </Button>
+              <Button
+                variant={viewMode === "grid" ? "default" : "ghost"}
+                size="icon"
+                className="h-9 w-9 rounded-l-none"
+                onClick={() => setViewMode("grid")}
+                title={t("instances.viewGrid")}
+                aria-label={t("instances.viewGrid")}
+              >
+                <LayoutGrid className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex items-center rounded-md border">
+              <Button
                 variant={!showInactive ? "default" : "ghost"}
                 size="sm"
                 className="h-9 rounded-r-none"
@@ -225,8 +283,10 @@ export default function InstancesPage() {
           <div className="mt-4">
             {visibleInstances.length === 0 ? (
               <ListNoResults />
-            ) : (
+            ) : viewMode === "list" ? (
               <InstanceList instances={visibleInstances} t={t} paths={paths} />
+            ) : (
+              <InstanceGrid instances={visibleInstances} paths={paths} />
             )}
           </div>
         </>
