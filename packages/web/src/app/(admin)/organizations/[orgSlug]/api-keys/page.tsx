@@ -17,7 +17,8 @@ import { LoadFailed } from "@/components/ui/load-failed";
 import { useResource } from "@/hooks/use-resource";
 import { PermissionRequired } from "@/components/layout/permission-required";
 import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch, matchesSearch } from "@/components/list-search";
+import { ListSearch } from "@/components/list-search";
+import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { ApiKeySheet, isExpired } from "./api-key-sheet";
 import { CreateApiKeySheet } from "./create-api-key-sheet";
@@ -58,9 +59,7 @@ export default function ApiKeysPage() {
 
   const expiryText = (key: ManagementApiKey) =>
     key.expiresAt === null ? t("apiKeys.noExpiry") : isExpired(key) ? t("apiKeys.expired") : format.date(key.expiresAt);
-  const visible = keys
-    .filter((key) => matchesSearch(search, key.name, expiryText(key)))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const visible = useListView(keys, search, (key) => [key.name, expiryText(key)], (key) => key.name);
   const openKey = openKeyId === null ? null : keys.find((key) => key.id === openKeyId) ?? null;
 
   const header = (

@@ -100,3 +100,31 @@ describe("SwitchList", () => {
     expect(onOpen).toHaveBeenCalledWith(ITEMS[0]);
   });
 });
+
+describe("SwitchList after a successful write", () => {
+  it("keeps the chosen position until the rows are read again, then follows the rows", async () => {
+    const user = userEvent.setup();
+    const onToggle = vi.fn().mockResolvedValue(undefined);
+    const props = {
+      rowKey: (i: Item) => i.id,
+      name: (i: Item) => i.title,
+      nameHeader: "Nome",
+      isOn: (i: Item) => i.on,
+      onToggle,
+      switchLabel: (i: Item) => `Attivo: ${i.title}`,
+    };
+    const { rerender } = renderWithProviders(<SwitchList<Item> rows={ITEMS} {...props} />);
+    const sw = screen.getByRole("switch", { name: "Attivo: Beta" });
+    await user.click(sw);
+    await waitFor(() => expect(onToggle).toHaveBeenCalled());
+    // The rows have not been read again: the old value must not flash back.
+    expect(sw).toBeChecked();
+
+    rerender(<SwitchList<Item> rows={ITEMS.map((i) => (i.id === "2" ? { ...i, on: true } : i))} {...props} />);
+    expect(screen.getByRole("switch", { name: "Attivo: Beta" })).toBeChecked();
+
+    // Someone switches it off elsewhere: the list shows that, not the old click.
+    rerender(<SwitchList<Item> rows={ITEMS} {...props} />);
+    expect(screen.getByRole("switch", { name: "Attivo: Beta" })).not.toBeChecked();
+  });
+});

@@ -11,7 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch, matchesSearch } from "@/components/list-search";
+import { ListSearch } from "@/components/list-search";
+import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { useI18n } from "@/lib/i18n/context";
 import { api, type AdminUser } from "@/lib/api";
@@ -71,7 +72,7 @@ export function UsersTab() {
   // do not agree, so the last row of one page could sort after the first row of
   // the next.
   const roleLabel = (u: AdminUser) => (u.isPlatformAdmin ? t("users.role.platformAdmin") : t("users.role.user"));
-  const visible = users.filter((u) => matchesSearch(search, u.name, u.email, roleLabel(u)));
+  const visible = useListView(users, search, (u) => [u.name, u.email, roleLabel(u)], null);
 
   return (
     <div className="flex flex-col">

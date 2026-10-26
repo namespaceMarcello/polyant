@@ -26,8 +26,9 @@ export interface SwitchListColumn<T> {
  *
  * `onToggle` does the write and throws when it fails, and the caller reports the
  * failure (a toast): the switch shows the new position at once and goes back to
- * the stored one when `onToggle` throws. `onToggle` should also wait for the rows
- * to be read again, so the switch never shows the old value in between.
+ * the stored one when `onToggle` throws. After a write that succeeded the switch
+ * keeps the chosen position until the rows say something different from what they
+ * said before, so it never flashes the old value while the list is read again.
  *
  * A row can open a detail (`onOpen`); a row for which `disabledReason` answers a
  * text keeps its switch off the table and says why in a tooltip.
@@ -78,7 +79,8 @@ export function SwitchList<T>({
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
-  const [chosen, setChosen] = useState<Readonly<Record<string, boolean>>>({});
+  // A switch that was flipped: where it was, where it was put, and whether the write is done.
+  const [chosen, setChosen] = useState<Readonly<Record<string, { next: boolean; before: boolean; settled: boolean }>>>({});
 
   const visible = useListView(
     rows,
@@ -90,16 +92,28 @@ export function SwitchList<T>({
     sortKey,
   );
 
-  const valueOf = (row: T) => chosen[rowKey(row)] ?? isOn(row);
+  const valueOf = (row: T) => chosen[rowKey(row)]?.next ?? isOn(row);
+
+  // Once the rows read again hold something other than what they held at the click, the
+  // stored value has arrived and the chosen position is no longer needed.
+  const arrived = rows.filter((row) => {
+    const entry = chosen[rowKey(row)];
+    return entry?.settled && isOn(row) !== entry.before;
+  });
+  if (arrived.length > 0) {
+    const next = { ...chosen };
+    for (const row of arrived) delete next[rowKey(row)];
+    setChosen(next);
+  }
 
   async function toggle(row: T, next: boolean) {
     const key = rowKey(row);
-    setChosen((prev) => ({ ...prev, [key]: next }));
+    setChosen((prev) => ({ ...prev, [key]: { next, before: isOn(row), settled: false } }));
     try {
       await onToggle(row, next);
+      setChosen((prev) => (prev[key] ? { ...prev, [key]: { ...prev[key], settled: true } } : prev));
     } catch {
       // The caller reports it; the switch goes back to what is stored.
-    } finally {
       setChosen((prev) => {
         const rest = { ...prev };
         delete rest[key];

@@ -15,7 +15,8 @@ import { LoadFailed } from "@/components/ui/load-failed";
 import { useResource } from "@/hooks/use-resource";
 import { PageHeader } from "@/components/layout/page-header";
 import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch, matchesSearch } from "@/components/list-search";
+import { ListSearch } from "@/components/list-search";
+import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { SkillSheet } from "@/components/skills/skill-sheet";
 import { useI18n } from "@/lib/i18n/context";
@@ -74,9 +75,12 @@ function SkillsPageContent() {
     </Button>
   );
 
-  const visible = skills
-    .filter((skill) => matchesSearch(search, skill.displayName, skill.name, skill.description, skill.category))
-    .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  const visible = useListView(
+    skills,
+    search,
+    (skill) => [skill.displayName, skill.name, skill.description, skill.category],
+    (skill) => skill.displayName,
+  );
 
   return (
     <div>

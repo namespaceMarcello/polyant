@@ -22,7 +22,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ListControlCell, ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch, matchesSearch } from "@/components/list-search";
+import { ListSearch } from "@/components/list-search";
+import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListNoResults } from "@/components/list-states";
 import {
   Tooltip,
@@ -162,12 +163,14 @@ export function ToolsTab({
   const categoryOptions = [...new Set([...listed, ...alwaysOn].map((tool) => tool.category))].sort();
   const originName = (origin: string) => (origin === CORE_ORIGIN ? t("tools.originCore") : nameOfPlugin(origin));
 
-  const matches = (tool: ToolState) =>
-    matchesSearch(search, toolDisplayName(tool.name), tool.name, capabilitySummary(tool, locale), tool.description, categoryLabel(tool.category, locale)) &&
+  const toolText = (tool: ToolState) => [
+    toolDisplayName(tool.name), tool.name, capabilitySummary(tool, locale), tool.description, categoryLabel(tool.category, locale),
+  ];
+  const passesFilters = (tool: ToolState) =>
     (originFilter === null || (pluginNamespaceOf(tool.name) ?? CORE_ORIGIN) === originFilter) &&
     (categoryFilter === null || tool.category === categoryFilter);
-  const rows = listed.filter(matches).sort((a, b) => toolDisplayName(a.name).localeCompare(toolDisplayName(b.name)));
-  const systemRows = alwaysOn.filter(matches);
+  const rows = useListView(listed.filter(passesFilters), search, toolText, (tool) => toolDisplayName(tool.name));
+  const systemRows = useListView(alwaysOn.filter(passesFilters), search, toolText, null);
 
   /**
    * A memory tool does nothing while the agent's memory is off, and the agent

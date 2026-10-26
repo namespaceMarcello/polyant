@@ -4,12 +4,9 @@
 
 import { useState, useMemo } from "react";
 import { toast } from "sonner";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
-import { ListControlCell, ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch, matchesSearch } from "@/components/list-search";
-import { ListEmpty, ListNoResults } from "@/components/list-states";
+import { ListEmpty } from "@/components/list-states";
+import { SwitchList } from "@/components/switch-list";
 import { api, getUserErrorMessage, type SkillState, type ToolState } from "@/lib/api";
 import { useI18n } from "@/lib/i18n/context";
 import { AgentSkillSheet } from "./agent-skill-sheet";
@@ -38,7 +35,6 @@ export function SkillsTab({ slug, skills, tools, onSkillsUpdate, onToolsUpdate }
   const [toolToggles, setToolToggles] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
   const [openSkill, setOpenSkill] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [togglingAutoLoad, setTogglingAutoLoad] = useState<string | null>(null);
 
@@ -174,10 +170,6 @@ export function SkillsTab({ slug, skills, tools, onSkillsUpdate, onToolsUpdate }
   // Render
   // ---------------------------------------------------------------------------
 
-  // By name, and not enabled-first: a row that jumps to the top when its switch is flicked is hard to follow.
-  const sortedSkills = useMemo(() => [...skills].sort((a, b) => a.name.localeCompare(b.name)), [skills]);
-
-  const visibleSkills = sortedSkills.filter((skill) => matchesSearch(search, skill.name, skill.description, skill.category));
   const opened = openSkill ? skills.find((skill) => skill.name === openSkill) ?? null : null;
 
   if (skills.length === 0) {
@@ -186,77 +178,51 @@ export function SkillsTab({ slug, skills, tools, onSkillsUpdate, onToolsUpdate }
 
   return (
     <div>
-      <ListSearch value={search} onChange={setSearch} className="relative" />
-
-      {visibleSkills.length === 0 ? (
-        <ListNoResults />
-      ) : (
-        <ListTable>
-          <TableHeader>
-            <TableRow className="hover:bg-transparent">
-              <ListHead>{t("skills.table.name")}</ListHead>
-              <ListHead className="w-40">{t("skills.table.category")}</ListHead>
-              <ListHead align="end" className="w-28">{t("common.active")}</ListHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {visibleSkills.map((skill) => {
-              const isEnabled = getSkillEnabled(skill.name);
-              const hasEnv = (skill.requiredEnv?.length ?? 0) > 0;
-              const envMissing = isEnabled && hasEnv && !skill.envConfigured;
-              const toolCount = skill.requiredTools?.length ?? 0;
-              return (
-                <ListRow
-                  key={skill.name}
-                  onOpen={() => setOpenSkill(skill.name)}
-                  selected={openSkill === skill.name}
-                  muted={!isEnabled}
-                >
-                  <ListNameCell
-                    name={skill.name}
-                    onOpen={() => setOpenSkill(skill.name)}
-                    summary={skill.description || undefined}
-                    badges={
-                      <>
-                        {toolCount > 0 && (
-                          <Badge variant="secondary">
-                            {t("capabilities.toolCount").replace("{count}", String(toolCount))}
-                          </Badge>
-                        )}
-                        {skill.pinnedVersion && (
-                          <Badge variant="secondary">
-                            {t("skills.tab.version").replace("{version}", skill.pinnedVersion)}
-                          </Badge>
-                        )}
-                        {hasEnv && (
-                          <Badge variant={envMissing ? "destructive" : "secondary"}>
-                            {skill.requiredEnv!.length} env var{skill.requiredEnv!.length > 1 ? "s" : ""}
-                          </Badge>
-                        )}
-                        {skill.hasUpdate && <Badge variant="outline">{t("skills.tab.updateAvailable")}</Badge>}
-                      </>
-                    }
-                  />
-                  <TableCell>
-                    {skill.category ? (
-                      <Badge variant="secondary">{skill.category}</Badge>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <ListControlCell>
-                    <Switch
-                      checked={isEnabled}
-                      onCheckedChange={(checked) => handleSkillToggle(skill.name, checked)}
-                      aria-label={t("skills.tab.enabled", { name: skill.name })}
-                    />
-                  </ListControlCell>
-                </ListRow>
-              );
-            })}
-          </TableBody>
-        </ListTable>
-      )}
+      {/* By name, and not enabled-first: a row that jumps to the top when its switch is flicked is hard to follow. */}
+      <SwitchList
+        rows={skills}
+        rowKey={(skill) => skill.name}
+        name={(skill) => skill.name}
+        nameHeader={t("skills.table.name")}
+        summary={(skill) => skill.description || undefined}
+        searchText={(skill) => [skill.category]}
+        badges={(skill) => {
+          const isEnabled = getSkillEnabled(skill.name);
+          const hasEnv = (skill.requiredEnv?.length ?? 0) > 0;
+          const envMissing = isEnabled && hasEnv && !skill.envConfigured;
+          const toolCount = skill.requiredTools?.length ?? 0;
+          return (
+            <>
+              {toolCount > 0 && (
+                <Badge variant="secondary">{t("capabilities.toolCount").replace("{count}", String(toolCount))}</Badge>
+              )}
+              {skill.pinnedVersion && (
+                <Badge variant="secondary">{t("skills.tab.version").replace("{version}", skill.pinnedVersion)}</Badge>
+              )}
+              {hasEnv && (
+                <Badge variant={envMissing ? "destructive" : "secondary"}>
+                  {skill.requiredEnv!.length} env var{skill.requiredEnv!.length > 1 ? "s" : ""}
+                </Badge>
+              )}
+              {skill.hasUpdate && <Badge variant="outline">{t("skills.tab.updateAvailable")}</Badge>}
+            </>
+          );
+        }}
+        columns={[
+          {
+            header: t("skills.table.category"),
+            className: "w-40",
+            cell: (skill) =>
+              skill.category ? <Badge variant="secondary">{skill.category}</Badge> : <span className="text-muted-foreground">—</span>,
+          },
+        ]}
+        isOn={(skill) => getSkillEnabled(skill.name)}
+        // The switch only stages the change: the page's Save writes it.
+        onToggle={async (skill, checked) => handleSkillToggle(skill.name, checked)}
+        switchLabel={(skill) => t("skills.tab.enabled", { name: skill.name })}
+        onOpen={(skill) => setOpenSkill(skill.name)}
+        selectedKey={openSkill}
+      />
 
       <AgentSkillSheet
         slug={slug}
