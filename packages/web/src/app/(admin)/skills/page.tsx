@@ -15,7 +15,7 @@ import { LoadFailed } from "@/components/ui/load-failed";
 import { useResource } from "@/hooks/use-resource";
 import { PageHeader } from "@/components/layout/page-header";
 import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { SkillSheet } from "@/components/skills/skill-sheet";
@@ -126,7 +126,7 @@ function SkillsPageContent() {
         />
       ) : (
         <>
-          <ListSearch value={search} onChange={setSearch} />
+          <ListToolbar value={search} onChange={setSearch} className="mt-6" />
           {visible.length === 0 ? (
             <ListNoResults />
           ) : (

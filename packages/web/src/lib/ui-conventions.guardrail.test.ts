@@ -134,4 +134,24 @@ describe("UI conventions", () => {
       .map(({ file }) => file);
     expect(offenders).toEqual([]);
   });
+
+  it("should_draw_the_search_row_of_every_list_through_list_toolbar", () => {
+    const offenders = sources()
+      .filter(({ file }) => file !== "components/list-search.tsx")
+      .filter(({ text }) => /<ListSearch\b/.test(text))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it("should_draw_the_labels_of_a_list_as_secondary_badges_and_leave_states_to_status_badge", () => {
+    // `outline` made the same kind of label read two ways; a state is a StatusBadge.
+    const lists = sources().filter(({ text }) =>
+      /from "@\/components\/(?:list-table|switch-list|list-drawer)"/.test(text),
+    );
+    expect(lists.length).toBeGreaterThan(20);
+    const offenders = lists
+      .filter(({ text }) => openingTags(text, ["Badge"]).some((attributes) => /variant="outline"/.test(attributes)))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
 });

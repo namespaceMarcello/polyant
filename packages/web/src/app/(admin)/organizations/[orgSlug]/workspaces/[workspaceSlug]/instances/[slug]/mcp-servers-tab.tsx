@@ -159,7 +159,7 @@ export function McpServersTab({ slug }: Props) {
               className: "w-40",
               cell: (server) => (
                 <>
-                  <Badge variant="outline">{t(`mcp.authMode.${server.authMode}` as const)}</Badge>
+                  <Badge variant="secondary">{t(`mcp.authMode.${server.authMode}` as const)}</Badge>
                   {isShared(server) && (
                     <p className="mt-1.5 text-xs text-muted-foreground">
                       {sharedAccountText(server, connecting === server.slug)}

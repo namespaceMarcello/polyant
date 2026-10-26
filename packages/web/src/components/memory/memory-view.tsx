@@ -4,7 +4,6 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { usePagination } from "@/hooks/use-pagination";
-import { Brain } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -13,13 +12,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { DrawerDeleteButton, ListDrawer } from "@/components/list-drawer";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { truncate } from "@/lib/format";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { EmptyState } from "@/components/ui/empty-state";
 import { Pager } from "@/components/ui/pager";
 import { OptionalSelect } from "@/components/optional-select";
 import { api, getUserErrorMessage, type Instance, type Memory } from "@/lib/api";
@@ -29,12 +27,6 @@ import { useWorkspaceSlug } from "@/lib/tenant/use-workspace-slug";
 import { CreateMemorySheet } from "@/components/memory/create-memory-sheet";
 
 const CATEGORIES = ["", "general", "preference", "fact", "event", "relationship", "decision"] as const;
-
-function importanceBadgeVariant(importance: number): "default" | "secondary" | "destructive" | "outline" {
-  if (importance >= 8) return "destructive";
-  if (importance >= 5) return "default";
-  return "secondary";
-}
 
 /**
  * The saved-memories list — ONE implementation, two places.
@@ -140,11 +132,13 @@ export function MemoryView({
     }
   };
 
+  // Under a page header the empty state sits lower than inside an agent's section.
+  const emptyClass = lockedInstanceId ? "mt-8" : "mt-16";
   const open = memories.find((m) => m.id === openId) ?? null;
 
   return (
     <div>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      <ListToolbar value={search} onChange={setSearch} label={t("memory.searchPlaceholder")}>
         {!lockedInstanceId && (
           <OptionalSelect
             value={instanceFilter}
@@ -161,26 +155,24 @@ export function MemoryView({
           options={CATEGORIES.filter(Boolean).map((c) => ({ value: c, label: c }))}
           className="w-[180px]"
         />
+      </ListToolbar>
 
-        <ListSearch value={search} onChange={setSearch} label={t("memory.searchPlaceholder")} className="relative flex-1" />
-      </div>
-
-      <div className="mt-6">
+      <div>
         {!instanceFilter ? (
-          <EmptyState icon={Brain} title={t("memory.selectInstancePrompt")} />
+          <ListEmpty className={emptyClass} title={t("memory.selectInstancePrompt")} />
         ) : failed ? (
           <LoadFailed onRetry={fetchMemories} />
         ) : loading ? (
-          <ListLoading className="" />
+          <ListLoading className="mt-4" />
         ) : memories.length === 0 ? (
           debouncedSearch ? (
             <ListNoResults>{t("memory.empty.searchTitle")}</ListNoResults>
           ) : (
-            <ListEmpty title={t("memory.empty.title")} description={t("memory.empty.description")} />
+            <ListEmpty className={emptyClass} title={t("memory.empty.title")} description={t("memory.empty.description")} />
           )
         ) : (
           <>
-            <ListTable className="mt-0">
+            <ListTable>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <ListHead>{t("memory.table.content")}</ListHead>
@@ -193,8 +185,8 @@ export function MemoryView({
                 {memories.map((mem) => (
                   <ListRow key={mem.id} onOpen={() => setOpenId(mem.id)} selected={openId === mem.id}>
                     <ListNameCell name={truncate(mem.content, 120)} onOpen={() => setOpenId(mem.id)} />
-                    <ListBadgeCell variant="outline">{mem.category}</ListBadgeCell>
-                    <ListBadgeCell variant={importanceBadgeVariant(mem.importance)}>{mem.importance}</ListBadgeCell>
+                    <ListBadgeCell>{mem.category}</ListBadgeCell>
+                    <ListBadgeCell>{mem.importance}</ListBadgeCell>
                     <ListMetaCell align="end">{fmt.relative(mem.updatedAt)}</ListMetaCell>
                   </ListRow>
                 ))}
@@ -209,13 +201,13 @@ export function MemoryView({
       <ListDrawer
         open={open !== null}
         onOpenChange={(next) => !next && setOpenId(null)}
-        title={t("memory.table.content")}
+        title={open ? truncate(open.content, 60) : ""}
         description={open ? fmt.relative(open.updatedAt) : ""}
         header={
           open && (
             <div className="flex gap-2 pt-1">
-              <Badge variant="outline">{open.category}</Badge>
-              <Badge variant={importanceBadgeVariant(open.importance)}>{open.importance}</Badge>
+              <Badge variant="secondary">{open.category}</Badge>
+              <Badge variant="secondary">{open.importance}</Badge>
             </div>
           )
         }

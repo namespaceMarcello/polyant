@@ -220,8 +220,8 @@ export function TriggersWebhooksTab({ slug }: Props) {
         title={t("room.sources.add")}
         description={t("room.sources.title")}
         primary={
-          <Button onClick={handleAddSource} disabled={!newSourceForm.name}>
-            {t("common.save")}
+          <Button onClick={handleAddSource} disabled={!newSourceForm.name.trim()}>
+            {t("common.add")}
           </Button>
         }
       >

@@ -225,7 +225,7 @@ describe("ToolsTab", () => {
     await user.click(within(dialog).getByRole("tab", { name: "tools.pickerByPlugin" }));
     await user.click(within(dialog).getByRole("button", { name: /^Crm/ }));
     await user.click(within(dialog).getByRole("checkbox", { name: /deal/ }));
-    await user.click(within(dialog).getByRole("button", { name: "tools.pickerConfirm" }));
+    await user.click(within(dialog).getByRole("button", { name: "common.add" }));
 
     await waitFor(() => expect(screen.queryByText("tools.pickerTitle")).not.toBeInTheDocument());
     // `deal` cannot run without the CRM key, so its panel opens on the field.
@@ -335,11 +335,29 @@ describe("ToolsTab", () => {
 
     await user.click(screen.getByRole("button", { name: "tools.enable" }));
     const dialog = await screen.findByRole("dialog");
-    await user.type(within(dialog).getByRole("textbox"), "recall");
+    await user.type(within(dialog).getByRole("searchbox"), "recall");
 
     expect(within(dialog).getByRole("checkbox", { name: /recallMemory/ })).toBeDisabled();
     expect(within(dialog).getByText(/tools\.memoryOffPicker/)).toBeInTheDocument();
     expect(within(dialog).getByRole("link", { name: "tools.memoryOffEnable" })).toHaveAttribute("href", "?tab=params");
+  });
+
+  it("keeps Disable with the right-hand actions, not in the footer's destructive corner", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    await user.click(within(rowOf("contact")).getByRole("button", { name: "tools.open" }));
+    const sheet = await screen.findByRole("dialog");
+
+    const disable = within(sheet).getByRole("button", { name: "tools.disable" });
+    expect(within(disable.parentElement!).getByRole("button", { name: /common\.(close|cancel)/ })).toBeInTheDocument();
+  });
+
+  it("titles the tool's drawer in the ordinary title font", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    await user.click(within(rowOf("contact")).getByRole("button", { name: "tools.open" }));
+    const heading = within(await screen.findByRole("dialog")).getAllByRole("heading")[0];
+    expect(heading.className).not.toMatch(/font-mono/);
   });
 
   it("opens a tool's panel: cleartext prefilled, secrets masked, provider keys pointed to the Model section", async () => {

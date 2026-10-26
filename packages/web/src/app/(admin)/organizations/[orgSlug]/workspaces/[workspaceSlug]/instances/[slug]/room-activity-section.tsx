@@ -6,7 +6,7 @@ import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { TableBody, TableHeader, TableRow } from "@/components/ui/table";
 import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { ListEmpty, ListNoResults } from "@/components/list-states";
 import { ListDrawer } from "@/components/list-drawer";
 import { useListView } from "@/components/use-list-view";
@@ -60,14 +60,14 @@ export function ActivityLogSection({ activity }: Props) {
     <section className="space-y-4">
       <h2 className="text-lg font-semibold">{t("room.activity.title")}</h2>
       {activity.length === 0 ? (
-        <ListEmpty className="mt-4" title={t("room.activity.empty")} />
+        <ListEmpty className="mt-8" title={t("room.activity.empty")} />
       ) : (
-        <>
-          <ListSearch value={search} onChange={setSearch} className="relative" />
+        <div>
+          <ListToolbar value={search} onChange={setSearch} />
           {visible.length === 0 ? (
             <ListNoResults />
           ) : (
-            <ListTable className="mt-0">
+            <ListTable>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <ListHead>{t("room.activity.period")}</ListHead>
@@ -81,7 +81,7 @@ export function ActivityLogSection({ activity }: Props) {
                   return (
                     <ListRow key={log.id} onOpen={() => setOpenId(log.id)} selected={openId === log.id}>
                       <ListNameCell name={label} onOpen={() => setOpenId(log.id)} />
-                      <ListBadgeCell variant="outline">{log.logType}</ListBadgeCell>
+                      <ListBadgeCell>{log.logType}</ListBadgeCell>
                       <ListMetaCell>{log.eventCount}</ListMetaCell>
                     </ListRow>
                   );
@@ -89,15 +89,15 @@ export function ActivityLogSection({ activity }: Props) {
               </TableBody>
             </ListTable>
           )}
-        </>
+        </div>
       )}
 
       <ListDrawer
         open={open !== null}
         onOpenChange={(next) => !next && setOpenId(null)}
         title={open ? formatLogDate(open.logDate, open.logType, locale) : ""}
-        description={t("room.activity.title")}
-        header={open && <Badge variant="outline">{open.logType}</Badge>}
+        description={open ? `${t("room.activity.events")}: ${open.eventCount}` : ""}
+        header={open && <Badge variant="secondary">{open.logType}</Badge>}
       >
         {open && <MarkdownRenderer content={open.content} className="text-sm" />}
       </ListDrawer>

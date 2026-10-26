@@ -214,11 +214,18 @@ function DefinitionSheet({
         open={open}
         onOpenChange={onOpenChange}
         title={definition ? definition.name : t("room.definitions.add")}
-        description={t("room.definitions.title")}
+        description={definition ? definition.matchingPrompt : t("room.definitions.title")}
+        header={
+          definition && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Badge variant="secondary">{actionLabel(definition.action, t)}</Badge>
+            </div>
+          )
+        }
         destructive={definition && <DrawerDeleteButton onClick={() => setConfirmDelete(true)} />}
         primary={
           <Button onClick={() => onSave(payloadOf(form))} disabled={!form.name.trim()}>
-            {t("common.save")}
+            {definition ? t("common.save") : t("common.add")}
           </Button>
         }
       >
@@ -297,8 +304,8 @@ export function EventSourceSheet({
         open={source !== null}
         onOpenChange={(open) => !open && onClose()}
         title={source?.name ?? ""}
-        description={t("room.sources.title")}
-        header={source && <Badge variant="secondary">{source.sourceType}</Badge>}
+        description={source ? t("room.sources.definitionsCount", { count: source.definitions.length }) : ""}
+        header={source && <div className="flex flex-wrap gap-2 pt-1"><Badge variant="secondary">{source.sourceType}</Badge></div>}
         destructive={source && <DrawerDeleteButton onClick={() => setConfirmDelete(true)} />}
         primary={
           <Button

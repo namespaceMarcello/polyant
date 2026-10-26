@@ -9,7 +9,7 @@ import Image from "next/image";
 import { toast } from "sonner";
 import { Plus, Bot, List, LayoutGrid, Upload, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/status-badge";
 import {
   TableBody,
   TableCell,
@@ -17,7 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { LoadFailed } from "@/components/ui/load-failed";
@@ -67,9 +67,16 @@ function InstanceGrid({ instances, paths }: { instances: Instance[]; paths: Tena
           </div>
           <div className="w-full text-center">
             <p className="truncate text-sm font-medium group-hover:underline">{inst.name}</p>
-            <Badge variant={inst.status === "active" ? "default" : "secondary"} className="mt-1">
-              {instanceStatusLabel(inst.status, t)}
-            </Badge>
+            {inst.description && (
+              <p className="mt-0.5 line-clamp-2 text-sm text-muted-foreground" title={inst.description}>
+                {inst.description}
+              </p>
+            )}
+            <div className="mt-1">
+              <StatusBadge tone={inst.status === "active" ? "positive" : "neutral"}>
+                {instanceStatusLabel(inst.status, t)}
+              </StatusBadge>
+            </div>
           </div>
         </Link>
       ))}
@@ -88,7 +95,7 @@ function InstanceList({ instances, t, paths }: {
 }) {
   const fmt = useFormat();
   return (
-    <ListTable className="mt-0">
+    <ListTable>
       <TableHeader>
         <TableRow className="hover:bg-transparent">
           <ListHead>{t("instances.table.name")}</ListHead>
@@ -124,7 +131,7 @@ function InstanceList({ instances, t, paths }: {
               <TableCell>
                 <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{inst.slug}</code>
               </TableCell>
-              <ListBadgeCell variant={inst.status === "active" ? "default" : "secondary"}>
+              <ListBadgeCell tone={inst.status === "active" ? "positive" : "neutral"}>
                 {instanceStatusLabel(inst.status, t)}
               </ListBadgeCell>
               <ListMetaCell align="end">{fmt.relative(inst.updatedAt)}</ListMetaCell>
@@ -235,9 +242,8 @@ export default function InstancesPage() {
           }
         />
       ) : (
-        <>
-          <div className="mt-6 flex items-center gap-3">
-            <ListSearch value={search} onChange={setSearch} className="relative flex-1" />
+        <div>
+          <ListToolbar value={search} onChange={setSearch} className="mt-6">
             <div className="flex items-center rounded-md border">
               <Button
                 variant={viewMode === "list" ? "default" : "ghost"}
@@ -279,17 +285,15 @@ export default function InstancesPage() {
                 {!showInactive && hiddenCount > 0 ? <span className="ml-1 opacity-70">({hiddenCount})</span> : null}
               </Button>
             </div>
-          </div>
-          <div className="mt-4">
-            {visibleInstances.length === 0 ? (
-              <ListNoResults />
-            ) : viewMode === "list" ? (
-              <InstanceList instances={visibleInstances} t={t} paths={paths} />
-            ) : (
-              <InstanceGrid instances={visibleInstances} paths={paths} />
-            )}
-          </div>
-        </>
+          </ListToolbar>
+          {visibleInstances.length === 0 ? (
+            <ListNoResults />
+          ) : viewMode === "list" ? (
+            <InstanceList instances={visibleInstances} t={t} paths={paths} />
+          ) : (
+            <InstanceGrid instances={visibleInstances} paths={paths} />
+          )}
+        </div>
       )}
 
       <CreateInstanceSheet

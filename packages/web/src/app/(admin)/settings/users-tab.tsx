@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { useI18n } from "@/lib/i18n/context";
@@ -92,7 +92,7 @@ export function UsersTab() {
         <ListEmpty title={t("users.empty.title")} description={t("users.empty.description")} />
       ) : (
         <>
-          <ListSearch value={search} onChange={setSearch} />
+          <ListToolbar value={search} onChange={setSearch} className="mt-6" />
           {visible.length === 0 ? (
             <ListNoResults />
           ) : (
@@ -119,7 +119,7 @@ export function UsersTab() {
                       {!u.hasPassword ? (
                         <span className="text-sm text-muted-foreground">{t("users.password.notSet")}</span>
                       ) : u.mustChangePassword ? (
-                        <Badge variant="outline">{t("users.password.mustChange")}</Badge>
+                        <Badge variant="secondary">{t("users.password.mustChange")}</Badge>
                       ) : (
                         <span className="text-sm text-muted-foreground">{t("users.password.set")}</span>
                       )}

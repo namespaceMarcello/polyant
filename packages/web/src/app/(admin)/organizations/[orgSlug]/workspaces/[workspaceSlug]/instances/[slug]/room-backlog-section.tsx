@@ -4,10 +4,10 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { TableBody, TableHeader, TableRow } from "@/components/ui/table";
 import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { ListEmpty, ListNoResults } from "@/components/list-states";
 import { ListDrawer } from "@/components/list-drawer";
 import { useListView } from "@/components/use-list-view";
@@ -36,6 +36,9 @@ interface Props {
   status: string;
   onStatusChange: (status: string) => void;
 }
+
+/** A finished event is a good state; one still waiting or being worked on is neutral. */
+const backlogTone = (status: string): StatusTone => (status === "completed" ? "positive" : "neutral");
 
 const payloadText = (event: BacklogEvent): string =>
   typeof event.rawPayload === "object" ? JSON.stringify(event.rawPayload) : String(event.rawPayload);
@@ -68,14 +71,14 @@ export function BacklogSection({ backlog, status, onStatusChange }: Props) {
         ))}
       </div>
       {backlog.length === 0 ? (
-        <ListEmpty className="mt-4" title={t("room.backlog.empty")} />
+        <ListEmpty className="mt-8" title={t("room.backlog.empty")} />
       ) : (
-        <>
-          <ListSearch value={search} onChange={setSearch} className="relative" />
+        <div>
+          <ListToolbar value={search} onChange={setSearch} />
           {visible.length === 0 ? (
             <ListNoResults />
           ) : (
-            <ListTable className="mt-0">
+            <ListTable>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <ListHead>{t("room.backlog.event")}</ListHead>
@@ -91,22 +94,22 @@ export function BacklogSection({ backlog, status, onStatusChange }: Props) {
                       onOpen={() => setOpenId(event.id)}
                       summary={event.reactNotes || undefined}
                     />
-                    <ListBadgeCell>{event.status}</ListBadgeCell>
+                    <ListBadgeCell tone={backlogTone(event.status)}>{event.status}</ListBadgeCell>
                     <ListMetaCell>{fmt.dateTime(event.createdAt)}</ListMetaCell>
                   </ListRow>
                 ))}
               </TableBody>
             </ListTable>
           )}
-        </>
+        </div>
       )}
 
       <ListDrawer
         open={open !== null}
         onOpenChange={(next) => !next && setOpenId(null)}
-        title={t("room.backlog.event")}
+        title={open ? payloadText(open).slice(0, 60) : ""}
         description={open ? fmt.dateTime(open.createdAt) : ""}
-        header={open && <Badge variant="secondary">{open.status}</Badge>}
+        header={open && <StatusBadge tone={backlogTone(open.status)}>{open.status}</StatusBadge>}
       >
         {open && (
           <>

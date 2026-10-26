@@ -7,10 +7,8 @@ import { toast } from "sonner";
 import {
   Plus,
   AlertCircle,
-  CheckCircle2,
   Loader2,
   RotateCcw,
-  Send,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -34,6 +32,8 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { DrawerDeleteButton, ListDrawer } from "@/components/list-drawer";
 import { ListEmpty, ListLoading } from "@/components/list-states";
 import { SwitchList } from "@/components/switch-list";
+import { StatusBadge, type StatusTone } from "@/components/status-badge";
+import { EMPTY_CELL } from "@/components/list-table";
 import { api, getUserErrorMessage, type ScheduledTask, type ScheduledTaskSchedule } from "@/lib/api";
 import { useI18n } from "@/lib/i18n/context";
 import type { TranslationKey } from "@/lib/i18n/types";
@@ -139,40 +139,16 @@ function formFromTask(task: ScheduledTask): TaskForm {
   return { ...base, scheduleType: "one-shot", runAt };
 }
 
-function StatusBadge({ task, t }: { task: ScheduledTask; t: (key: TranslationKey) => string }) {
-  if (!task.enabled) {
-    if (task.consecutiveErrors >= 5) {
-      return (
-        <Badge variant="destructive" className="gap-1">
-          <AlertCircle className="size-3" />
-          {t("scheduledTasks.statusAutoDisabled")}
-        </Badge>
-      );
-    }
-    return <Badge variant="secondary">{t("scheduledTasks.statusPaused")}</Badge>;
-  }
-  if (task.lastRunStatus === "running") {
-    return (
-      <Badge variant="secondary" className="gap-1">
-        <Loader2 className="size-3 animate-spin" />
-        {t("scheduledTasks.statusRunning")}
-      </Badge>
-    );
-  }
-  if (task.lastRunStatus === "error") {
-    return (
-      <Badge variant="destructive" className="gap-1">
-        <AlertCircle className="size-3" />
-        {t("scheduledTasks.statusError")}
-      </Badge>
-    );
-  }
-  return (
-    <Badge variant="default" className="gap-1">
-      <CheckCircle2 className="size-3" />
-      {t("scheduledTasks.statusActive")}
-    </Badge>
-  );
+/** The task's state, as the one status badge every list uses. */
+function TaskStatus({ task, t }: { task: ScheduledTask; t: (key: TranslationKey) => string }) {
+  return <StatusBadge tone={statusTone(task)}>{statusLabel(task, t)}</StatusBadge>;
+}
+
+function statusTone(task: ScheduledTask): StatusTone {
+  if (!task.enabled) return task.consecutiveErrors >= 5 ? "negative" : "neutral";
+  if (task.lastRunStatus === "running") return "neutral";
+  if (task.lastRunStatus === "error") return "negative";
+  return "positive";
 }
 
 /** The status badge's text, for the search to match on it. */
@@ -330,12 +306,9 @@ export function TriggersScheduledTab({ slug }: Props) {
               className: "w-32",
               cell: (task) =>
                 task.outboundChannel ? (
-                  <Badge variant="outline" className="gap-1">
-                    <Send className="size-3" />
-                    {task.outboundChannel}
-                  </Badge>
+                  <Badge variant="secondary">{task.outboundChannel}</Badge>
                 ) : (
-                  <span className="text-muted-foreground">-</span>
+                  <span className="text-muted-foreground">{EMPTY_CELL}</span>
                 ),
             },
             {
@@ -343,7 +316,7 @@ export function TriggersScheduledTab({ slug }: Props) {
               className: "w-40",
               cell: (task) => (
                 <>
-                  <StatusBadge task={task} t={t} />
+                  <TaskStatus task={task} t={t} />
                   {task.lastError && (
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -357,8 +330,8 @@ export function TriggersScheduledTab({ slug }: Props) {
                 </>
               ),
             },
-            { header: t("scheduledTasks.col.nextRun"), className: "w-40", cell: (task) => fmt.dateTime(task.nextRunAt) },
-            { header: t("scheduledTasks.col.lastRun"), className: "w-40", cell: (task) => fmt.dateTime(task.lastRunAt) },
+            { header: t("scheduledTasks.col.nextRun"), className: "w-40", nowrap: true, cell: (task) => fmt.dateTime(task.nextRunAt) || EMPTY_CELL },
+            { header: t("scheduledTasks.col.lastRun"), className: "w-40", nowrap: true, cell: (task) => fmt.dateTime(task.lastRunAt) || EMPTY_CELL },
           ]}
           isOn={(task) => task.enabled}
           onToggle={handleToggle}
@@ -372,8 +345,8 @@ export function TriggersScheduledTab({ slug }: Props) {
       <ListDrawer
         open={dialogOpen}
         onOpenChange={setDialogOpen}
-        title={editingId ? t("scheduledTasks.editTitle") : t("scheduledTasks.createTitle")}
-        description={t("scheduledTasks.dialogDescription")}
+        title={editingTask ? editingTask.name : t("scheduledTasks.createTitle")}
+        description={editingTask ? editingTask.scheduleHuman : t("scheduledTasks.dialogDescription")}
         destructive={editingTask && <DrawerDeleteButton onClick={() => setDeleting(editingTask)} />}
         actions={
           editingTask && (
@@ -384,9 +357,9 @@ export function TriggersScheduledTab({ slug }: Props) {
           )
         }
         primary={
-          <Button onClick={handleSave} disabled={saving}>
+          <Button onClick={handleSave} disabled={saving || !form.name.trim() || !form.prompt.trim()}>
             {saving && <Loader2 className="mr-1 size-4 animate-spin" />}
-            {editingId ? t("common.save") : t("scheduledTasks.form.create")}
+            {editingId ? t("common.save") : t("common.add")}
           </Button>
         }
       >

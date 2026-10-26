@@ -186,6 +186,30 @@ describe("HooksTab — parameters", () => {
     await waitFor(() => expect(mockHookDelete).toHaveBeenCalledWith("agent-1", "moderate"));
   });
 
+  it("offers Add, not Save, and keeps it off until a function is chosen", async () => {
+    const user = userEvent.setup();
+    render(<HooksTab slug="agent-1" />);
+
+    await user.click(await screen.findByRole("button", { name: "hooks.add" }));
+    const dialog = await screen.findByRole("dialog");
+    const add = within(dialog).getByRole("button", { name: "common.add" });
+    expect(add).toBeDisabled();
+    expect(within(dialog).queryByRole("button", { name: "common.save" })).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: "translate" }));
+    expect(add).toBeEnabled();
+  });
+
+  it("titles a hook's drawer with its function name in the ordinary title font", async () => {
+    const user = userEvent.setup();
+    render(<HooksTab slug="agent-1" />);
+    await user.click((await screen.findAllByRole("button", { name: "hooks.open" }))[0]);
+    const heading = within(await screen.findByRole("dialog")).getByRole("heading", { name: "moderate" });
+    expect(heading.className).not.toMatch(/font-mono/);
+    expect(heading.querySelector(".font-mono")).toBeNull();
+  });
+
   it("asks for the chosen function's keys while adding a hook, and writes them with it", async () => {
     const user = userEvent.setup();
     mockHookCreate.mockResolvedValue({});
@@ -198,7 +222,7 @@ describe("HooksTab — parameters", () => {
     await user.click(within(dialog).getAllByRole("combobox")[1]);
     await user.click(await screen.findByRole("option", { name: "translate" }));
     await user.type(within(dialog).getByPlaceholderText("settings.tab.keyPlaceholder"), "tr-9");
-    await user.click(within(dialog).getByRole("button", { name: "common.save" }));
+    await user.click(within(dialog).getByRole("button", { name: "common.add" }));
 
     await waitFor(() =>
       expect(mockSecretsSet).toHaveBeenCalledWith("agent-1", [{ key: "translate_api_key", value: "tr-9" }]),

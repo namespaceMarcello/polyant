@@ -68,7 +68,7 @@ function CreateMemoryForm({ onOpenChange, instances, defaultInstanceId, onCreate
       description={t("memory.create.description")}
       primary={
         <Button onClick={handleCreate} disabled={creating || !instanceId || !content.trim()}>
-          {creating ? t("common.saving") : t("memory.create.button")}
+          {creating ? t("common.saving") : t("common.add")}
         </Button>
       }
     >

@@ -173,13 +173,13 @@ describe("CreateMemorySheet", () => {
     renderDialog();
 
     expect(screen.getByRole("button", { name: "common.cancel" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "memory.create.button" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "common.add" })).toBeInTheDocument();
   });
 
   it("disables create button when content is empty", () => {
     renderDialog();
 
-    const createBtn = screen.getByRole("button", { name: "memory.create.button" });
+    const createBtn = screen.getByRole("button", { name: "common.add" });
     expect(createBtn).toBeDisabled();
   });
 
@@ -194,7 +194,7 @@ describe("CreateMemorySheet", () => {
     const textarea = screen.getByPlaceholderText("memory.create.contentPlaceholder");
     await user.type(textarea, "User likes coffee");
 
-    const createBtn = screen.getByRole("button", { name: "memory.create.button" });
+    const createBtn = screen.getByRole("button", { name: "common.add" });
     expect(createBtn).toBeEnabled();
 
     await user.click(createBtn);
@@ -225,7 +225,7 @@ describe("CreateMemorySheet", () => {
       screen.getByPlaceholderText("memory.create.contentPlaceholder"),
       "some content",
     );
-    await user.click(screen.getByRole("button", { name: "memory.create.button" }));
+    await user.click(screen.getByRole("button", { name: "common.add" }));
 
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith("memory.create.error");

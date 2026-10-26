@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/select";
 import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { Pager } from "@/components/ui/pager";
@@ -116,7 +116,7 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
 
   return (
     <div>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      <ListToolbar value={search} onChange={setSearch} label={t("conversations.searchPlaceholder")}>
         {!lockedInstanceId && (
         <Select
           value={instanceFilter || "_all"}
@@ -138,23 +138,22 @@ export function ConversationsView({ lockedInstanceId }: { lockedInstanceId?: str
           </SelectContent>
         </Select>
         )}
-        <ListSearch value={search} onChange={setSearch} label={t("conversations.searchPlaceholder")} className="relative flex-1" />
-      </div>
+      </ListToolbar>
 
-      <div className="mt-6">
+      <div>
         {failed ? (
           <LoadFailed onRetry={fetchConversations} />
         ) : loading ? (
-          <ListLoading className="" />
+          <ListLoading className="mt-4" />
         ) : conversations.length === 0 ? (
           debouncedSearch || contact ? (
             <ListNoResults>{t("conversations.empty.searchTitle")}</ListNoResults>
           ) : (
-            <ListEmpty title={t("conversations.empty.title")} description={t("conversations.empty.description")} />
+            <ListEmpty className={lockedInstanceId ? "mt-8" : "mt-16"} title={t("conversations.empty.title")} description={t("conversations.empty.description")} />
           )
         ) : (
           <>
-            <ListTable className="mt-0">
+            <ListTable>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <ListHead className="w-[27%]">{t("conversations.table.conversation")}</ListHead>

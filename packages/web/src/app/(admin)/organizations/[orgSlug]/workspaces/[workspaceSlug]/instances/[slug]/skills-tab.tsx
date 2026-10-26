@@ -204,7 +204,7 @@ export function SkillsTab({ slug, skills, tools, onSkillsUpdate, onToolsUpdate }
                   {skill.requiredEnv!.length} env var{skill.requiredEnv!.length > 1 ? "s" : ""}
                 </Badge>
               )}
-              {skill.hasUpdate && <Badge variant="outline">{t("skills.tab.updateAvailable")}</Badge>}
+              {skill.hasUpdate && <Badge variant="secondary">{t("skills.tab.updateAvailable")}</Badge>}
             </>
           );
         }}

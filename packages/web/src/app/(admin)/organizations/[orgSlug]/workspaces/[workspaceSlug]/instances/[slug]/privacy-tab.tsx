@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Plus } from "lucide-react";
 import { ListDrawer } from "@/components/list-drawer";
 import { ListBadgeCell, ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { useListView } from "@/components/use-list-view";
 import {
@@ -140,15 +140,11 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
   };
 
   return (
-    <div className="max-w-2xl space-y-8">
+    <div className="space-y-8">
       {/* ── GDPR opt-out config ──────────────────────────────────────── */}
-      <section className="space-y-4 rounded-lg border p-4">
-        <div>
-          <Label className="text-base font-medium">{t("privacy.title")}</Label>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("privacy.description")}
-          </p>
-        </div>
+      <section className="max-w-2xl space-y-4 rounded-lg border p-4">
+        {/* The section's own title (the agent page's) already says "GDPR opt-out". */}
+        <p className="text-sm text-muted-foreground">{t("privacy.description")}</p>
 
         {/* Enable toggle */}
         <div className="flex items-center justify-between border-t pt-4">
@@ -241,16 +237,16 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
         {contactsError ? (
           <LoadFailed message={t("privacy.loadContactsFailed")} onRetry={refreshContacts} />
         ) : loadingContacts ? (
-          <ListLoading className="" />
+          <ListLoading className="mt-4" />
         ) : contacts.length === 0 ? (
           <ListEmpty className="mt-4" title={t("privacy.contactsEmpty")} />
         ) : (
-          <>
-            <ListSearch value={search} onChange={setSearch} className="relative" />
+          <div>
+            <ListToolbar value={search} onChange={setSearch} />
             {visibleContacts.length === 0 ? (
               <ListNoResults />
             ) : (
-              <ListTable className="mt-0">
+              <ListTable>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
                     <ListHead>{t("privacy.contact")}</ListHead>
@@ -273,7 +269,7 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
                 </TableBody>
               </ListTable>
             )}
-          </>
+          </div>
         )}
 
         {/* A contact's details and the way back in. */}
@@ -281,7 +277,7 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
           open={openContact !== null}
           onOpenChange={(open) => !open && setOpenContact(null)}
           title={openContact?.channelId ?? ""}
-          description={t("privacy.contactsTitle")}
+          description={openContact ? `${openContact.channelType} · ${openContact.source}` : ""}
           actions={
             openContact && (
               <Button onClick={() => handleReEnable(openContact)}>{t("privacy.reEnable")}</Button>
@@ -313,7 +309,7 @@ export function PrivacyTab({ instance, onUpdate }: Props) {
               disabled={addingContact || !newChannelType.trim() || !newChannelId.trim()}
               onClick={handleOptOutContact}
             >
-              {addingContact ? t("common.saving") : t("privacy.optOutContactButton")}
+              {addingContact ? t("common.saving") : t("common.add")}
             </Button>
           }
         >

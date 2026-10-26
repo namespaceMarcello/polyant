@@ -26,6 +26,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { LoadFailed } from "@/components/ui/load-failed";
+import { StatusBadge } from "@/components/status-badge";
 import { ListDrawer } from "@/components/list-drawer";
 import { ListEmpty, ListLoading } from "@/components/list-states";
 import { SwitchList } from "@/components/switch-list";
@@ -215,7 +216,7 @@ export function HooksTab({ slug }: Props) {
                   <Badge variant="destructive">{t("hooks.unknownFunction")}</Badge>
                 )}
                 {hook.enabled && missingParams(hook) && (
-                  <Badge variant="outline" className="text-warning">{t("hooks.paramsMissing")}</Badge>
+                  <StatusBadge tone="negative">{t("hooks.paramsMissing")}</StatusBadge>
                 )}
               </>
             );
@@ -247,8 +248,8 @@ export function HooksTab({ slug }: Props) {
         title={t("hooks.createTitle")}
         description={t("hooks.dialogDescription")}
         primary={
-          <Button onClick={handleSave} disabled={saving}>
-            {saving ? t("common.saving") : t("common.save")}
+          <Button onClick={handleSave} disabled={saving || !form.functionName}>
+            {saving ? t("common.saving") : t("common.add")}
           </Button>
         }
       >

@@ -109,6 +109,15 @@ describe("TriggersScheduledTab", () => {
     expect(screen.getByText("scheduledTasks.statusPaused")).toBeInTheDocument();
   });
 
+  it("draws the status as the shared badge without an icon, and an empty channel as an em dash", async () => {
+    await renderLoaded();
+    const badge = screen.getByText("scheduledTasks.statusActive");
+    expect(badge.querySelector("svg")).toBeNull();
+    const row = screen.getByText("Daily digest").closest("tr") as HTMLElement;
+    expect(within(row).getAllByText("—").length).toBeGreaterThan(0);
+    expect(within(row).queryByText("-")).not.toBeInTheDocument();
+  });
+
   it("shows the empty state when the agent has no task", async () => {
     mockList.mockResolvedValue({ tasks: [] });
     render(<TriggersScheduledTab slug="bot-1" />);
@@ -130,7 +139,7 @@ describe("TriggersScheduledTab", () => {
     const timezone = within(dialog).getByPlaceholderText("UTC");
     await user.clear(timezone);
     await user.type(timezone, "Europe/Rome");
-    await user.click(within(dialog).getByRole("button", { name: "scheduledTasks.form.create" }));
+    await user.click(within(dialog).getByRole("button", { name: "common.add" }));
 
     await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
     expect(mockCreate).toHaveBeenCalledWith("bot-1", {
@@ -147,17 +156,20 @@ describe("TriggersScheduledTab", () => {
     expect(mockList).toHaveBeenCalledTimes(2);
   });
 
-  it("refuses to create a task without a name or prompt", async () => {
+  it("keeps Add off until the task has a name and a prompt", async () => {
     const user = userEvent.setup();
     await renderLoaded();
 
     await user.click(screen.getByRole("button", { name: "scheduledTasks.newTask" }));
     const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: "scheduledTasks.form.create" }));
+    const add = within(dialog).getByRole("button", { name: "common.add" });
+    expect(add).toBeDisabled();
 
-    expect(mockToast.error).toHaveBeenCalledWith("scheduledTasks.validation.required");
+    await user.type(within(dialog).getByPlaceholderText("Daily briefing"), "Morning check");
+    expect(add).toBeDisabled();
+    await user.type(within(dialog).getByPlaceholderText("scheduledTasks.form.promptPlaceholder"), "Check the inbox");
+    expect(add).toBeEnabled();
     expect(mockCreate).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
   it("offers no delete or run-now on the row, only in the task's drawer", async () => {
@@ -260,7 +272,9 @@ describe("TriggersScheduledTab", () => {
     await renderLoaded();
 
     const dialog = await openTask(user, "Daily digest");
-    expect(dialog).toHaveTextContent("scheduledTasks.editTitle");
+    // The drawer is titled with the task's own name and describes its schedule.
+    expect(dialog).toHaveTextContent("Daily digest");
+    expect(dialog).toHaveTextContent("every day at 09:00");
     const name = within(dialog).getByDisplayValue("Daily digest");
     await user.clear(name);
     await user.type(name, "Daily digest v2");

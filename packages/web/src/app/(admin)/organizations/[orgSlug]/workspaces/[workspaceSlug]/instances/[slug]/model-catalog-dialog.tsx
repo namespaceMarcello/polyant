@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { useListView } from "@/components/use-list-view";
 import { ListNoResults } from "@/components/list-states";
 import type { ModelsResponse } from "@/lib/api";
@@ -142,8 +142,8 @@ export function ModelCatalogDialog({ modelsData, providerNames, selectedProvider
         </DialogHeader>
         <div className="space-y-4">
           {/* Toolbar: free-text search + provider filter */}
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <ListSearch value={catalogSearch} onChange={setCatalogSearch} label={t("settings.tab.catalogSearchPlaceholder")} className="relative flex-1" />
+          <div>
+          <ListToolbar value={catalogSearch} onChange={setCatalogSearch} label={t("settings.tab.catalogSearchPlaceholder")}>
             <Select value={catalogProvider} onValueChange={setCatalogProvider}>
               <SelectTrigger className="sm:w-52">
                 <SelectValue />
@@ -157,7 +157,7 @@ export function ModelCatalogDialog({ modelsData, providerNames, selectedProvider
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </ListToolbar>
 
           {/* Single flattened table with a Provider column. table-fixed so the
               model-id column absorbs the leftover width and long IDs wrap
@@ -165,7 +165,7 @@ export function ModelCatalogDialog({ modelsData, providerNames, selectedProvider
           {catalogRows.length === 0 ? (
             <ListNoResults>{t("settings.tab.catalogNoResults")}</ListNoResults>
           ) : (
-            <ListTable className="mt-0">
+            <ListTable>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   {catalogSortHead("settings.tab.model", "model")}
@@ -219,6 +219,7 @@ export function ModelCatalogDialog({ modelsData, providerNames, selectedProvider
               </TableBody>
             </ListTable>
           )}
+          </div>
           <p className="text-xs text-muted-foreground">{t("settings.tab.pricingNote")}</p>
         </div>
       </DialogContent>

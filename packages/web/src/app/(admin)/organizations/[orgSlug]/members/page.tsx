@@ -22,7 +22,7 @@ import { LoadFailed } from "@/components/ui/load-failed";
 import { useResource } from "@/hooks/use-resource";
 import { PermissionRequired } from "@/components/layout/permission-required";
 import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { MemberSheet, ROLE_LABEL_KEY } from "./member-sheet";
@@ -131,7 +131,7 @@ export default function MembersPage() {
         <ListEmpty title={t("members.empty.title")} description={t("members.empty.description")} />
       ) : (
         <>
-          <ListSearch value={search} onChange={setSearch} />
+          <ListToolbar value={search} onChange={setSearch} className="mt-6" />
           {visible.length === 0 ? (
             <ListNoResults />
           ) : (

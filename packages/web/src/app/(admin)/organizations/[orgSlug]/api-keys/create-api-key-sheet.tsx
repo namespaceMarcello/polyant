@@ -76,7 +76,7 @@ export function CreateApiKeySheet({ orgSlug, open, onOpenChange, onCreated }: Pr
       primary={
         token ? undefined : (
           <Button type="submit" form="create-api-key-form" disabled={submitting || !name.trim()}>
-            {t("apiKeys.create.submit")}
+            {t("common.add")}
           </Button>
         )
       }

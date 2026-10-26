@@ -133,7 +133,7 @@ export function ToolSheet({
     <ListDrawer
       open={tool !== null}
       onOpenChange={(open) => !open && requestClose()}
-      title={tool ? <span className="font-mono">{toolDisplayName(tool.name)}</span> : ""}
+      title={tool ? toolDisplayName(tool.name) : ""}
       description={tool ? capabilitySummary(tool, locale) || tool.description : ""}
       header={
         tool && (
@@ -146,12 +146,13 @@ export function ToolSheet({
           </div>
         )
       }
-      destructive={
+      // Disabling a tool is not a delete: it sits with the other actions, on the right.
+      actions={
         tool &&
         (alwaysEnabled ? (
           <span className="text-sm text-muted-foreground">{t("tools.cannotDisable")}</span>
         ) : (
-          <Button variant="ghost" onClick={() => onDisable(tool.name)}>
+          <Button variant="outline" onClick={() => onDisable(tool.name)}>
             <MinusCircle className="size-4" aria-hidden />
             {t("tools.disable")}
           </Button>

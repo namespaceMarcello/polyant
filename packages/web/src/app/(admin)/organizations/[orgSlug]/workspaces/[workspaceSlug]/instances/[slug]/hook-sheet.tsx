@@ -219,7 +219,7 @@ export function HookSheet({ hook, fn, specs, params, onSaveSettings, onDelete, o
       <ListDrawer
         open={hook !== null}
         onOpenChange={(open) => !open && requestClose()}
-        title={<span className={named ? "font-mono" : undefined}>{named ? fnName : t("hooks.unknownAction")}</span>}
+        title={named ? fnName : t("hooks.unknownAction")}
         description={(fn && hookSummary(fn, locale)) || t("hooks.dialogDescription")}
         header={
           hook && (

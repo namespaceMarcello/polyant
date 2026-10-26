@@ -3,6 +3,7 @@
 "use client";
 
 import { ExternalLink, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { ListDrawer } from "@/components/list-drawer";
 import { LoadFailed } from "@/components/ui/load-failed";
 import type { MonitorDetail, MonitorSection } from "@/lib/api";
@@ -91,13 +92,12 @@ function ConversationLink({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
   const paths = useTenantPaths();
   return (
-    <a
-      href={monitorConversationHref(conversationId, paths)}
-      className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
-    >
-      <ExternalLink className="size-3" aria-hidden />
-      {t("monitor.detail.openConversation")}
-    </a>
+    <Button asChild variant="outline">
+      <a href={monitorConversationHref(conversationId, paths)}>
+        <ExternalLink className="size-4" aria-hidden />
+        {t("monitor.detail.openConversation")}
+      </a>
+    </Button>
   );
 }
 
@@ -144,6 +144,12 @@ export function MonitorDetailSheet({
       onOpenChange={(open) => !open && onClose()}
       title={item ? itemSummary(item, t, fmt.currency) : ""}
       description={item ? labels.typeLong(item.type) : ""}
+      // A conversation opens in the workspace it belongs to: only a view that knows the workspace can link it.
+      actions={
+        item?.conversationId && monitorLevelView(level).conversationLinks ? (
+          <ConversationLink conversationId={item.conversationId} />
+        ) : undefined
+      }
       header={
         item && (
           <div className="flex flex-wrap gap-2 pt-1">
@@ -159,12 +165,6 @@ export function MonitorDetailSheet({
             <Field label={t("monitor.detail.time")}>{fmt.dateTime(item.time)}</Field>
             {item.agent.name && <Field label={t("monitor.detail.agent")}>{item.agent.name}</Field>}
             {item.durationMs !== null && <Field label={t("monitor.detail.duration")}>{formatDuration(item.durationMs)}</Field>}
-            {/* A conversation opens in the workspace it belongs to: only a view that knows the workspace can link it. */}
-            {item.conversationId && monitorLevelView(level).conversationLinks && (
-              <Field label={t("monitor.detail.conversation")}>
-                <ConversationLink conversationId={item.conversationId} />
-              </Field>
-            )}
           </dl>
 
           {live && <p className="rounded-md bg-muted p-3 text-sm text-muted-foreground">{t("monitor.detail.provisional")}</p>}

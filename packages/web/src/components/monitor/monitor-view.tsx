@@ -9,7 +9,7 @@ import { LoadFailed } from "@/components/ui/load-failed";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { ListHead, ListMetaCell, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { ChipTabs } from "@/components/layout/chip-tabs";
 import { api } from "@/lib/api";
@@ -173,7 +173,7 @@ export function MonitorView({
         </div>
       </div>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      <ListToolbar value={typed} onChange={setTyped} label={t("monitor.filter.search")}>
         {showAgentFilter && (
           <Select value={value.agent || "_all"} onValueChange={(agent) => onChange({ ...value, agent: agent === "_all" ? "" : agent })}>
             <SelectTrigger className="w-full sm:w-[200px]" aria-label={t("monitor.filter.agentLabel")}>
@@ -205,8 +205,7 @@ export function MonitorView({
             ))}
           </SelectContent>
         </Select>
-        <ListSearch value={typed} onChange={setTyped} label={t("monitor.filter.search")} className="relative flex-1" />
-      </div>
+      </ListToolbar>
 
       {filters.type && (
         <div className="flex">

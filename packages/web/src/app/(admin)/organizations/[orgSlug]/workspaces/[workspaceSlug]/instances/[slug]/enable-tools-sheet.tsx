@@ -4,18 +4,11 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Check, Search } from "lucide-react";
+import { Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { ListDrawer } from "@/components/list-drawer";
+import { ListToolbar } from "@/components/list-search";
 import { ChipTabs } from "@/components/layout/chip-tabs";
 import type { ToolState } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -64,7 +57,7 @@ interface Props {
  * same list of tools: a selection survives switching between them, and what is
  * selected is always a set of tools — a plugin is never the thing enabled.
  */
-export function EnableToolsDialog({
+export function EnableToolsSheet({
   open,
   onOpenChange,
   tools,
@@ -131,37 +124,34 @@ export function EnableToolsDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent
-        overlayClassName="bg-background/40 backdrop-blur-md"
-        className="flex h-[min(640px,calc(100dvh-2rem))] flex-col gap-0 p-0 sm:max-w-4xl"
-      >
-        <DialogHeader className="border-b p-5 pb-4">
-          <DialogTitle>{t("tools.pickerTitle")}</DialogTitle>
-          <DialogDescription>{t("tools.pickerDescription")}</DialogDescription>
-          <div className="flex flex-wrap items-center gap-3 pt-2">
-            <ChipTabs
-              value={groupBy}
-              onValueChange={(v) => { setGroupBy(v as GroupBy); setActiveGroup(null); }}
-              tabs={[
-                { value: "category", label: t("tools.pickerByCategory") },
-                { value: "plugin", label: t("tools.pickerByPlugin") },
-              ]}
-            />
-            <div className="relative min-w-48 flex-1">
-              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder={t("tools.pickerSearch")}
-                aria-label={t("tools.pickerSearch")}
-                className="pl-9"
-              />
-            </div>
-          </div>
-        </DialogHeader>
+    <ListDrawer
+      open={open}
+      onOpenChange={handleOpenChange}
+      title={t("tools.pickerTitle")}
+      description={t("tools.pickerDescription")}
+      actions={
+        <span className="text-sm text-muted-foreground">
+          {selected.size > 0 ? t("tools.pickerSelected", { count: selected.size }) : t("tools.pickerSelectHint")}
+        </span>
+      }
+      primary={
+        <Button onClick={confirm} disabled={selected.size === 0}>
+          {t("common.add")}
+        </Button>
+      }
+    >
+      <ListToolbar value={query} onChange={setQuery} label={t("tools.pickerSearch")}>
+        <ChipTabs
+          value={groupBy}
+          onValueChange={(v) => { setGroupBy(v as GroupBy); setActiveGroup(null); }}
+          tabs={[
+            { value: "category", label: t("tools.pickerByCategory") },
+            { value: "plugin", label: t("tools.pickerByPlugin") },
+          ]}
+        />
+      </ListToolbar>
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 sm:grid-cols-[13rem_minmax(0,1fr)]">
+      <div className="grid grid-cols-1 sm:grid-cols-[13rem_minmax(0,1fr)]">
           <nav className="flex max-h-32 flex-wrap gap-0.5 overflow-y-auto border-b p-2 sm:max-h-none sm:flex-col sm:flex-nowrap sm:border-r sm:border-b-0">
             {groups.map((group) => {
               const off = group.tools.filter((tool) => !isEnabled(tool.name)).length;
@@ -185,7 +175,7 @@ export function EnableToolsDialog({
             })}
           </nav>
 
-          <div className="min-h-0 overflow-y-auto p-3">
+          <div className="min-h-0">
             {visibleGroups.length === 0 ? (
               <p className="py-12 text-center text-sm text-muted-foreground">{t("tools.pickerNoMatch", { query })}</p>
             ) : (
@@ -258,22 +248,7 @@ export function EnableToolsDialog({
               ))
             )}
           </div>
-        </div>
-
-        <DialogFooter className="items-center border-t p-4 sm:justify-between">
-          <p className="text-sm text-muted-foreground">
-            {selected.size > 0 ? t("tools.pickerSelected", { count: selected.size }) : t("tools.pickerSelectHint")}
-          </p>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => handleOpenChange(false)}>
-              {t("common.cancel")}
-            </Button>
-            <Button onClick={confirm} disabled={selected.size === 0}>
-              {selected.size > 0 ? t("tools.pickerConfirm", { count: selected.size }) : t("tools.enable")}
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </ListDrawer>
   );
 }

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/status-badge";
 import type { KnowledgeDocument } from "@/lib/api";
 import type { TranslationKey } from "@/lib/i18n/types";
 
-/** The state of a knowledge document as a badge: ready, still being read, or failed. */
+/** The state of a knowledge document as a status badge: ready, still being read, or failed. */
 export function KnowledgeStatusBadge({
   status,
   t,
@@ -15,33 +14,13 @@ export function KnowledgeStatusBadge({
 }) {
   switch (status) {
     case "ready":
-      return (
-        <Badge variant="default" className="gap-1">
-          <CheckCircle2 className="size-3" />
-          {t("knowledge.tab.statusReady")}
-        </Badge>
-      );
+      return <StatusBadge tone="positive">{t("knowledge.tab.statusReady")}</StatusBadge>;
     case "processing":
-      return (
-        <Badge variant="secondary" className="gap-1">
-          <Loader2 className="size-3 animate-spin" />
-          {t("knowledge.tab.statusProcessing")}
-        </Badge>
-      );
+      return <StatusBadge tone="neutral">{t("knowledge.tab.statusProcessing")}</StatusBadge>;
     case "uploading":
-      return (
-        <Badge variant="secondary" className="gap-1">
-          <Loader2 className="size-3 animate-spin" />
-          {t("knowledge.tab.statusUploading")}
-        </Badge>
-      );
+      return <StatusBadge tone="neutral">{t("knowledge.tab.statusUploading")}</StatusBadge>;
     case "error":
-      return (
-        <Badge variant="destructive" className="gap-1">
-          <AlertCircle className="size-3" />
-          {t("knowledge.tab.statusError")}
-        </Badge>
-      );
+      return <StatusBadge tone="negative">{t("knowledge.tab.statusError")}</StatusBadge>;
   }
 }
 

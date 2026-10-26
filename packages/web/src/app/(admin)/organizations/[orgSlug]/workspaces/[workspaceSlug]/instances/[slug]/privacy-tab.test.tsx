@@ -188,7 +188,7 @@ describe("PrivacyTab", () => {
     await user.click(screen.getByRole("button", { name: "privacy.add" }));
     // The contact id input placeholder reflects the default channel (whatsapp).
     await user.type(screen.getByPlaceholderText("+39123456789"), "+39123456789");
-    await user.click(screen.getByText("privacy.optOutContactButton"));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "common.add" }));
 
     await waitFor(() => {
       expect(mockOptoutsOptOut).toHaveBeenCalledWith(
@@ -235,5 +235,28 @@ describe("PrivacyTab", () => {
 
     expect(screen.queryByText("+39222")).not.toBeInTheDocument();
     expect(screen.getByText("+39111")).toBeInTheDocument();
+  });
+
+  it("puts Re-enable among the right-hand actions, before Close, and describes the contact in one line", async () => {
+    const user = userEvent.setup();
+    mockOptoutsList.mockResolvedValue({
+      optouts: [{ channelType: "whatsapp", channelId: "+39222", source: "keyword", updatedAt: null }],
+    });
+    render(<PrivacyTab instance={makeInstance()} />);
+    await user.click(await screen.findByRole("button", { name: "+39222" }));
+    const drawer = await screen.findByRole("dialog");
+
+    const reEnable = within(drawer).getByRole("button", { name: "privacy.reEnable" });
+    // The footer's Close shares its group with the extras (the sheet's corner X is elsewhere).
+    const close = within(reEnable.parentElement!).getByRole("button", { name: "common.close" });
+    expect(reEnable.compareDocumentPosition(close) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(drawer).getByText("whatsapp · keyword")).toBeInTheDocument();
+  });
+
+  it("lets the contacts list use the full width and does not repeat the section title in its card", async () => {
+    const { container } = render(<PrivacyTab instance={makeInstance()} />);
+    await waitFor(() => expect(mockOptoutsList).toHaveBeenCalled());
+    expect(screen.queryByText("privacy.title")).not.toBeInTheDocument();
+    expect(container.firstElementChild).not.toHaveClass("max-w-2xl");
   });
 });

@@ -22,7 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ListControlCell, ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
 import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListNoResults } from "@/components/list-states";
 import {
@@ -48,7 +48,7 @@ import { secretSpecLabel } from "@/components/instance-secret/secret-spec-field"
 import { useSecretSpecs } from "@/components/instance-secret/use-secret-specs";
 import { usePageSaveAction } from "./page-actions-context";
 import { ToolSheet } from "./tool-sheet";
-import { EnableToolsDialog } from "./enable-tools-dialog";
+import { EnableToolsSheet } from "./enable-tools-sheet";
 import {
   categoryLabel,
   capabilitySummary,
@@ -347,12 +347,13 @@ export function ToolsTab({
       {listed.length === 0 && alwaysOn.length === 0 ? (
         <ListEmpty className="mt-8" title={t("tools.noneEnabled")} />
       ) : (
-        <>
-          <ListSearch value={search} onChange={setSearch} label={t("tools.searchEnabled")} className="relative" />
-          <div className="mt-2.5 flex flex-wrap gap-1.5">
-            {filterPill(t("tools.filterOrigin"), originFilter, originOptions, originName, setOriginFilter)}
-            {filterPill(t("tools.filterCategory"), categoryFilter, categoryOptions, (cat) => categoryLabel(cat, locale), setCategoryFilter)}
-          </div>
+        <div>
+          <ListToolbar value={search} onChange={setSearch} label={t("tools.searchEnabled")}>
+            <div className="flex flex-wrap gap-1.5">
+              {filterPill(t("tools.filterOrigin"), originFilter, originOptions, originName, setOriginFilter)}
+              {filterPill(t("tools.filterCategory"), categoryFilter, categoryOptions, (cat) => categoryLabel(cat, locale), setCategoryFilter)}
+            </div>
+          </ListToolbar>
 
           {rows.length === 0 && systemRows.length === 0 ? (
             <ListNoResults />
@@ -477,7 +478,7 @@ export function ToolsTab({
               </TableBody>
             </ListTable>
           )}
-        </>
+        </div>
       )}
 
       <ToolSheet
@@ -494,7 +495,7 @@ export function ToolsTab({
         onClose={() => setOpenTool(null)}
       />
 
-      <EnableToolsDialog
+      <EnableToolsSheet
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         tools={catalogue}
