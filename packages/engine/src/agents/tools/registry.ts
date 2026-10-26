@@ -211,6 +211,9 @@ export function fillMissingKeysFromJsonSchema(schema: Record<string, unknown>, v
 // JSON Schema tracks Zod faithfully. `strict: false` ignores keywords ajv does not
 // know (a plugin's annotations) instead of failing the compile, and ajv-formats
 // restores the string formats Zod serializes (email, uri, date-time, uuid…).
+// Formats only: its formatMinimum/formatMaximum keywords generate code with
+// ajv-formats' own ajv copy (npm cannot hoist it next to the root's ajv 6) and
+// throw at validation time. ajv 6 did not have those keywords either.
 const ajv = new Ajv({
   removeAdditional: "all",
   coerceTypes: false,
@@ -218,7 +221,7 @@ const ajv = new Ajv({
   allErrors: false,
   strict: false,
 });
-addFormats(ajv);
+addFormats(ajv, { keywords: false });
 const validatorCache = new WeakMap<object, ValidateFunction | null>();
 
 function getValidator(schema: Record<string, unknown>): ValidateFunction | null {

@@ -771,6 +771,15 @@ describe("registry", () => {
       };
       expect(fillAndValidate(annotated, { count: "1" }).ok).toBe(false);
     });
+
+    it("treats formatMinimum as an annotation instead of throwing", () => {
+      const bounded = {
+        type: "object",
+        properties: { day: { type: "string", format: "date", formatMinimum: "2026-01-01" } },
+      };
+      expect(fillAndValidate(bounded, { day: "2025-05-01" }).ok).toBe(true);
+      expect(fillAndValidate(bounded, { day: "not-a-date" }).ok).toBe(false);
+    });
   });
 
   describe("scopeSecrets (least-privilege, enforced)", () => {
