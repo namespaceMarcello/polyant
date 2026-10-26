@@ -1188,6 +1188,7 @@
   "privacy.reEnable": "Riattiva",
   "privacy.reEnableSuccess": "Contatto riattivato",
   "privacy.reEnableFailed": "Riattivazione contatto non riuscita",
+  "privacy.add": "Aggiungi",
   "privacy.optOutContact": "Disiscrivi un contatto",
   "privacy.optOutContactHelp": "Disiscrivi manualmente un contatto. Non riceverà più messaggi.",
   "privacy.optOutContactButton": "Disiscrivi",

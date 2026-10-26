@@ -1188,6 +1188,7 @@
   "privacy.reEnable": "Re-enable",
   "privacy.reEnableSuccess": "Contact re-enabled",
   "privacy.reEnableFailed": "Failed to re-enable contact",
+  "privacy.add": "Add",
   "privacy.optOutContact": "Opt out a contact",
   "privacy.optOutContactHelp": "Manually opt out a contact. They will not receive any further messages.",
   "privacy.optOutContactButton": "Opt out",
