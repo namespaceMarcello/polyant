@@ -140,7 +140,7 @@ describe("skills catalog", () => {
     const name = await within(drawer).findByLabelText("Nome");
     await user.clear(name);
     await user.type(name, "Ricerca in rete");
-    await user.click(within(drawer).getByRole("button", { name: "Salva" }));
+    await user.click(within(drawer).getByRole("button", { name: "Salva modifiche" }));
     await waitFor(() =>
       expect(update).toHaveBeenCalledWith("web-research", expect.objectContaining({ displayName: "Ricerca in rete" })),
     );
@@ -153,7 +153,7 @@ describe("skills catalog", () => {
     await user.click(await screen.findByText("Cerca in rete"));
     const drawer = await screen.findByRole("dialog");
     await user.clear(await within(drawer).findByLabelText("Nome"));
-    expect(within(drawer).getByRole("button", { name: "Salva" })).toBeDisabled();
+    expect(within(drawer).getByRole("button", { name: "Salva modifiche" })).toBeDisabled();
   });
 
   it("shows the empty state with its action when the library has no skill", async () => {
@@ -187,7 +187,7 @@ describe("skills catalog", () => {
     const drawer = await screen.findByRole("dialog");
     await within(drawer).findByLabelText("Nome");
     const footer = drawer.querySelector("[data-slot=sheet-footer]") as HTMLElement;
-    expect(within(footer).getAllByRole("button").map((b) => b.textContent)).toEqual(["Elimina", "Esporta", "Annulla", "Salva"]);
+    expect(within(footer).getAllByRole("button").map((b) => b.textContent)).toEqual(["Elimina", "Esporta", "Annulla", "Salva modifiche"]);
     expect(within(drawer).getByText("web-research")).toBeInTheDocument();
   });
 
@@ -198,11 +198,11 @@ describe("skills catalog", () => {
     await user.click(await screen.findByText("Cerca in rete"));
     const drawer = await screen.findByRole("dialog");
     await within(drawer).findByLabelText("Nome");
-    expect(within(drawer).getByRole("button", { name: "Salva" })).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: "Salva modifiche" })).toBeInTheDocument();
 
     await user.click(within(drawer).getByRole("tab", { name: "Versioni" }));
     await waitFor(() => expect(versions).toHaveBeenCalled());
-    expect(within(drawer).queryByRole("button", { name: "Salva" })).not.toBeInTheDocument();
+    expect(within(drawer).queryByRole("button", { name: "Salva modifiche" })).not.toBeInTheDocument();
     expect(within(drawer).getByRole("button", { name: "Elimina" })).toBeInTheDocument();
   });
 

@@ -2,9 +2,11 @@
 
 "use client";
 
+import type { ReactNode } from "react";
 import { Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/lib/i18n/context";
+import { cn } from "@/lib/utils";
 
 /**
  * Whether a row matches what was typed: every word of the query appears in the
@@ -44,6 +46,35 @@ export function ListSearch({
         aria-label={text}
         className="pl-9"
       />
+    </div>
+  );
+}
+
+/**
+ * The row above a list: the search box first, taking the width that is left, then
+ * the filters and toggles that narrow the list to its right. Put it and the
+ * `ListTable` under it in a plain element (not one with `space-y-*`), so the gap
+ * between them is the table's own, the same in every list.
+ */
+export function ListToolbar({
+  value,
+  onChange,
+  label,
+  className,
+  children,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  label?: string;
+  /** Margin above the row; none inside a section, `mt-6` under a page header. */
+  className?: string;
+  /** The filters, to the right of the search box. */
+  children?: ReactNode;
+}) {
+  return (
+    <div className={cn("flex flex-col gap-3 sm:flex-row sm:items-center", className)}>
+      <ListSearch value={value} onChange={onChange} label={label} className="relative w-full sm:flex-1" />
+      {children}
     </div>
   );
 }

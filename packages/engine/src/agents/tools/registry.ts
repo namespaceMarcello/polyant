@@ -2,6 +2,7 @@
 
 import { tool, jsonSchema, type Tool } from "ai";
 import Ajv, { type ValidateFunction } from "ajv";
+import addFormats from "ajv-formats";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { pipelineLog } from "../../utils/pipeline-logger.js";
@@ -207,8 +208,20 @@ export function fillMissingKeysFromJsonSchema(schema: Record<string, unknown>, v
 // OpenAI-compatible endpoints) can emit off-schema args, which previously
 // reached execute unchecked. The tool schemas are strict-mode-compatible (no
 // exotic constructs — those live in execute per rule-7), so ajv on the derived
-// JSON Schema tracks Zod faithfully.
-const ajv = new Ajv({ removeAdditional: "all", coerceTypes: false, useDefaults: false, allErrors: false });
+// JSON Schema tracks Zod faithfully. `strict: false` ignores keywords ajv does not
+// know (a plugin's annotations) instead of failing the compile, and ajv-formats
+// restores the string formats Zod serializes (email, uri, date-time, uuid…).
+// Formats only: its formatMinimum/formatMaximum keywords generate code with
+// ajv-formats' own ajv copy (npm cannot hoist it next to the root's ajv 6) and
+// throw at validation time. ajv 6 did not have those keywords either.
+const ajv = new Ajv({
+  removeAdditional: "all",
+  coerceTypes: false,
+  useDefaults: false,
+  allErrors: false,
+  strict: false,
+});
+addFormats(ajv, { keywords: false });
 const validatorCache = new WeakMap<object, ValidateFunction | null>();
 
 function getValidator(schema: Record<string, unknown>): ValidateFunction | null {

@@ -14,10 +14,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { LoadFailed } from "@/components/ui/load-failed";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { TableBody, TableHeader, TableRow } from "@/components/ui/table";
-import { ListControlCell, ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch, matchesSearch } from "@/components/list-search";
-import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
+import { ListEmpty, ListLoading } from "@/components/list-states";
+import { SwitchList } from "@/components/switch-list";
 import { DrawerDeleteButton, ListDrawer } from "@/components/list-drawer";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -164,7 +162,6 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
     }
   };
   usePageSaveAction({ isDirty: Object.keys(pending).length > 0, saving: savingDocs, onSave: saveDocSwitches });
-  const [search, setSearch] = useState("");
   const [viewDocId, setViewDocId] = useState<string | null>(null);
   const [viewContent, setViewContent] = useState<string>("");
   const [viewLoading, setViewLoading] = useState(false);
@@ -322,9 +319,6 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
     ]
       .filter(Boolean)
       .join(" · ");
-  const visibleDocs = documents
-    .filter((doc) => matchesSearch(search, doc.filename, summaryOf(doc), statusText(doc)))
-    .sort((a, b) => a.filename.localeCompare(b.filename));
   const viewedDoc = viewDocId ? documents.find((d) => d.id === viewDocId) ?? null : null;
 
   return (
@@ -378,45 +372,20 @@ export function KnowledgeTab({ slug, instance, onUpdate }: Props) {
       {documents.length === 0 ? (
         <ListEmpty className="mt-8" title={t("knowledge.tab.empty")} description={t("knowledge.tab.emptyHint")} />
       ) : (
-        <>
-          <ListSearch value={search} onChange={setSearch} className="relative mt-4" />
-          {visibleDocs.length === 0 ? (
-            <ListNoResults />
-          ) : (
-            <ListTable>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <ListHead>{t("common.name")}</ListHead>
-                  <ListHead align="end" className="w-28">{t("common.active")}</ListHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {visibleDocs.map((doc) => (
-                  <ListRow
-                    key={doc.id}
-                    onOpen={() => handleView(doc)}
-                    selected={viewDocId === doc.id}
-                    muted={!isOn(doc)}
-                  >
-                    <ListNameCell
-                      name={doc.filename}
-                      onOpen={() => handleView(doc)}
-                      badges={<KnowledgeStatusBadge status={doc.status} t={t} />}
-                      summary={summaryOf(doc)}
-                    />
-                    <ListControlCell>
-                      <Switch
-                        checked={isOn(doc)}
-                        onCheckedChange={(v) => setDocEnabled(doc, v)}
-                        aria-label={t("knowledge.tab.docEnabled", { name: doc.filename })}
-                      />
-                    </ListControlCell>
-                  </ListRow>
-                ))}
-              </TableBody>
-            </ListTable>
-          )}
-        </>
+        <SwitchList
+          rows={documents}
+          rowKey={(doc) => doc.id}
+          name={(doc) => doc.filename}
+          nameHeader={t("common.name")}
+          badges={(doc) => <KnowledgeStatusBadge status={doc.status} t={t} />}
+          summary={summaryOf}
+          searchText={(doc) => [statusText(doc)]}
+          isOn={isOn}
+          onToggle={async (doc, v) => setDocEnabled(doc, v)}
+          switchLabel={(doc) => t("knowledge.tab.docEnabled", { name: doc.filename })}
+          onOpen={handleView}
+          selectedKey={viewDocId}
+        />
       )}
       </div>
 

@@ -22,7 +22,8 @@ import { LoadFailed } from "@/components/ui/load-failed";
 import { useResource } from "@/hooks/use-resource";
 import { PermissionRequired } from "@/components/layout/permission-required";
 import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch, matchesSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
+import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListLoading, ListNoResults } from "@/components/list-states";
 import { MemberSheet, ROLE_LABEL_KEY } from "./member-sheet";
 
@@ -78,9 +79,7 @@ export default function MembersPage() {
   };
 
   const roleLabel = (m: OrganizationMember) => (m.roleKey ? t(ROLE_LABEL_KEY[m.roleKey]) : "");
-  const visible = members
-    .filter((m) => matchesSearch(search, m.name, m.email, roleLabel(m)))
-    .sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email));
+  const visible = useListView(members, search, (m) => [m.name, m.email, roleLabel(m)], (m) => m.name ?? m.email);
   const openMember = openUserId === null ? null : members.find((m) => m.userId === openUserId) ?? null;
 
   const header = <PageHeader title={t("members.title")} subtitle={t("members.subtitle")} />;
@@ -132,7 +131,7 @@ export default function MembersPage() {
         <ListEmpty title={t("members.empty.title")} description={t("members.empty.description")} />
       ) : (
         <>
-          <ListSearch value={search} onChange={setSearch} />
+          <ListToolbar value={search} onChange={setSearch} className="mt-6" />
           {visible.length === 0 ? (
             <ListNoResults />
           ) : (

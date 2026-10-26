@@ -3,7 +3,8 @@
 "use client";
 
 import { ExternalLink, Loader2 } from "lucide-react";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Button } from "@/components/ui/button";
+import { ListDrawer } from "@/components/list-drawer";
 import { LoadFailed } from "@/components/ui/load-failed";
 import type { MonitorDetail, MonitorSection } from "@/lib/api";
 import { DEFAULT_MONITOR_LEVEL, itemSummary, monitorConversationHref, monitorLevelView, useMonitorEndpoint, type MonitorLevel } from "@/lib/monitor/extensions";
@@ -91,13 +92,12 @@ function ConversationLink({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
   const paths = useTenantPaths();
   return (
-    <a
-      href={monitorConversationHref(conversationId, paths)}
-      className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
-    >
-      <ExternalLink className="size-3" aria-hidden />
-      {t("monitor.detail.openConversation")}
-    </a>
+    <Button asChild variant="outline">
+      <a href={monitorConversationHref(conversationId, paths)}>
+        <ExternalLink className="size-4" aria-hidden />
+        {t("monitor.detail.openConversation")}
+      </a>
+    </Button>
   );
 }
 
@@ -139,80 +139,80 @@ export function MonitorDetailSheet({
   const detail: MonitorDetail | undefined = item ? (live ? item.detail : stored.data) : undefined;
 
   return (
-    <Sheet open={item !== null} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent side="right" className="gap-0">
-        {item && (
-          <>
-            <SheetHeader className="gap-2 border-b p-5 pr-12">
-              <SheetTitle className="break-words text-base font-medium">{itemSummary(item, t, fmt.currency)}</SheetTitle>
-              <SheetDescription>{labels.typeLong(item.type)}</SheetDescription>
-              <div className="flex flex-wrap gap-2 pt-1">
-                <TypePill type={item.type} />
-                <OutcomePill outcome={item.outcome} />
-              </div>
-            </SheetHeader>
+    <ListDrawer
+      open={item !== null}
+      onOpenChange={(open) => !open && onClose()}
+      title={item ? itemSummary(item, t, fmt.currency) : ""}
+      description={item ? labels.typeLong(item.type) : ""}
+      // A conversation opens in the workspace it belongs to: only a view that knows the workspace can link it.
+      actions={
+        item?.conversationId && monitorLevelView(level).conversationLinks ? (
+          <ConversationLink conversationId={item.conversationId} />
+        ) : undefined
+      }
+      header={
+        item && (
+          <div className="flex flex-wrap gap-2 pt-1">
+            <TypePill type={item.type} />
+            <OutcomePill outcome={item.outcome} />
+          </div>
+        )
+      }
+    >
+      {item && (
+        <>
+          <dl className="space-y-2">
+            <Field label={t("monitor.detail.time")}>{fmt.dateTime(item.time)}</Field>
+            {item.agent.name && <Field label={t("monitor.detail.agent")}>{item.agent.name}</Field>}
+            {item.durationMs !== null && <Field label={t("monitor.detail.duration")}>{formatDuration(item.durationMs)}</Field>}
+          </dl>
 
-            <div className="flex-1 space-y-6 overflow-y-auto p-5">
-              <dl className="space-y-2">
-                <Field label={t("monitor.detail.time")}>{fmt.dateTime(item.time)}</Field>
-                {item.agent.name && <Field label={t("monitor.detail.agent")}>{item.agent.name}</Field>}
-                {item.durationMs !== null && <Field label={t("monitor.detail.duration")}>{formatDuration(item.durationMs)}</Field>}
-                {/* A conversation opens in the workspace it belongs to: only a view that knows the workspace can link it. */}
-                {item.conversationId && monitorLevelView(level).conversationLinks && (
-                  <Field label={t("monitor.detail.conversation")}>
-                    <ConversationLink conversationId={item.conversationId} />
-                  </Field>
-                )}
-              </dl>
+          {live && <p className="rounded-md bg-muted p-3 text-sm text-muted-foreground">{t("monitor.detail.provisional")}</p>}
 
-              {live && <p className="rounded-md bg-muted p-3 text-sm text-muted-foreground">{t("monitor.detail.provisional")}</p>}
-
-              {!live && stored.loading && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" aria-hidden />
-                  {t("common.loading")}
-                </div>
-              )}
-              {!live && stored.error !== undefined && (
-                <LoadFailed message={t("monitor.detail.loadFailed")} onRetry={stored.reload} className="py-4" />
-              )}
-
-              {detail?.error && (
-                <section className="space-y-2">
-                  <h3 className="text-sm font-medium text-destructive">{t("monitor.detail.error")}</h3>
-                  <pre className="whitespace-pre-wrap break-words rounded-md bg-destructive/10 p-3 text-xs">{detail.error}</pre>
-                </section>
-              )}
-
-              {detail?.sections.map((section) =>
-                section.key === "metadata" ? (
-                  // The stored record of a change (codes, ids, raw keys): there for whoever has to
-                  // trace it, closed so the drawer opens on who did what to what.
-                  <details key={section.key} className="space-y-2" data-testid="monitor-technical">
-                    <summary className="cursor-pointer select-none text-sm font-medium">{labels.section(section.key)}</summary>
-                    <div className="pt-2">
-                      <SectionBody section={section} />
-                    </div>
-                  </details>
-                ) : (
-                  <section key={section.key} className="space-y-2">
-                    <h3 className="text-sm font-medium">{labels.section(section.key)}</h3>
-                    <SectionBody section={section} />
-                  </section>
-                ),
-              )}
+          {!live && stored.loading && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+              {t("common.loading")}
             </div>
+          )}
+          {!live && stored.error !== undefined && (
+            <LoadFailed message={t("monitor.detail.loadFailed")} onRetry={stored.reload} className="py-4" />
+          )}
 
-            <p className="border-t p-4 text-xs text-muted-foreground">
-              {retentionDays != null
-                ? t("monitor.detail.retentionDays", { days: retentionDays })
-                : isKeptWithConversation(item.type)
-                  ? t("monitor.detail.retentionConversation")
-                  : t("monitor.detail.retentionNone")}
-            </p>
-          </>
-        )}
-      </SheetContent>
-    </Sheet>
+          {detail?.error && (
+            <section className="space-y-2">
+              <h3 className="text-sm font-medium text-destructive">{t("monitor.detail.error")}</h3>
+              <pre className="whitespace-pre-wrap break-words rounded-md bg-destructive/10 p-3 text-xs">{detail.error}</pre>
+            </section>
+          )}
+
+          {detail?.sections.map((section) =>
+            section.key === "metadata" ? (
+              // The stored record of a change (codes, ids, raw keys): there for whoever has to
+              // trace it, closed so the drawer opens on who did what to what.
+              <details key={section.key} className="space-y-2" data-testid="monitor-technical">
+                <summary className="cursor-pointer select-none text-sm font-medium">{labels.section(section.key)}</summary>
+                <div className="pt-2">
+                  <SectionBody section={section} />
+                </div>
+              </details>
+            ) : (
+              <section key={section.key} className="space-y-2">
+                <h3 className="text-sm font-medium">{labels.section(section.key)}</h3>
+                <SectionBody section={section} />
+              </section>
+            ),
+          )}
+
+          <p className="border-t pt-4 text-xs text-muted-foreground">
+            {retentionDays != null
+              ? t("monitor.detail.retentionDays", { days: retentionDays })
+              : isKeptWithConversation(item.type)
+                ? t("monitor.detail.retentionConversation")
+                : t("monitor.detail.retentionNone")}
+          </p>
+        </>
+      )}
+    </ListDrawer>
   );
 }

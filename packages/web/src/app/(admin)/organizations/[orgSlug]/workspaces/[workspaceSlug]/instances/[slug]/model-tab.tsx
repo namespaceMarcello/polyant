@@ -4,10 +4,12 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, Check } from "lucide-react";
 import { TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
-import { ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { Skeleton } from "@/components/ui/skeleton";
+import { EMPTY_CELL, ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
+import { ListToolbar } from "@/components/list-search";
+import { StatusBadge } from "@/components/status-badge";
+import { ListLoading, ListNoResults } from "@/components/list-states";
+import { useListView } from "@/components/use-list-view";
 import { api, isForbidden, type Instance, type ModelsResponse, type SecretStatus } from "@/lib/api";
 import { useResource } from "@/hooks/use-resource";
 import { useI18n } from "@/lib/i18n/context";
@@ -17,6 +19,7 @@ import {
   MODEL_TASKS,
   REQUIRED_KEYS,
   STT_LABELS,
+  TASK_HELP,
   TASK_TITLE,
   savedChoices,
   taskCredential,
@@ -53,6 +56,7 @@ export function ModelTab({ instance, onUpdate, onConfigurationChanged }: Props) 
   const canReadSecrets = !isForbidden(secretsRead.error);
   const loading = models.loading || secretsRead.loading;
   const [openTask, setOpenTask] = useState<ModelTask | null>(null);
+  const [search, setSearch] = useState("");
 
   // A failed read other than a refusal is said once, when it arrives.
   const failed = models.error !== undefined || (secretsRead.error !== undefined && canReadSecrets);
@@ -62,14 +66,15 @@ export function ModelTab({ instance, onUpdate, onConfigurationChanged }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [failed]);
 
-  if (loading) {
-    return (
-      <div className="space-y-4">
-        <Skeleton className="h-10 rounded-lg" />
-        <Skeleton className="h-32 rounded-lg" />
-      </div>
-    );
-  }
+  // The tasks are a fixed set in a fixed order (conversation, embedder, transcription).
+  const visibleTasks = useListView(
+    MODEL_TASKS,
+    search,
+    (task) => [t(TASK_TITLE[task]), t(TASK_HELP[task])],
+    null,
+  );
+
+  if (loading) return <ListLoading className="" />;
 
   const choices = savedChoices(instance);
   const isConfigured = (key: string) => secrets.some((s) => s.key === key && s.configured);
@@ -97,29 +102,24 @@ export function ModelTab({ instance, onUpdate, onConfigurationChanged }: Props) 
   /** Whether a task can run: only what can be known, never a guess. */
   const status = (task: ModelTask) => {
     if (!taskInUse(task, instance, choices.sttProvider)) {
-      return <span className="text-xs text-muted-foreground">{t("modelTasks.notInUse")}</span>;
+      return <StatusBadge tone="neutral">{t("modelTasks.notInUse")}</StatusBadge>;
     }
     const group = taskCredential(task, choices);
-    if (!canReadSecrets || !group) return <span className="text-xs text-muted-foreground">—</span>;
+    if (!canReadSecrets || !group) return <span className="text-muted-foreground">{EMPTY_CELL}</span>;
     if (REQUIRED_KEYS[group].some((key) => !isConfigured(key))) {
-      return (
-        <span className="inline-flex items-center gap-1 text-xs font-medium text-warning">
-          <AlertTriangle className="size-3.5" aria-hidden />
-          {t("settings.role.missing")}
-        </span>
-      );
+      return <StatusBadge tone="negative">{t("settings.role.missing")}</StatusBadge>;
     }
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
-        <Check className="size-3.5" aria-hidden />
-        {t("settings.role.ready")}
-      </span>
-    );
+    return <StatusBadge tone="positive">{t("settings.role.ready")}</StatusBadge>;
   };
 
   return (
     <>
-      <ListTable className="mt-0">
+      <div>
+      <ListToolbar value={search} onChange={setSearch} />
+      {visibleTasks.length === 0 ? (
+        <ListNoResults />
+      ) : (
+      <ListTable>
         <TableHeader>
           <TableRow className="hover:bg-transparent">
             <ListHead className="w-[30%]">{t("modelTasks.columnTask")}</ListHead>
@@ -129,12 +129,12 @@ export function ModelTab({ instance, onUpdate, onConfigurationChanged }: Props) 
           </TableRow>
         </TableHeader>
         <TableBody>
-          {MODEL_TASKS.map((task) => {
+          {visibleTasks.map((task) => {
             const { provider, model } = describe(task);
             const title = t(TASK_TITLE[task]);
             return (
               <ListRow key={task} selected={openTask === task} onOpen={() => setOpenTask(task)}>
-                <ListNameCell name={title} openLabel={t("modelTasks.open", { task: title })} onOpen={() => setOpenTask(task)} />
+                <ListNameCell name={title} summary={t(TASK_HELP[task])} openLabel={t("modelTasks.open", { task: title })} onOpen={() => setOpenTask(task)} />
                 <TableCell className="hidden truncate text-sm sm:table-cell">{provider}</TableCell>
                 <TableCell className="hidden truncate font-mono text-xs md:table-cell" title={model}>
                   {model}
@@ -145,6 +145,8 @@ export function ModelTab({ instance, onUpdate, onConfigurationChanged }: Props) 
           })}
         </TableBody>
       </ListTable>
+      )}
+      </div>
 
       <ModelTaskSheet
         task={openTask}

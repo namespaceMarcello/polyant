@@ -282,6 +282,8 @@ interface BuildToolsOptions {
   model?: string;
   /** The turn's cancellation signal, handed to a spawnTask sub-agent. */
   abortSignal?: AbortSignal;
+  /** The turn's tracing, so a tool's `ctx.ai` call is traced with the turn. */
+  langsmith?: ChatRequest["langsmith"];
   conversationId?: string;
   toolCallTraces?: ToolCallTrace[];
   includeHarness?: Set<string>;
@@ -295,7 +297,7 @@ interface BuildToolsOptions {
 
 /** Build the tool set scoped to an instance, filtered by DB-stored enabled tool names. */
 async function buildTools(opts: BuildToolsOptions) {
-  const { instanceId, instanceUuid, secrets, memoryEnabled, knowledgeEnabled, apiKeys, provider, model, abortSignal, conversationId, toolCallTraces, includeHarness, attachments, signals, agentCallDepth, stateBuffer } = opts;
+  const { instanceId, instanceUuid, secrets, memoryEnabled, knowledgeEnabled, apiKeys, provider, model, abortSignal, langsmith, conversationId, toolCallTraces, includeHarness, attachments, signals, agentCallDepth, stateBuffer } = opts;
   // No rows means no tools. This used to mean "enable everything", which made
   // the empty tool set indistinguishable from the full one: disabling every
   // tool in the panel granted the agent the entire registry instead of none of
@@ -341,7 +343,7 @@ async function buildTools(opts: BuildToolsOptions) {
         // takeable here, so the store needs no per-tool authorization of its own.
         artifacts: artifactApiFor(instanceId, conversationId),
         // No `model`: a pinned model would override the tier the tool asks for.
-        ai: agentAi({ provider, apiKeys, abortSignal }, { conversationId, instanceId }),
+        ai: agentAi({ provider, apiKeys, abortSignal, langsmith }, { conversationId, instanceId }),
         abortSignal,
       };
       // ctx.oauth closes over ctx, so it is assigned after the literal.
@@ -554,6 +556,7 @@ async function prepareSupervisor(input: SupervisorInput): Promise<SupervisorCont
     provider: input.provider,
     model: input.model,
     abortSignal: input.abortSignal,
+    langsmith: input.langsmith,
     conversationId: input.conversationId,
     toolCallTraces,
     includeHarness: input.includeHarness,

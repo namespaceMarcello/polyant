@@ -8,20 +8,13 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ListDrawer } from "@/components/list-drawer";
 import { api, getUserErrorMessage, type Instance } from "@/lib/api";
 import { useI18n } from "@/lib/i18n/context";
 
@@ -36,8 +29,7 @@ interface Props {
 }
 
 /**
- * The form, mounted only while the dialog is open (the Radix content unmounts on
- * close), so every opening starts from empty fields and the current default agent
+ * The form, mounted only while the drawer is open, so every opening starts from empty fields and the current default agent
  * without a reset function or a re-sync effect.
  */
 function CreateMemoryForm({ onOpenChange, instances, defaultInstanceId, onCreated }: Omit<Props, "open">) {
@@ -69,13 +61,18 @@ function CreateMemoryForm({ onOpenChange, instances, defaultInstanceId, onCreate
   };
 
   return (
-    <>
-    <DialogHeader>
-      <DialogTitle>{t("memory.create.title")}</DialogTitle>
-      <DialogDescription>{t("memory.create.description")}</DialogDescription>
-    </DialogHeader>
-
-    <div className="space-y-4 py-2">
+    <ListDrawer
+      open
+      onOpenChange={onOpenChange}
+      title={t("memory.create.title")}
+      description={t("memory.create.description")}
+      primary={
+        <Button onClick={handleCreate} disabled={creating || !instanceId || !content.trim()}>
+          {creating ? t("common.saving") : t("common.add")}
+        </Button>
+      }
+    >
+    <div className="space-y-4">
       <div className="space-y-2">
         <Label>{t("memory.create.instance")}</Label>
         <Select
@@ -141,24 +138,12 @@ function CreateMemoryForm({ onOpenChange, instances, defaultInstanceId, onCreate
       </div>
     </div>
 
-    <DialogFooter>
-      <Button variant="outline" onClick={() => onOpenChange(false)}>
-        {t("common.cancel")}
-      </Button>
-      <Button onClick={handleCreate} disabled={creating || !instanceId || !content.trim()}>
-        {creating ? t("common.saving") : t("memory.create.button")}
-      </Button>
-    </DialogFooter>
-    </>
+    </ListDrawer>
   );
 }
 
-export function CreateMemoryDialog({ open, onOpenChange, ...form }: Props) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <CreateMemoryForm key={form.defaultInstanceId ?? ""} onOpenChange={onOpenChange} {...form} />
-      </DialogContent>
-    </Dialog>
-  );
+export function CreateMemorySheet({ open, onOpenChange, ...form }: Props) {
+  // Mounted only while open, so every opening starts from empty fields.
+  if (!open) return null;
+  return <CreateMemoryForm key={form.defaultInstanceId ?? ""} onOpenChange={onOpenChange} {...form} />;
 }

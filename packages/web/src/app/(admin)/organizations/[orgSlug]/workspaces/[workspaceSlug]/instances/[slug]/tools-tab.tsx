@@ -22,7 +22,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ListControlCell, ListHead, ListNameCell, ListRow, ListTable } from "@/components/list-table";
-import { ListSearch, matchesSearch } from "@/components/list-search";
+import { ListToolbar } from "@/components/list-search";
+import { useListView } from "@/components/use-list-view";
 import { ListEmpty, ListNoResults } from "@/components/list-states";
 import {
   Tooltip,
@@ -47,7 +48,7 @@ import { secretSpecLabel } from "@/components/instance-secret/secret-spec-field"
 import { useSecretSpecs } from "@/components/instance-secret/use-secret-specs";
 import { usePageSaveAction } from "./page-actions-context";
 import { ToolSheet } from "./tool-sheet";
-import { EnableToolsDialog } from "./enable-tools-dialog";
+import { EnableToolsSheet } from "./enable-tools-sheet";
 import {
   categoryLabel,
   capabilitySummary,
@@ -162,12 +163,14 @@ export function ToolsTab({
   const categoryOptions = [...new Set([...listed, ...alwaysOn].map((tool) => tool.category))].sort();
   const originName = (origin: string) => (origin === CORE_ORIGIN ? t("tools.originCore") : nameOfPlugin(origin));
 
-  const matches = (tool: ToolState) =>
-    matchesSearch(search, toolDisplayName(tool.name), tool.name, capabilitySummary(tool, locale), tool.description, categoryLabel(tool.category, locale)) &&
+  const toolText = (tool: ToolState) => [
+    toolDisplayName(tool.name), tool.name, capabilitySummary(tool, locale), tool.description, categoryLabel(tool.category, locale),
+  ];
+  const passesFilters = (tool: ToolState) =>
     (originFilter === null || (pluginNamespaceOf(tool.name) ?? CORE_ORIGIN) === originFilter) &&
     (categoryFilter === null || tool.category === categoryFilter);
-  const rows = listed.filter(matches).sort((a, b) => toolDisplayName(a.name).localeCompare(toolDisplayName(b.name)));
-  const systemRows = alwaysOn.filter(matches);
+  const rows = useListView(listed.filter(passesFilters), search, toolText, (tool) => toolDisplayName(tool.name));
+  const systemRows = useListView(alwaysOn.filter(passesFilters), search, toolText, null);
 
   /**
    * A memory tool does nothing while the agent's memory is off, and the agent
@@ -344,12 +347,13 @@ export function ToolsTab({
       {listed.length === 0 && alwaysOn.length === 0 ? (
         <ListEmpty className="mt-8" title={t("tools.noneEnabled")} />
       ) : (
-        <>
-          <ListSearch value={search} onChange={setSearch} label={t("tools.searchEnabled")} className="relative" />
-          <div className="mt-2.5 flex flex-wrap gap-1.5">
-            {filterPill(t("tools.filterOrigin"), originFilter, originOptions, originName, setOriginFilter)}
-            {filterPill(t("tools.filterCategory"), categoryFilter, categoryOptions, (cat) => categoryLabel(cat, locale), setCategoryFilter)}
-          </div>
+        <div>
+          <ListToolbar value={search} onChange={setSearch} label={t("tools.searchEnabled")}>
+            <div className="flex flex-wrap gap-1.5">
+              {filterPill(t("tools.filterOrigin"), originFilter, originOptions, originName, setOriginFilter)}
+              {filterPill(t("tools.filterCategory"), categoryFilter, categoryOptions, (cat) => categoryLabel(cat, locale), setCategoryFilter)}
+            </div>
+          </ListToolbar>
 
           {rows.length === 0 && systemRows.length === 0 ? (
             <ListNoResults />
@@ -474,7 +478,7 @@ export function ToolsTab({
               </TableBody>
             </ListTable>
           )}
-        </>
+        </div>
       )}
 
       <ToolSheet
@@ -491,7 +495,7 @@ export function ToolsTab({
         onClose={() => setOpenTool(null)}
       />
 
-      <EnableToolsDialog
+      <EnableToolsSheet
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         tools={catalogue}

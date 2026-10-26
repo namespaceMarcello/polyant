@@ -54,7 +54,7 @@ export function AddTextSheet({
         description={t("knowledge.tab.uploadDescription")}
         primary={
           <Button onClick={() => void add()} disabled={saving || !filename.trim() || !content.trim()}>
-            {saving ? t("common.saving") : t("knowledge.tab.upload")}
+            {saving ? t("common.saving") : t("common.add")}
           </Button>
         }
       >

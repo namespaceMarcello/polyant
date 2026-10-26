@@ -34,7 +34,9 @@ export default defineTool({
   execute: async ({ filename }: { filename: string }, ctx) => {
       try {
         const doc = await getDocumentByFilename(ctx.instanceId, filename);
-        if (!doc) {
+        // A switched-off document is kept for the panel and out of the agent's
+        // reach: search skips it, and so does reading it by name.
+        if (!doc || !doc.enabled) {
           ctx.audit.log({
             action: "knowledge.get",
             details: { filename: auditPreview(filename), found: false },

@@ -8,7 +8,7 @@ import { Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/status-badge";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useI18n } from "@/lib/i18n/context";
 
@@ -43,9 +43,9 @@ export function WebhookAuthSection({ currentMasked, onSave }: Props) {
     <div className="space-y-1">
       <div className="flex items-center gap-2">
         <Label className="text-xs text-muted-foreground">{t("room.sources.auth")}</Label>
-        <Badge variant={isProtected ? "default" : "secondary"} className="text-xs">
+        <StatusBadge tone={isProtected ? "positive" : "neutral"}>
           {isProtected ? t("room.sources.authProtected") : t("room.sources.authNone")}
-        </Badge>
+        </StatusBadge>
       </div>
       <p className="text-xs text-muted-foreground">{t("room.sources.authHelp")}</p>
 

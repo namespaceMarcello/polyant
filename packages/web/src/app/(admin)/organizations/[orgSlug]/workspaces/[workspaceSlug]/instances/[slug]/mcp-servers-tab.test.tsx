@@ -110,10 +110,9 @@ describe("McpServersTab — the agent's shared account", () => {
     await user.type(screen.getByPlaceholderText("my-mcp-server"), "linear");
     await user.type(screen.getByPlaceholderText("My MCP Server"), "Another Linear");
     await user.type(screen.getByPlaceholderText("https://mcp.example.com/mcp"), "https://other.test/mcp");
-    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "common.save" }));
 
-    const { toast } = await import("sonner");
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("mcp.validation.slugTaken"));
+    // The button waits for a form the engine would accept: the taken slug keeps it off.
+    expect(within(await screen.findByRole("dialog")).getByRole("button", { name: "common.add" })).toBeDisabled();
     expect(mockSet).not.toHaveBeenCalled();
   });
 
@@ -188,7 +187,7 @@ describe("McpServersTab — the list", () => {
 
     const drawer = await openServer(user, "Notion");
     expect(drawer).toHaveAttribute("data-slot", "sheet-content");
-    expect(within(drawer).getByRole("heading", { name: "mcp.editTitle" })).toBeInTheDocument();
+    expect(within(drawer).getByRole("heading", { name: "Notion" })).toBeInTheDocument();
 
     await user.click(within(drawer).getByRole("button", { name: "common.delete" }));
     expect(mockDelete).not.toHaveBeenCalled();
