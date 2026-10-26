@@ -26,7 +26,10 @@ export interface BufferedInsertQueueOptions<T> {
   flushMs?: number;
   /** Buffer length that triggers an immediate flush. Default 10. */
   batchAt?: number;
-  /** Called when rows were refused while their neighbours went in. Defaults to one warning. */
+  /**
+   * Called with the rows the database refused (and dropped), and how many rows of the same
+   * batch were written, possibly none. Defaults to one warning.
+   */
   onRefused?: (rows: T[], written: number) => void;
 }
 
@@ -143,10 +146,12 @@ export class BufferedInsertQueue<T> {
     this.buffer = [];
     const { table, label } = this.options;
 
+    let batchError: unknown;
     try {
       await db.insert(table).values(rows);
       return;
     } catch (err) {
+      batchError = err;
       log.error("buffered-insert", `Failed to flush ${label}`, err);
     }
 
@@ -163,14 +168,20 @@ export class BufferedInsertQueue<T> {
           refused.push(rows[index]!);
         }
       }
+    } else if (isDataError(batchError)) {
+      // A single row the database refused is the row's fault, exactly as in the fallback above:
+      // requeued, it would be refused on every flush and stay in the buffer forever.
+      refused.push(rows[0]!);
+      index = 1;
     }
 
-    if (refused.length > 0 && written > 0) this.reportRefused(refused, written);
+    if (refused.length > 0) this.reportRefused(refused, written);
 
     // The row that stopped the fallback, and every row not yet tried, go back to the buffer: the
-    // cause is the database, not the row. When the fallback did not run (a single row) or the
-    // first row failed, that is the whole batch. Oldest first, then rows pushed since the flush began.
-    const requeue = rows.length > 1 ? rows.slice(index) : rows;
+    // cause is the database, not the row. When the first row failed that way, or a single row
+    // failed with anything but a data error, that is the whole batch. Oldest first, then rows
+    // pushed since the flush began.
+    const requeue = rows.slice(index);
     if (requeue.length === 0) return;
     this.buffer = [...requeue, ...this.buffer];
     if (this.buffer.length > this.maxBuffer) {
