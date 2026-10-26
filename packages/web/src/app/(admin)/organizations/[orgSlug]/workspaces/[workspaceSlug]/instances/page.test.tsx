@@ -77,6 +77,46 @@ describe("InstancesPage", () => {
     expect(screen.getByRole("button", { name: /Old Bot/ })).toBeInTheDocument();
   });
 
+  it("filters the rows by what is typed, on the name and the slug", async () => {
+    const user = userEvent.setup();
+    mockList.mockResolvedValue({
+      instances: [...AGENTS, agent({ id: "3", slug: "billing", name: "Invoices", description: "Chases payments" })],
+    });
+    render(<InstancesPage />);
+    await screen.findByRole("button", { name: /Support Bot/ });
+
+    await user.type(screen.getByRole("searchbox"), "billing");
+
+    expect(screen.getByRole("button", { name: /Invoices/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Support Bot/ })).not.toBeInTheDocument();
+
+    await user.clear(screen.getByRole("searchbox"));
+    await user.type(screen.getByRole("searchbox"), "zzz");
+    expect(screen.getByText("common.noResults")).toBeInTheDocument();
+  });
+
+  it("sorts the agents by name, whatever order the engine returns them in", async () => {
+    mockList.mockResolvedValue({
+      instances: [
+        agent({ id: "1", slug: "z", name: "Zeta" }),
+        agent({ id: "2", slug: "a", name: "alpha" }),
+        agent({ id: "3", slug: "b", name: "Beta" }),
+      ],
+    });
+    render(<InstancesPage />);
+    await screen.findByRole("button", { name: /Zeta/ });
+
+    const names = screen.getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("button")[0].textContent);
+    expect(names).toEqual(["alpha", "Beta", "Zeta"]);
+  });
+
+  it("shows the description under the name as the row's summary", async () => {
+    mockList.mockResolvedValue({ instances: [agent({ id: "1", slug: "s", name: "Support Bot", description: "Answers tickets" })] });
+    render(<InstancesPage />);
+
+    expect(await screen.findByText("Answers tickets")).toBeInTheDocument();
+  });
+
   it("shows the empty state when the workspace has no agents", async () => {
     mockList.mockResolvedValue({ instances: [] });
     render(<InstancesPage />);
